@@ -9,6 +9,7 @@ MVP 阶段零依赖方案，后续可升级为 ChromaDB + embedding 语义检索
 """
 import sqlite3
 import os
+import threading
 from datetime import datetime
 
 from config import MEMORY_DB_PATH
@@ -21,9 +22,14 @@ def _segment(text):
 
 class Memory:
     def __init__(self, db_path=MEMORY_DB_PATH):
-        """初始化记忆库。旧格式数据自动迁移。"""
+        """初始化记忆库。旧格式数据自动迁移。
+
+        线程安全：服务端用 asyncio.to_thread 跑编排，会跨线程访问，
+        所以连接放开线程检查，并用 RLock 串行化所有数据库操作。
+        """
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        self._lock = threading.RLock()
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._migrate_legacy()
         self._create_schema()
         self.conn.commit()
@@ -84,8 +90,9 @@ class Memory:
             metadata: 额外元数据（暂不使用，保持接口兼容）
         """
         ts = datetime.now().isoformat()
-        self._insert(text, summary, ts)
-        self.conn.commit()
+        with self._lock:
+            self._insert(text, summary, ts)
+            self.conn.commit()
 
     def _search_rows(self, query, n_results=5):
         """全文检索，返回原始行 (id, summary, text, timestamp)。
@@ -128,9 +135,11 @@ class Memory:
         Returns:
             list[str]: 记忆列表，格式 "[时间] 原文"
         """
+        with self._lock:
+            rows = self._search_rows(query, n_results)
         return [
             f"[{self._format_time(ts)}] {text}"
-            for _rid, _summary, text, ts in self._search_rows(query, n_results)
+            for _rid, _summary, text, ts in rows
         ]
 
     def list_all(self, n_results=10):
@@ -139,10 +148,11 @@ class Memory:
         Returns:
             list[dict]: [{"id", "summary", "text", "time"}]，time 为格式化时间串
         """
-        rows = self.conn.execute(
-            "SELECT id, summary, text, timestamp FROM memories_raw ORDER BY timestamp DESC LIMIT ?",
-            (n_results,),
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, summary, text, timestamp FROM memories_raw ORDER BY timestamp DESC LIMIT ?",
+                (n_results,),
+            ).fetchall()
         return [
             {"id": rid, "summary": summary, "text": text, "time": self._format_time(ts)}
             for rid, summary, text, ts in rows
@@ -157,19 +167,20 @@ class Memory:
         Returns:
             list[dict]: 被删除的记忆（与 list_all 格式一致），空列表表示无匹配
         """
-        hits = self._search_rows(query, n_results=50)
-        if not hits:
-            return []
+        with self._lock:
+            hits = self._search_rows(query, n_results=50)
+            if not hits:
+                return []
 
-        ids = [rid for rid, _s, _t, _ts in hits]
-        placeholders = ",".join("?" * len(ids))
-        self.conn.execute(
-            f"DELETE FROM memories_raw WHERE id IN ({placeholders})", ids
-        )
-        self.conn.execute(
-            f"DELETE FROM memories_fts WHERE rowid IN ({placeholders})", ids
-        )
-        self.conn.commit()
+            ids = [rid for rid, _s, _t, _ts in hits]
+            placeholders = ",".join("?" * len(ids))
+            self.conn.execute(
+                f"DELETE FROM memories_raw WHERE id IN ({placeholders})", ids
+            )
+            self.conn.execute(
+                f"DELETE FROM memories_fts WHERE rowid IN ({placeholders})", ids
+            )
+            self.conn.commit()
 
         return [
             {"id": rid, "summary": summary, "text": text, "time": self._format_time(ts)}
@@ -178,8 +189,10 @@ class Memory:
 
     def count(self):
         """返回记忆总数。"""
-        cursor = self.conn.execute("SELECT COUNT(*) FROM memories_raw")
-        return cursor.fetchone()[0]
+        with self._lock:
+            cursor = self.conn.execute("SELECT COUNT(*) FROM memories_raw")
+            return cursor.fetchone()[0]
 
     def close(self):
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
