@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>家庭智能终端 · 小马</title>
+<style>
+:root {
+  --bg: #1b1f2a;
+  --surface: #252a38;
+  --surface-alt: #2d3348;
+  --user-bubble: #3a7bd5;
+  --user-text: #fff;
+  --bot-bubble: #2e3448;
+  --bot-text: #e4e8f1;
+  --text-primary: #e8ecf4;
+  --text-secondary: #8b93a8;
+  --accent: #5b9cf5;
+  --danger: #e85d5d;
+  --input-bg: #2a2f40;
+  --border: #3a4058;
+  --record-active: #d94040;
+  --radius: 14px;
+  --radius-sm: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  height: 100%; overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  display: flex; flex-direction: column;
+  height: 100%; max-width: 600px; margin: 0 auto;
+}
+
+/* ---- status bar ---- */
+#status-bar {
+  flex-shrink: 0; padding: 16px 20px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+#status-bar h1 {
+  font-size: 18px; font-weight: 700; letter-spacing: .5px;
+  color: var(--text-primary);
+}
+#status-bar .sub {
+  margin-top: 4px; font-size: 13px; color: var(--text-secondary);
+}
+
+/* ---- messages ---- */
+#messages {
+  flex: 1; overflow-y: auto; padding: 16px 16px 8px;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+#messages::-webkit-scrollbar { width: 4px; }
+#messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.msg-row { display: flex; margin-bottom: 12px; }
+.msg-row.user { justify-content: flex-end; }
+.msg-row.bot  { justify-content: flex-start; }
+.msg-row.error { justify-content: center; }
+
+.bubble {
+  max-width: 80%; padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 15px; line-height: 1.55;
+  word-break: break-word;
+  position: relative;
+}
+.msg-row.user .bubble {
+  background: var(--user-bubble); color: var(--user-text);
+  border-bottom-right-radius: 4px;
+}
+.msg-row.bot .bubble {
+  background: var(--bot-bubble); color: var(--bot-text);
+  border-bottom-left-radius: 4px;
+}
+.msg-row.error .bubble {
+  background: rgba(232,93,93,.15); color: var(--danger);
+  font-size: 14px; max-width: 90%; text-align: center;
+}
+
+.play-btn {
+  display: inline-block; margin-top: 6px;
+  padding: 4px 10px; font-size: 13px;
+  background: var(--surface-alt); color: var(--accent);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  cursor: pointer; user-select: none;
+  transition: background .15s;
+}
+.play-btn:active { background: var(--border); }
+
+/* ---- input area ---- */
+#input-area {
+  flex-shrink: 0; display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 20px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+#record-btn {
+  width: 56px; height: 56px; flex-shrink: 0;
+  border-radius: 50%; border: none;
+  background: var(--accent); color: #fff;
+  font-size: 22px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s, transform .1s;
+  user-select: none; position: relative;
+}
+#record-btn.recording {
+  background: var(--record-active);
+  transform: scale(1.08);
+}
+#record-btn:disabled {
+  opacity: .5; cursor: not-allowed;
+}
+
+#record-label {
+  position: absolute; top: -22px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; white-space: nowrap;
+  color: var(--record-active); font-weight: 600;
+  opacity: 0; transition: opacity .15s;
+  pointer-events: none;
+}
+#record-btn.recording #record-label { opacity: 1; }
+
+#text-input {
+  flex: 1; height: 44px; padding: 0 14px;
+  font-size: 16px; /* >=16px to prevent iOS zoom */
+  background: var(--input-bg); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 22px;
+  outline: none;
+  transition: border-color .15s;
+}
+#text-input::placeholder { color: var(--text-secondary); }
+#text-input:focus { border-color: var(--accent); }
+
+#send-btn {
+  height: 44px; padding: 0 18px; flex-shrink: 0;
+  border-radius: 22px; border: none;
+  background: var(--accent); color: #fff;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  transition: opacity .15s;
+}
+#send-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---- typing indicator ---- */
+.typing { display: flex; gap: 4px; padding: 6px 0; }
+.typing span {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-secondary);
+  animation: blink 1.2s infinite;
+}
+.typing span:nth-child(2) { animation-delay: .2s; }
+.typing span:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%,80%,100%{opacity:.3} 40%{opacity:1} }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="status-bar">
+    <h1>家庭智能终端 · 小马</h1>
+    <div class="sub" id="status-text">正在连接…</div>
+  </div>
+
+  <div id="messages"></div>
+
+  <div id="input-area">
+    <button id="record-btn" aria-label="按住说话">
+      <span id="record-label">正在录音… 0s</span>
+      🎤
+    </button>
+    <input id="text-input" type="text" placeholder="打字跟小马说话…" autocomplete="off">
+    <button id="send-btn">发送</button>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ---- DOM refs ----
+  var msgBox     = document.getElementById('messages');
+  var statusEl   = document.getElementById('status-text');
+  var recBtn     = document.getElementById('record-btn');
+  var recLabel   = document.getElementById('record-label');
+  var textInput  = document.getElementById('text-input');
+  var sendBtn    = document.getElementById('send-btn');
+
+  // ---- client id ----
+  var CID_KEY = 'hst_client_id';
+  var clientId = localStorage.getItem(CID_KEY);
+  if (!clientId) {
+    clientId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : 'c-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem(CID_KEY, clientId);
+  }
+
+  // ---- helpers ----
+  function scrollBottom() {
+    requestAnimationFrame(function() { msgBox.scrollTop = msgBox.scrollHeight; });
+  }
+
+  function addMsg(text, type, audio) {
+    // type: 'user' | 'bot' | 'error'
+    var row = document.createElement('div');
+    row.className = 'msg-row ' + type;
+
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+
+    if (audio) {
+      var btn = document.createElement('button');
+      btn.className = 'play-btn';
+      btn.textContent = '🔊 播放';
+      btn.addEventListener('click', function() {
+        // Must create Audio in user-gesture context for iOS Safari
+        var a = new Audio('data:audio/mp3;base64,' + audio);
+        a.play().catch(function() {});
+      });
+      bubble.appendChild(document.createElement('br'));
+      bubble.appendChild(btn);
+    }
+
+    row.appendChild(bubble);
+    msgBox.appendChild(row);
+    scrollBottom();
+  }
+
+  function addTyping() {
+    var row = document.createElement('div');
+    row.className = 'msg-row bot';
+    row.id = 'typing-indicator';
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+    row.appendChild(bubble);
+    msgBox.appendChild(row);
+    scrollBottom();
+  }
+
+  function removeTyping() {
+    var el = document.getElementById('typing-indicator');
+    if (el) el.remove();
+  }
+
+  // ---- status poll ----
+  function pollStatus() {
+    fetch('/api/status')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) {
+          statusEl.textContent = '🟢 服务正常 · 记忆 ' + (d.memory_count != null ? d.memory_count : '?') + ' 条';
+        } else {
+          statusEl.textContent = '🔴 服务异常';
+        }
+      })
+      .catch(function() {
+        statusEl.textContent = '🔴 服务连接失败';
+      });
+  }
+  pollStatus();
+  setInterval(pollStatus, 30000);
+
+  // ---- welcome message ----
+  addMsg('你好，我是小马，家里的记忆助手。按住说话，或者打字跟我聊。试着跟我说：酸奶还有几天过期？', 'bot');
+
+  // ---- text send ----
+  var busy = false;
+
+  function setBusy(v) {
+    busy = v;
+    sendBtn.disabled = v;
+    textInput.disabled = v;
+    recBtn.disabled = v;
+    if (v) { sendBtn.textContent = '处理中…'; } else { sendBtn.textContent = '发送'; }
+  }
+
+  function sendText() {
+    var t = textInput.value.trim();
+    if (!t || busy) return;
+    textInput.value = '';
+    addMsg(t, 'user');
+    setBusy(true);
+    addTyping();
+
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: t, client_id: clientId })
+    })
+    .then(function(r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    })
+    .then(function(d) {
+      removeTyping();
+      addMsg(d.reply || '（空回复）', 'bot', d.audio || null);
+    })
+    .catch(function() {
+      removeTyping();
+      addMsg('出错了，请检查服务端连接', 'error');
+    })
+    .finally(function() { setBusy(false); });
+  }
+
+  sendBtn.addEventListener('click', sendText);
+  textInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); sendText(); }
+  });
+
+  // ---- recording (Web Audio → PCM → resample 16kHz → WAV) ----
+
+  var MIN_DURATION = 0.5;   // seconds
+  var MAX_DURATION = 15;    // seconds
+
+  var recording = false;
+  var audioCtx  = null;
+  var stream    = null;
+  var source    = null;
+  var processor = null;
+  var chunks    = [];
+  var recStart  = 0;
+  var timer     = null;
+
+  function startRecord() {
+    if (busy || recording) return;
+
+    chunks = [];
+    // Create AudioContext inside user gesture for iOS Safari
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(function(s) {
+      stream = s;
+      // Resume if suspended (iOS Safari)
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
+      source = audioCtx.createMediaStreamSource(stream);
+
+      // ScriptProcessor to capture raw PCM
+      processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = function(e) {
+        if (!recording) return;
+        var data = e.inputBuffer.getChannelData(0);
+        chunks.push(new Float32Array(data));
+      };
+
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+
+      recording = true;
+      recStart  = Date.now();
+      recBtn.classList.add('recording');
+      recLabel.textContent = '正在录音… 0s';
+
+      timer = setInterval(function() {
+        var sec = Math.floor((Date.now() - recStart) / 1000);
+        recLabel.textContent = '正在录音… ' + sec + 's';
+        if (sec >= MAX_DURATION) stopAndSend();
+      }, 200);
+    })
+    .catch(function(err) {
+      addMsg('无法访问麦克风：' + err.message, 'error');
+      cleanupAudio();
+    });
+  }
+
+  function stopAndSend() {
+    if (!recording) return;
+    recording = false;
+    clearInterval(timer);
+    recBtn.classList.remove('recording');
+
+    var duration = (Date.now() - recStart) / 1000;
+
+    // Collect all chunks into one buffer
+    var totalLen = 0;
+    for (var i = 0; i < chunks.length; i++) totalLen += chunks[i].length;
+    var merged = new Float32Array(totalLen);
+    var offset = 0;
+    for (var i = 0; i < chunks.length; i++) {
+      merged.set(chunks[i], offset);
+      offset += chunks[i].length;
+    }
+    chunks = [];
+
+    cleanupAudio();
+
+    if (duration < MIN_DURATION) {
+      addMsg('说话时间太短，请按住多说一会儿', 'error');
+      return;
+    }
+
+    // ---- resample to 16000 Hz (linear interpolation) ----
+    // Capture sampleRate before cleanupAudio closes the context
+    var srcRate = audioCtx ? audioCtx.sampleRate : 48000;
+    var dstRate = 16000;
+    var ratio   = srcRate / dstRate;
+    var newLen  = Math.round(merged.length / ratio);
+    var resampled = new Float32Array(newLen);
+    for (var i = 0; i < newLen; i++) {
+      var srcIdx = i * ratio;
+      var lo = Math.floor(srcIdx);
+      var hi = Math.min(lo + 1, merged.length - 1);
+      var frac = srcIdx - lo;
+      resampled[i] = merged[lo] * (1 - frac) + merged[hi] * frac;
+    }
+
+    // ---- encode WAV (16-bit PCM, mono, 16000 Hz) ----
+    var wavBytes = encodeWAV(resampled, dstRate);
+
+    var blob = new Blob([wavBytes], { type: 'audio/wav' });
+
+    // Upload
+    setBusy(true);
+    addTyping();
+
+    var fd = new FormData();
+    fd.append('file', blob, 'recording.wav');
+    fd.append('client_id', clientId);
+
+    fetch('/api/voice', { method: 'POST', body: fd })
+    .then(function(r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    })
+    .then(function(d) {
+      removeTyping();
+      addMsg(d.text || '（语音）', 'user');
+      addMsg(d.reply || '（空回复）', 'bot', d.audio || null);
+    })
+    .catch(function() {
+      removeTyping();
+      addMsg('出错了，请检查服务端连接', 'error');
+    })
+    .finally(function() { setBusy(false); });
+  }
+
+  // ---- WAV encoder ----
+  // Lines ~this function: WAV 44-byte header + PCM 16-bit data
+  function encodeWAV(samples, sampleRate) {
+    var numChannels = 1;
+    var bitsPerSample = 16;
+    var byteRate = sampleRate * numChannels * bitsPerSample / 8;
+    var blockAlign = numChannels * bitsPerSample / 8;
+    var dataLen = samples.length * blockAlign;
+    var bufLen = 44 + dataLen;
+    var buf = new ArrayBuffer(bufLen);
+    var v = new DataView(buf);
+
+    // RIFF header
+    writeStr(v, 0, 'RIFF');
+    v.setUint32(4, bufLen - 8, true);
+    writeStr(v, 8, 'WAVE');
+
+    // fmt chunk
+    writeStr(v, 12, 'fmt ');
+    v.setUint32(16, 16, true);           // chunk size
+    v.setUint16(20, 1, true);            // PCM format
+    v.setUint16(22, numChannels, true);
+    v.setUint32(24, sampleRate, true);
+    v.setUint32(28, byteRate, true);
+    v.setUint16(32, blockAlign, true);
+    v.setUint16(34, bitsPerSample, true);
+
+    // data chunk
+    writeStr(v, 36, 'data');
+    v.setUint32(40, dataLen, true);
+
+    // write PCM samples
+    var off = 44;
+    for (var i = 0; i < samples.length; i++, off += 2) {
+      var s = Math.max(-1, Math.min(1, samples[i]));
+      v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+
+    return buf;
+  }
+
+  function writeStr(view, offset, str) {
+    for (var i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  }
+
+  function cleanupAudio() {
+    if (processor) { processor.disconnect(); processor.onaudioprocess = null; processor = null; }
+    if (source)    { source.disconnect(); source = null; }
+    if (stream)    { stream.getTracks().forEach(function(t) { t.stop(); }); stream = null; }
+    if (audioCtx)  { audioCtx.close().catch(function(){}); audioCtx = null; }
+  }
+
+  // ---- record button: press / release ----
+  // Use pointer events for better mobile support (handles finger+mouse)
+
+  recBtn.addEventListener('pointerdown', function(e) {
+    e.preventDefault();
+    startRecord();
+  });
+
+  recBtn.addEventListener('pointerup', function(e) {
+    e.preventDefault();
+    stopAndSend();
+  });
+
+  recBtn.addEventListener('pointerleave', function(e) {
+    // finger slid off button while recording
+    if (recording) stopAndSend();
+  });
+
+  recBtn.addEventListener('pointercancel', function(e) {
+    if (recording) stopAndSend();
+  });
+
+  // Prevent context menu on long press (mobile)
+  recBtn.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+})();
+</script>
+</body>
+</html>

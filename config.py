@@ -51,3 +51,9 @@ CHUNK_SIZE = _get_int("CHUNK_SIZE", 1024)
 MAX_RECORD_SECONDS = _get_int("MAX_RECORD_SECONDS", 15)
 SILENCE_THRESHOLD = _get_float("SILENCE_THRESHOLD", 0.015)
 SILENCE_DURATION = _get_float("SILENCE_DURATION", 1.2)
+
+# ---- Web 服务端（阶段 2）----
+SERVER_HOST = _get("SERVER_HOST", "0.0.0.0")          # 0.0.0.0 允许局域网访问
+SERVER_PORT = _get_int("SERVER_PORT", 8000)
+MAX_UPLOAD_BYTES = _get_int("MAX_UPLOAD_BYTES", 10 * 1024 * 1024)  # 上传音频上限 10MB
+MAX_AUDIO_SECONDS = _get_int("MAX_AUDIO_SECONDS", 30)  # 单次录音时长上限（前端约束）

@@ -44,10 +44,32 @@ copy .env.example .env        # Windows
 # 编辑 .env，填入 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 
 # 4. 运行
-python main.py
+
+**Web 服务端（手机/平板访问，推荐）**
+```bash
+start.bat            # Windows 一键启动
+# 或 python server.py
+```
+浏览器打开 `http://<电脑IP>:8000`（本机测试用 `http://127.0.0.1:8000`），
+支持按住说话（麦克风）或文字聊天。首次启动加载 STT 模型约需几十秒。
+
+> 局域网访问需放行防火墙：以管理员运行 PowerShell 执行
+> `New-NetFirewallRule -DisplayName "HomeSmartTerminal" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow`
+
+**命令行模式（本机语音交互）**
+```bash
+start.bat cli        # 或 python main.py
 ```
 
 > 首次运行会自动下载 FunASR 语音识别模型（约 900MB），需要一些时间。
+
+## 服务端 API
+
+| 接口 | 方法 | 说明 |
+|---|---|---|
+| `/api/status` | GET | 健康检查（服务/记忆条数） |
+| `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64 |
+| `/api/voice` | POST | 语音交互（multipart: file + client_id，支持 wav/mp3/webm 等） |
 
 ## 配置说明（.env）
 
