@@ -5,6 +5,7 @@
 import json
 import re
 import time
+from datetime import datetime
 
 import requests
 
@@ -22,6 +23,8 @@ if not BASE_URL or not API_KEY:
 
 ANALYZE_PROMPT = """你是家庭记忆系统的分类器。判断用户输入的类型并返回JSON。
 
+当前日期：{today}（回答和摘要里的相对时间必须以这个日期为准换算）
+
 类型说明：
 - record: 用户在陈述一个事实或记录信息（系统需要存储这条信息供日后查询）
 - query: 用户在提问或查询已记录的信息
@@ -31,6 +34,7 @@ ANALYZE_PROMPT = """你是家庭记忆系统的分类器。判断用户输入的
 - 用户说"不是X，是Y"或"是Y，不是X"时，事实以纠正后的 Y 为准，不要记录 X
 - summary 必须准确反映用户最终想表达的事实，不能与原文冲突
 - summary 必须忠实原文，不能凭空添加或重复信息，尽量简洁（15 字内）
+- **summary 中的相对时间词（今天/明天/昨天/后天/上周/下月等）必须换算成绝对日期**：如当前日期是 8月8日，则"今天"→"8月8日"、"明天"→"8月9日"。无时间词或原文就是绝对日期时照原样
 - 如果输入与"已有记忆"相关，并且带疑问语气（几/多少/什么时候/还有多久/吗/呢/怎么），归类为 query
 - 只有明确的陈述事实才归类为 record；拿不准时优先 query
 - 用户要求"查看/看看/列出记忆"这类管理指令时，归类为 chat（系统会单独处理），不要返回 query
@@ -39,10 +43,10 @@ ANALYZE_PROMPT = """你是家庭记忆系统的分类器。判断用户输入的
 {memories_context}
 
 示例：
-用户: "我今天给鼠标换了电池" -> {"type": "record", "summary": "今天换了鼠标电池"}
-用户: "我今天换了鼠标电池，不是我今年换的" -> {"type": "record", "summary": "今天换了鼠标电池"}
+用户: "我今天给鼠标换了电池" (当前日期 8月8日) -> {"type": "record", "summary": "8月8日给鼠标换了电池"}
+用户: "我今天换了鼠标电池，不是我今年换的" (当前日期 8月8日) -> {"type": "record", "summary": "8月8日换了鼠标电池"}
 用户: "冰箱里还有三个鸡蛋" -> {"type": "record", "summary": "冰箱有鸡蛋三个"}
-用户: "明天要交电费" -> {"type": "record", "summary": "明天交电费"}
+用户: "明天要交电费" (当前日期 8月8日) -> {"type": "record", "summary": "8月9日交电费"}
 用户: "我什么时候换的鼠标电池？" -> {"type": "query", "keywords": "鼠标 电池 更换时间"}
 用户: "我的酸奶还有几天过期" (已有记忆: 酸奶8月5号过期) -> {"type": "query", "keywords": "酸奶 过期"}
 用户: "冰箱里有什么？" -> {"type": "query", "keywords": "冰箱 物品"}
@@ -71,6 +75,9 @@ ANSWER_PROMPT = """你是家庭智能终端助手"小马"。根据检索到的�
 - 只根据记忆片段回答，不要编造
 - 记忆中没有相关信息时，坦诚说"我还没有这方面的记录"
 - 回答简洁口语化，像家人聊天一样，不超过3句话
+- **每条记忆前面的 [日期] 是记忆的存储时间**。用户问"今天/昨天/几天前/什么时候"等时间相关问题，必须拿记忆日期和用户说的时间对比：
+  - 如果记忆日期不是用户问的那天，必须先纠正，例如："你换鼠标电池是 8月1日，不是今天哦" 或 "那是几天前（8月1日）的事了"
+  - 严禁把旧记忆说成今天发生的事，也不要在回答里出现"你今天在X月X日"这类自相矛盾的表述
 
 记忆片段：
 {memories}
@@ -129,12 +136,13 @@ class LLM:
         Returns:
             dict: {"type": "record"|"query"|"chat", ...}
         """
-        # 构造记忆上下文
+        # 构造记忆上下文 + 注入当前日期（供 summary 相对时间换算）
         if memories:
             memories_context = "\n".join(f"- {m}" for m in memories)
         else:
             memories_context = "（无相关记忆）"
-        prompt = ANALYZE_PROMPT.replace("{memories_context}", memories_context)
+        today = datetime.now().strftime("%Y年%m月%d日")
+        prompt = ANALYZE_PROMPT.replace("{memories_context}", memories_context).replace("{today}", today)
 
         is_q = detect_question(text)
 

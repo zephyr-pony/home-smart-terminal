@@ -91,7 +91,7 @@ class Memory:
         """
         ts = datetime.now().isoformat()
         with self._lock:
-            self._insert(text, summary, ts)
+            self._insert(summary, text, ts)
             self.conn.commit()
 
     def _search_rows(self, query, n_results=5):
