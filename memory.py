@@ -87,6 +87,37 @@ class Memory:
         self._insert(text, summary, ts)
         self.conn.commit()
 
+    def _search_rows(self, query, n_results=5):
+        """全文检索，返回原始行 (id, summary, text, timestamp)。
+
+        每个关键词 -> 字符短语（"酸奶" -> "酸 奶"，匹配任意位置的"酸奶"）。
+        """
+        keywords = [k for k in query.replace("'", " ").replace('"', " ").split() if k.strip()]
+        if not keywords:
+            return []
+
+        phrases = [_segment(k) for k in keywords]
+        match_expr = " OR ".join(f'"{p}"' for p in phrases)
+
+        return self.conn.execute(
+            """
+            SELECT r.id, r.summary, r.text, r.timestamp
+            FROM memories_fts f
+            JOIN memories_raw r ON r.id = f.rowid
+            WHERE memories_fts MATCH ?
+            ORDER BY rank LIMIT ?
+            """,
+            (match_expr, n_results),
+        ).fetchall()
+
+    @staticmethod
+    def _format_time(ts):
+        try:
+            dt = datetime.fromisoformat(ts)
+            return dt.strftime("%Y年%m月%d日 %H:%M")
+        except Exception:
+            return ts
+
     def search(self, query, n_results=5):
         """全文检索相关记忆（中文子串匹配）。
 
@@ -97,34 +128,53 @@ class Memory:
         Returns:
             list[str]: 记忆列表，格式 "[时间] 原文"
         """
-        # 每个关键词 -> 字符短语（"酸奶" -> "酸 奶"，匹配任意位置的"酸奶"）
-        keywords = [k for k in query.replace("'", " ").replace('"', " ").split() if k.strip()]
-        if not keywords:
+        return [
+            f"[{self._format_time(ts)}] {text}"
+            for _rid, _summary, text, ts in self._search_rows(query, n_results)
+        ]
+
+    def list_all(self, n_results=10):
+        """列出最近 n_results 条记忆（按时间倒序）。
+
+        Returns:
+            list[dict]: [{"id", "summary", "text", "time"}]，time 为格式化时间串
+        """
+        rows = self.conn.execute(
+            "SELECT id, summary, text, timestamp FROM memories_raw ORDER BY timestamp DESC LIMIT ?",
+            (n_results,),
+        ).fetchall()
+        return [
+            {"id": rid, "summary": summary, "text": text, "time": self._format_time(ts)}
+            for rid, summary, text, ts in rows
+        ]
+
+    def delete_by_keywords(self, query):
+        """按关键词删除匹配的记忆。
+
+        Args:
+            query: 检索关键词
+
+        Returns:
+            list[dict]: 被删除的记忆（与 list_all 格式一致），空列表表示无匹配
+        """
+        hits = self._search_rows(query, n_results=50)
+        if not hits:
             return []
 
-        phrases = [_segment(k) for k in keywords]
-        match_expr = " OR ".join(f'"{p}"' for p in phrases)
-
-        cursor = self.conn.execute(
-            """
-            SELECT r.summary, r.text, r.timestamp
-            FROM memories_fts f
-            JOIN memories_raw r ON r.id = f.rowid
-            WHERE memories_fts MATCH ?
-            ORDER BY rank LIMIT ?
-            """,
-            (match_expr, n_results),
+        ids = [rid for rid, _s, _t, _ts in hits]
+        placeholders = ",".join("?" * len(ids))
+        self.conn.execute(
+            f"DELETE FROM memories_raw WHERE id IN ({placeholders})", ids
         )
+        self.conn.execute(
+            f"DELETE FROM memories_fts WHERE rowid IN ({placeholders})", ids
+        )
+        self.conn.commit()
 
-        memories = []
-        for _summary, text, ts in cursor.fetchall():
-            try:
-                dt = datetime.fromisoformat(ts)
-                ts_str = dt.strftime("%Y年%m月%d日 %H:%M")
-            except Exception:
-                ts_str = ts
-            memories.append(f"[{ts_str}] {text}")
-        return memories
+        return [
+            {"id": rid, "summary": summary, "text": text, "time": self._format_time(ts)}
+            for rid, summary, text, ts in hits
+        ]
 
     def count(self):
         """返回记忆总数。"""
