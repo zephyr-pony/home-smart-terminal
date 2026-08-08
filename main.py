@@ -10,6 +10,53 @@ from memory import Memory
 from tts import TTS
 
 
+# 内置命令关键词
+LIST_WORDS = ("查看记忆", "看看记忆", "有什么记忆", "记忆列表", "我的记忆", "记住什么了", "看看我记了什么")
+DELETE_WORDS = ("忘掉", "忘记", "删掉", "删除", "去掉", "清除")
+
+
+def handle_builtin_command(text, memory, tts):
+    """处理内置命令（查看记忆/删除记忆）。返回 True 表示已处理。"""
+    # --- 查看记忆 ---
+    if any(w in text for w in LIST_WORDS):
+        mems = memory.list_all(10)
+        if not mems:
+            print("📋 记忆库是空的")
+            tts.speak("记忆库还是空的，跟我说点要记住的事吧。")
+            return True
+
+        print(f"📋 最近 {len(mems)} 条记忆:")
+        for m in mems:
+            print(f"   · [{m['time']}] {m['text']}")
+
+        # 语音播报摘要（只说 summary，避免太长）
+        summaries = "，".join(f"{m['summary']}" for m in mems[:5])
+        tts.speak(f"一共有 {len(mems)} 条记忆，最近的是：{summaries}")
+        return True
+
+    # --- 删除记忆 ---
+    for w in DELETE_WORDS:
+        if w in text:
+            target = text.replace(w, "").strip()
+            if not target:
+                print("❓ 想删掉什么？例如：忘掉酸奶")
+                tts.speak("想删掉什么记忆呢？比如对我说，忘掉酸奶。")
+                return True
+
+            deleted = memory.delete_by_keywords(target)
+            if deleted:
+                print(f"🗑️ 已删除 {len(deleted)} 条相关记忆:")
+                for m in deleted:
+                    print(f"   · [{m['time']}] {m['text']}")
+                tts.speak(f"已删除 {len(deleted)} 条关于{target}的记忆。")
+            else:
+                print(f"ℹ️ 没有找到和「{target}」相关的记忆")
+                tts.speak(f"没有找到关于{target}的记忆。")
+            return True
+
+    return False
+
+
 def main():
     print("=" * 50)
     print("  家庭智能终端 v0.1")
@@ -60,6 +107,10 @@ def main():
                 break
             else:
                 text = user_input
+
+            # --- 内置命令：查看记忆 / 删除记忆（不走 LLM，快速响应） ---
+            if handle_builtin_command(text, memory, tts):
+                continue
 
             # --- 先查现有记忆，再让 LLM 带上下文分类 ---
             related = memory.search(text)
