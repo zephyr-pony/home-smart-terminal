@@ -20,6 +20,9 @@ config.local.*
 # ---- AI 代理工作手册（本地专用，不入库）----
 AGENTS.md
 
+# ---- 浏览器自动化快照（playwright 测试产物）----
+.playwright-mcp/
+
 # ---- 音频产物 ----
 *.wav
 *.mp3
