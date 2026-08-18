@@ -1,9 +1,9 @@
-"""家庭智能终端 - FastAPI 服务端（阶段 2）
+"""家庭智能终端 - FastAPI 服务端（阶段 2 + 阶段 3 物品提醒）
 
 提供：
 - POST /api/voice  语音文件 → 识别+理解+回答（返回 mp3 音频 base64）
 - POST /api/chat   文字 → 理解+回答（返回 mp3 音频 base64）
-- GET  /api/status 健康检查
+- GET  /api/status 健康检查（含 due_items 到期物品提醒）
 - GET  /           静态 Web 客户端（static/index.html）
 
 启动：python server.py  （或 uvicorn server:app --host 0.0.0.0 --port 8000）
@@ -16,7 +16,6 @@ import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -25,6 +24,7 @@ from assistant import Assistant
 from stt import STT
 from llm import LLM
 from memory import Memory
+from items import Items
 from tts import TTS
 
 
@@ -33,11 +33,25 @@ stt: STT = None
 tts: TTS = None
 assistant: Assistant = None
 
+# 到期提醒缓存（提醒循环每分钟刷新）
+due_items = []
+
 # FunASR 非线程安全：同一时间只允许一个识别请求
 stt_lock = asyncio.Semaphore(1)
 
 # 临时音频文件保留目录（关闭时清理）
 _tmp_dir = None
+
+
+async def reminder_loop():
+    """后台提醒循环：每分钟扫描物品到期情况，刷新 due_items。"""
+    global due_items
+    while True:
+        try:
+            due_items = assistant.items.get_due(days=3)
+        except Exception:
+            pass  # 扫描失败不影响服务
+        await asyncio.sleep(60)
 
 
 @asynccontextmanager
@@ -46,10 +60,13 @@ async def lifespan(app: FastAPI):
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
     tts = TTS()
-    assistant = Assistant(memory=Memory(), llm=LLM())
+    assistant = Assistant(memory=Memory(), llm=LLM(), items=Items())
     stt = STT()  # 预热 FunASR
-    print(f"✅ 系统就绪。记忆库 {assistant.memory.count()} 条 | 网页: http://{SERVER_HOST}:{SERVER_PORT}")
+    # 启动到期提醒后台任务
+    reminder_task = asyncio.create_task(reminder_loop())
+    print(f"✅ 系统就绪。记忆库 {assistant.memory.count()} 条 | 物品 {assistant.items.count()} 件 | 网页: http://{SERVER_HOST}:{SERVER_PORT}")
     yield
+    reminder_task.cancel()
     print("🛑 服务关闭")
 
 
@@ -98,6 +115,8 @@ async def api_status():
         "ok": True,
         "stt_ready": stt is not None,
         "memory_count": assistant.memory.count(),
+        "item_count": assistant.items.count(),
+        "due_items": due_items,  # 到期物品提醒（提醒循环刷新）
         "sessions": len(assistant.sessions),
     }
 

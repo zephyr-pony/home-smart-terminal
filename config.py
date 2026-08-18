@@ -44,6 +44,7 @@ STT_LANGUAGE = _get("STT_LANGUAGE", "zh")
 
 # ---- 记忆存储 ----
 MEMORY_DB_PATH = _get("MEMORY_DB_PATH", "./data/memory.db")
+ITEMS_DB_PATH = _get("ITEMS_DB_PATH", "./data/items.db")
 
 # ---- 音频录制 ----
 SAMPLE_RATE = _get_int("SAMPLE_RATE", 16000)

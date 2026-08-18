@@ -1,10 +1,14 @@
 """核心编排层 - CLI 与服务端共用的处理逻辑
 
-从 main.py 抽离：输入文本 → 内置命令 / 记忆检索 / LLM 分类 → 结构化结果。
+从 main.py 抽离：输入文本 → 内置命令 / agent loop（LLM 决策+工具调用）→ 结构化结果。
 不碰音频、不直接播报，由调用方（CLI 的 tts.speak / 服务端的 TTS 合成）决定输出方式。
 """
+import json
+
 from memory import Memory
-from llm import LLM
+from items import Items
+from llm import LLM, _chat_with_tools
+from tools import get_all_tools
 
 
 # 内置命令识别（宽泛匹配，兼容语音变体）
@@ -25,12 +29,31 @@ def _is_list_command(text):
     return any(p in text for p in LIST_PATTERNS)
 
 
+AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记事情、查事情、管物品。
+今天日期：{today}
+
+工具分工：
+- 家庭事实（如"明天交电费""冰箱里还有三个鸡蛋"）→ memory_store 记住（summary 用绝对日期）
+- 家庭事务查询（"酸奶还有几天过期""冰箱里有什么"）→ 先 item_search 查物品清单，查不到再用 memory_search 查记忆
+- 会过期的物品（"酸奶8月5号过期""鸡蛋还剩3个"）→ item_add 记到物品清单（expiry_date 转 YYYY-MM-DD）
+- 物品管理（"删掉酸奶""看看有哪些东西"）→ item_delete / item_list
+- 记忆管理（"看看记忆""忘掉X"）→ memory_list / memory_delete
+- 时间相关问题（还有几天/什么时候/是否过期）→ 调用 get_current_date 拿今天日期，结合物品/记忆日期计算
+- 查无结果时老实说"我还没有这方面的记录"
+- 回答简洁口语化，像家人聊天，不超过 3 句话
+- 只有闲聊（打招呼/无关话题）才直接回答，不需要调用工具"""
+
+
 class Assistant:
     """家庭智能终端核心编排。"""
 
-    def __init__(self, memory=None, llm=None):
+    def __init__(self, memory=None, llm=None, items=None):
         self.memory = memory or Memory()
         self.llm = llm or LLM()
+        self.items = items or Items()
+        # 工具注册表（memory 4 件套 + 日期 + items 4 件套）
+        self.tools = get_all_tools(self.memory, self.items)
+        self.max_agent_loops = 5
         # 轻量会话上下文：client_id -> [(user_text, reply), ...]（阶段 3 多轮对话的底子）
         self.sessions = {}
         self.max_session_turns = 20
@@ -46,37 +69,25 @@ class Assistant:
                 - "list":   内置命令·查看记忆
                 - "delete": 内置命令·删除记忆
                 - "delete_prompt": 删除命令缺目标
-                - "record": 已存记忆
-                - "query":  查询回答
+                - "record": agent 存了记忆
+                - "query":  agent 查了记忆并回答
                 - "chat":   闲聊
         """
         text = (text or "").strip()
         if not text:
             return {"type": "chat", "reply": "我没听清，能再说一遍吗？"}
 
-        # 1) 内置命令（不走 LLM，快速响应）
+        # 1) 内置命令预检（确定性、零延迟，不进 agent）
         cmd_result = self._handle_command(text)
         if cmd_result is not None:
             return cmd_result
 
-        # 2) 先查现有记忆，再让 LLM 带上下文分类
-        related = self.memory.search(text)
-        result = self.llm.analyze(text, related)
-        msg_type = result.get("type", "chat")
+        # 2) agent loop：LLM 自主决策调工具 → 基于结果回答
+        rtype, answer, extras = self._agent_loop(text)
+        reply = {"type": rtype, "reply": answer}
+        reply.update(extras)
 
-        if msg_type == "record":
-            summary = result.get("summary", text)
-            self.memory.store(text, summary)
-            reply = {"type": "record", "reply": "记住了", "summary": summary}
-        elif msg_type == "query":
-            keywords = result.get("keywords", text)
-            memories = self.memory.search(keywords)
-            answer = self.llm.answer(text, memories)
-            reply = {"type": "query", "reply": answer, "memories": memories}
-        else:
-            reply = {"type": "chat", "reply": result.get("reply", "好的")}
-
-        self._record_turn(client_id, text, reply["reply"])
+        self._record_turn(client_id, text, answer)
         return reply
 
     def process_voice(self, stt, audio_path, client_id=None):
@@ -92,6 +103,69 @@ class Assistant:
         result = self.process_text(text, client_id)
         result["text"] = text
         return result
+
+    # ---------- agent loop ----------
+
+    def _agent_loop(self, user_text):
+        """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
+
+        Returns:
+            (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）
+        """
+        sys_prompt = AGENT_SYSTEM_PROMPT.replace(
+            "{today}", __import__("datetime").datetime.now().strftime("%Y年%m月%d日")
+        )
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_text},
+        ]
+        schemas = [t["schema"] for t in self.tools]
+        tools_by_name = {t["schema"]["function"]["name"]: t["execute"] for t in self.tools}
+        used_tools = set()
+
+        for _turn in range(self.max_agent_loops):
+            data = _chat_with_tools(messages, schemas)
+            choice = data["choices"][0]
+            message = choice["message"]
+            finish = choice.get("finish_reason")
+
+            if finish == "tool_calls" and message.get("tool_calls"):
+                messages.append(message)  # assistant 的 tool_calls 消息
+                for tc in message["tool_calls"]:
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "")
+                    used_tools.add(name)
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    execute = tools_by_name.get(name)
+                    if execute is None:
+                        result = f"错误：未知工具 {name}"
+                    else:
+                        try:
+                            result = execute(**args)
+                        except Exception as e:
+                            result = f"工具执行出错: {e}"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "content": str(result),
+                    })
+                continue  # 下一轮：带着工具结果再问
+
+            # 普通回答（finish=stop）
+            answer = (message.get("content") or "").strip()
+            break
+        else:
+            answer = "抱歉，我绕晕了，能再说一遍吗？"
+
+        # 类型映射：存了记忆→record，查了记忆→query，否则 chat
+        if "memory_store" in used_tools:
+            return "record", answer, {}
+        if any(t in used_tools for t in ("memory_search", "memory_list")):
+            return "query", answer, {}
+        return "chat", answer, {}
 
     # ---------- 会话上下文（阶段 3 多轮对话的底子，暂不注入 prompt） ----------
 
@@ -149,9 +223,5 @@ class Assistant:
                 "deleted": deleted,
                 "target": target,
             }
-        return {
-            "type": "delete",
-            "reply": f"没有找到关于{target}的记忆。",
-            "deleted": [],
-            "target": target,
-        }
+        # 记忆未命中 → 返回 None 降级给 agent loop（用户可能指的是删物品 item_delete）
+        return None

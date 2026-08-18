@@ -259,7 +259,16 @@ html, body {
       .then(function(r) { return r.json(); })
       .then(function(d) {
         if (d.ok) {
-          statusEl.textContent = '🟢 服务正常 · 记忆 ' + (d.memory_count != null ? d.memory_count : '?') + ' 条';
+          var txt = '🟢 服务正常 · 记忆 ' + (d.memory_count != null ? d.memory_count : '?') + ' 条';
+          if (d.item_count != null) txt += ' · 物品 ' + d.item_count + ' 件';
+          statusEl.textContent = txt;
+          // 到期物品提醒
+          if (d.due_items && d.due_items.length > 0) {
+            var due = d.due_items.map(function(it) {
+              return it.name + '（' + (it.days_left < 0 ? '已过期' + (-it.days_left) + '天' : '剩' + it.days_left + '天') + '）';
+            }).join('、');
+            statusEl.textContent += ' ⏰ ' + due;
+          }
         } else {
           statusEl.textContent = '🔴 服务异常';
         }
