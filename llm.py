@@ -86,7 +86,55 @@ ANSWER_PROMPT = """你是家庭智能终端助手"小马"。根据检索到的�
 
 
 def _chat(messages, temperature=0.3, response_format=None, max_tokens=None):
-    """调用 OpenAI 兼容的 /v1/chat/completions 接口，返回 content 文本。"""
+    """调用 OpenAI 兼容的 /v1/chat/completions 接口，返回 content 文本。
+
+    Args:
+        messages: 对话消息列表
+        temperature: 采样温度
+        response_format: {"type": "json_object"} 等
+        max_tokens: 最大生成 token 数
+
+    Returns:
+        str: 模型回复的 content 文本
+    """
+    data = _chat_raw(messages, temperature=temperature, response_format=response_format, max_tokens=max_tokens)
+    return data["choices"][0]["message"]["content"]
+
+
+def _chat_with_tools(messages, tools, temperature=0.2, tool_choice="auto", max_tokens=512):
+    """调用带 tools 参数的接口，返回完整响应 dict（供 agent loop 使用）。
+
+    返回结构（OpenAI 兼容协议）：
+    {
+        "choices": [{
+            "message": {"role", "content", "tool_calls"?: [{"id", "function": {"name", "arguments"}}]},
+            "finish_reason": "stop" | "tool_calls" | ...
+        }]
+    }
+    """
+    body = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "temperature": temperature,
+        "tools": tools,
+    }
+    if tool_choice is not None:
+        body["tool_choice"] = tool_choice
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+
+    resp = requests.post(
+        f"{BASE_URL}/chat/completions",
+        json=body,
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        timeout=TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _chat_raw(messages, temperature=0.3, response_format=None, max_tokens=None):
+    """底层请求：调用接口并返回完整响应 dict（_chat 与 _chat_with_tools 共用）。"""
     body = {
         "model": MODEL_NAME,
         "messages": messages,
@@ -104,8 +152,7 @@ def _chat(messages, temperature=0.3, response_format=None, max_tokens=None):
         timeout=TIMEOUT,
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    return resp.json()
 
 
 def _strip_code_fence(text):
