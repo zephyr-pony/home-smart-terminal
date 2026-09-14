@@ -4,7 +4,10 @@
 不碰音频、不直接播报，由调用方（CLI 的 tts.speak / 服务端的 TTS 合成）决定输出方式。
 """
 import json
+import threading
+import time
 
+from config import MAX_SESSIONS, SESSION_TTL_SECONDS
 from memory import Memory
 from items import Items
 from llm import LLM, _chat_with_tools
@@ -57,6 +60,9 @@ class Assistant:
         # 轻量会话上下文：client_id -> [(user_text, reply), ...]（阶段 3 多轮对话的底子）
         self.sessions = {}
         self.max_session_turns = 20
+        self.session_ttl_seconds = SESSION_TTL_SECONDS
+        self.max_sessions = MAX_SESSIONS
+        self._session_lock = threading.RLock()
 
     # ---------- 对外接口 ----------
 
@@ -75,7 +81,7 @@ class Assistant:
         """
         text = (text or "").strip()
         if not text:
-            return {"type": "chat", "reply": "我没听清，能再说一遍吗？"}
+            return self._result("chat", "我没听清，能再说一遍吗？", "chat", "chat")
 
         # 1) 内置命令预检（确定性、零延迟，不进 agent）
         cmd_result = self._handle_command(text)
@@ -121,7 +127,8 @@ class Assistant:
         ]
         schemas = [t["schema"] for t in self.tools]
         tools_by_name = {t["schema"]["function"]["name"]: t["execute"] for t in self.tools}
-        used_tools = set()
+        used_tools = []
+        used_tool_names = set()
 
         for _turn in range(self.max_agent_loops):
             data = _chat_with_tools(messages, schemas)
@@ -134,7 +141,9 @@ class Assistant:
                 for tc in message["tool_calls"]:
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
-                    used_tools.add(name)
+                    if name not in used_tool_names:
+                        used_tools.append(name)
+                        used_tool_names.add(name)
                     try:
                         args = json.loads(fn.get("arguments") or "{}")
                     except json.JSONDecodeError:
@@ -162,27 +171,89 @@ class Assistant:
 
         # 类型映射：存了记忆→record，查了记忆→query，否则 chat
         if "memory_store" in used_tools:
-            return "record", answer, {}
-        if any(t in used_tools for t in ("memory_search", "memory_list")):
-            return "query", answer, {}
-        return "chat", answer, {}
+            rtype = "record"
+        elif any(t in used_tools for t in ("memory_search", "memory_list")):
+            rtype = "query"
+        else:
+            rtype = "chat"
+        domain, action = self._tool_metadata(used_tools)
+        return rtype, answer, {
+            "used_tools": used_tools,
+            "domain": domain,
+            "action": action,
+        }
+
+    @staticmethod
+    def _tool_metadata(used_tools):
+        mappings = {
+            "memory_store": ("memory", "store"),
+            "memory_search": ("memory", "search"),
+            "memory_list": ("memory", "list"),
+            "memory_delete": ("memory", "delete"),
+            "item_add": ("items", "add"),
+            "item_search": ("items", "search"),
+            "item_list": ("items", "list"),
+            "item_delete": ("items", "delete"),
+            "get_current_date": ("date", "query"),
+        }
+        business = [mappings[name] for name in used_tools if name in mappings and name != "get_current_date"]
+        if not business:
+            return ("date", "query") if "get_current_date" in used_tools else ("chat", "chat")
+        domains = {domain for domain, _action in business}
+        domain = next(iter(domains)) if len(domains) == 1 else "mixed"
+        return domain, business[0][1]
+
+    def _result(self, rtype, reply, domain, action, **extra):
+        result = {
+            "type": rtype,
+            "reply": reply,
+            "used_tools": [],
+            "domain": domain,
+            "action": action,
+        }
+        result.update(extra)
+        return result
 
     # ---------- 会话上下文（阶段 3 多轮对话的底子，暂不注入 prompt） ----------
 
+    def _purge_sessions(self, now=None):
+        now = now or time.time()
+        expired = [
+            client_id for client_id, session in self.sessions.items()
+            if now - session["last_access"] >= self.session_ttl_seconds
+        ]
+        for client_id in expired:
+            del self.sessions[client_id]
+
     def get_history(self, client_id, n=5):
         """返回某客户端最近 n 轮对话 [(user, reply), ...]。"""
-        if not client_id:
+        client_id = (client_id or "").strip()
+        if not client_id or len(client_id) > 128:
             return []
-        turns = self.sessions.get(client_id, [])
-        return turns[-n:]
+        with self._session_lock:
+            now = time.time()
+            self._purge_sessions(now)
+            session = self.sessions.get(client_id)
+            if not session:
+                return []
+            session["last_access"] = now
+            return session["turns"][-n:]
 
     def _record_turn(self, client_id, user_text, reply):
-        if not client_id:
+        client_id = (client_id or "").strip()
+        if not client_id or len(client_id) > 128:
             return
-        turns = self.sessions.setdefault(client_id, [])
-        turns.append((user_text, reply))
-        if len(turns) > self.max_session_turns:
-            del turns[: len(turns) - self.max_session_turns]
+        with self._session_lock:
+            now = time.time()
+            self._purge_sessions(now)
+            if client_id not in self.sessions and len(self.sessions) >= self.max_sessions:
+                oldest = min(self.sessions, key=lambda key: self.sessions[key]["last_access"])
+                del self.sessions[oldest]
+            session = self.sessions.setdefault(client_id, {"last_access": now, "turns": []})
+            session["last_access"] = now
+            session["turns"].append((user_text, reply))
+            if len(session["turns"]) > self.max_session_turns:
+                del session["turns"][: len(session["turns"]) - self.max_session_turns]
 
     # ---------- 内置命令 ----------
 
@@ -198,13 +269,12 @@ class Assistant:
     def _cmd_list(self):
         mems = self.memory.list_all(10)
         if not mems:
-            return {"type": "list", "reply": "记忆库还是空的，跟我说点要记住的事吧。", "memories": []}
+            return self._result("list", "记忆库还是空的，跟我说点要记住的事吧。", "memory", "list", memories=[])
         summaries = "，".join(f"{m['summary']}" for m in mems[:5])
-        return {
-            "type": "list",
-            "reply": f"一共有 {len(mems)} 条记忆，最近的是：{summaries}",
-            "memories": mems,
-        }
+        return self._result(
+            "list", f"一共有 {len(mems)} 条记忆，最近的是：{summaries}",
+            "memory", "list", memories=mems,
+        )
 
     def _cmd_delete(self, text, word):
         target = text.replace(word, "").strip()
@@ -213,15 +283,13 @@ class Assistant:
         target = target.strip()
 
         if not target:
-            return {"type": "delete_prompt", "reply": "想删掉什么记忆呢？比如对我说，忘掉酸奶。"}
+            return self._result("delete_prompt", "想删掉什么记忆呢？比如对我说，忘掉酸奶。", "memory", "delete")
 
         deleted = self.memory.delete_by_keywords(target)
         if deleted:
-            return {
-                "type": "delete",
-                "reply": f"已删除 {len(deleted)} 条关于{target}的记忆。",
-                "deleted": deleted,
-                "target": target,
-            }
+            return self._result(
+                "delete", f"已删除 {len(deleted)} 条关于{target}的记忆。",
+                "memory", "delete", deleted=deleted, target=target,
+            )
         # 记忆未命中 → 返回 None 降级给 agent loop（用户可能指的是删物品 item_delete）
         return None

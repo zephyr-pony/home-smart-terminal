@@ -51,6 +51,18 @@ html, body {
 #status-bar .sub {
   margin-top: 4px; font-size: 13px; color: var(--text-secondary);
 }
+#token-row {
+  display: flex; gap: 8px; margin-top: 10px;
+}
+#token-input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px;
+  background: var(--input-bg); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+#token-save {
+  height: 34px; padding: 0 12px; border: none;
+  border-radius: var(--radius-sm); background: var(--accent); color: #fff;
+}
 
 /* ---- messages ---- */
 #messages {
@@ -168,6 +180,10 @@ html, body {
   <div id="status-bar">
     <h1>家庭智能终端 · 小马</h1>
     <div class="sub" id="status-text">正在连接…</div>
+    <div id="token-row">
+      <input id="token-input" type="password" placeholder="API Token（如已配置）" autocomplete="off">
+      <button id="token-save">保存 Token</button>
+    </div>
   </div>
 
   <div id="messages"></div>
@@ -189,6 +205,8 @@ html, body {
   // ---- DOM refs ----
   var msgBox     = document.getElementById('messages');
   var statusEl   = document.getElementById('status-text');
+  var tokenInput = document.getElementById('token-input');
+  var tokenSave  = document.getElementById('token-save');
   var recBtn     = document.getElementById('record-btn');
   var recLabel   = document.getElementById('record-label');
   var textInput  = document.getElementById('text-input');
@@ -196,7 +214,22 @@ html, body {
 
   // ---- client id ----
   var CID_KEY = 'hst_client_id';
-  var clientId = localStorage.getItem(CID_KEY);
+   var TOKEN_KEY = 'hst_api_token';
+   var apiToken = localStorage.getItem(TOKEN_KEY) || '';
+   tokenInput.value = apiToken;
+   tokenSave.addEventListener('click', function() {
+     apiToken = tokenInput.value.trim();
+     localStorage.setItem(TOKEN_KEY, apiToken);
+     pollStatus();
+   });
+
+   function authHeaders(extra) {
+     var headers = extra || {};
+     if (apiToken) headers.Authorization = 'Bearer ' + apiToken;
+     return headers;
+   }
+
+   var clientId = localStorage.getItem(CID_KEY);
   if (!clientId) {
     clientId = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
@@ -255,7 +288,7 @@ html, body {
 
   // ---- status poll ----
   function pollStatus() {
-    fetch('/api/status')
+    fetch('/api/status', { headers: authHeaders() })
       .then(function(r) { return r.json(); })
       .then(function(d) {
         if (d.ok) {
@@ -273,8 +306,8 @@ html, body {
           statusEl.textContent = '🔴 服务异常';
         }
       })
-      .catch(function() {
-        statusEl.textContent = '🔴 服务连接失败';
+      .catch(function(err) {
+        statusEl.textContent = err && err.message === '401' ? '🔒 请输入正确的 API Token' : '🔴 服务连接失败';
       });
   }
   pollStatus();
@@ -304,7 +337,7 @@ html, body {
 
     fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ text: t, client_id: clientId })
     })
     .then(function(r) {
@@ -438,7 +471,7 @@ html, body {
     fd.append('file', blob, 'recording.wav');
     fd.append('client_id', clientId);
 
-    fetch('/api/voice', { method: 'POST', body: fd })
+    fetch('/api/voice', { method: 'POST', headers: authHeaders(), body: fd })
     .then(function(r) {
       if (!r.ok) throw new Error(r.status);
       return r.json();

@@ -15,7 +15,9 @@ class Items:
     def __init__(self, db_path=ITEMS_DB_PATH):
         """初始化物品库。"""
         if db_path:
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            db_dir = os.path.dirname(db_path)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(db_path or ":memory:", check_same_thread=False)
         self._create_schema()
@@ -35,12 +37,24 @@ class Items:
 
     # ---------- 写操作 ----------
 
-    def add(self, name, expiry_date=None):
-        """添加一个物品。expiry_date: 'YYYY-MM-DD' 或 None。
+    @staticmethod
+    def _validate(name, expiry_date):
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("物品名称不能为空")
+        if expiry_date == "":
+            expiry_date = None
+        if expiry_date is not None:
+            try:
+                date.fromisoformat(str(expiry_date))
+            except (TypeError, ValueError):
+                raise ValueError("到期日必须是 YYYY-MM-DD 格式的有效日期")
+            expiry_date = str(expiry_date)
+        return name, expiry_date
 
-        Returns:
-            dict: 新物品记录
-        """
+    def add(self, name, expiry_date=None):
+        """添加一个物品。expiry_date: 'YYYY-MM-DD' 或 None。"""
+        name, expiry_date = self._validate(name, expiry_date)
         ts = datetime.now().isoformat()
         with self._lock:
             cur = self.conn.execute(
@@ -52,10 +66,13 @@ class Items:
         return {"id": rid, "name": name, "expiry_date": expiry_date, "status": "active"}
 
     def delete(self, name):
-        """按名称删除物品（模糊匹配）。返回被删记录列表。"""
+        """按名称模糊匹配并删除全部命中物品。"""
+        name = str(name or "").strip()
+        if not name:
+            return []
         with self._lock:
             hits = self.conn.execute(
-                "SELECT id, name, expiry_date, status FROM items WHERE name LIKE ?",
+                "SELECT id, name, expiry_date, status FROM items WHERE name LIKE ? ORDER BY id ASC",
                 (f"%{name}%",),
             ).fetchall()
             if not hits:
@@ -70,34 +87,50 @@ class Items:
 
     # ---------- 读操作 ----------
 
+    def _sync_expired_status(self, today=None):
+        today = today or date.today()
+        with self._lock:
+            self.conn.execute(
+                "UPDATE items SET status='expired' "
+                "WHERE expiry_date IS NOT NULL AND expiry_date < ? AND status='active'",
+                (today.isoformat(),),
+            )
+            self.conn.commit()
+
+    @staticmethod
+    def _row_to_dict(row):
+        return {"id": row[0], "name": row[1], "expiry_date": row[2], "status": row[3], "created_at": row[4]}
+
     def list_all(self, status=None):
         """列出物品。status: active/reminded/expired/None=全部。"""
+        self._sync_expired_status()
         with self._lock:
             if status:
                 rows = self.conn.execute(
-                    "SELECT id, name, expiry_date, status, created_at FROM items WHERE status=? ORDER BY id DESC",
+                    "SELECT id, name, expiry_date, status, created_at FROM items "
+                    "WHERE status=? ORDER BY created_at DESC, id DESC",
                     (status,),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
-                    "SELECT id, name, expiry_date, status, created_at FROM items ORDER BY id DESC"
+                    "SELECT id, name, expiry_date, status, created_at FROM items "
+                    "ORDER BY created_at DESC, id DESC"
                 ).fetchall()
-        return [
-            {"id": r[0], "name": r[1], "expiry_date": r[2], "status": r[3], "created_at": r[4]}
-            for r in rows
-        ]
+        return [self._row_to_dict(r) for r in rows]
 
     def search(self, keyword):
         """按名称模糊查找物品。"""
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return []
+        self._sync_expired_status()
         with self._lock:
             rows = self.conn.execute(
-                "SELECT id, name, expiry_date, status, created_at FROM items WHERE name LIKE ?",
+                "SELECT id, name, expiry_date, status, created_at FROM items "
+                "WHERE name LIKE ? ORDER BY created_at DESC, id DESC",
                 (f"%{keyword}%",),
             ).fetchall()
-        return [
-            {"id": r[0], "name": r[1], "expiry_date": r[2], "status": r[3], "created_at": r[4]}
-            for r in rows
-        ]
+        return [self._row_to_dict(r) for r in rows]
 
     def get_due(self, days=3):
         """获取即将到期（含已过期）的物品。
@@ -109,6 +142,7 @@ class Items:
             list[dict]: 每条含 days_left 字段（负数=已过期）
         """
         today = date.today()
+        self._sync_expired_status(today)
         with self._lock:
             rows = self.conn.execute(
                 "SELECT id, name, expiry_date, status FROM items WHERE expiry_date IS NOT NULL"
@@ -125,7 +159,7 @@ class Items:
                     "id": rid, "name": name, "expiry_date": exp,
                     "status": status, "days_left": days_left,
                 })
-        result.sort(key=lambda x: x["days_left"])
+        result.sort(key=lambda x: (x["days_left"], x["expiry_date"], x["id"]))
         return result
 
     def count(self):

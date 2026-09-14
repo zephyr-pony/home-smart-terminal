@@ -11,15 +11,26 @@
 import asyncio
 import base64
 import os
+import secrets
+import shutil
 import tempfile
 import traceback
+import wave
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from config import SERVER_HOST, SERVER_PORT, MAX_AUDIO_SECONDS, MAX_UPLOAD_BYTES
+from config import (
+    API_TOKEN,
+    MAX_AUDIO_SECONDS,
+    MAX_CLIENT_ID_CHARS,
+    MAX_TEXT_CHARS,
+    MAX_UPLOAD_BYTES,
+    SERVER_HOST,
+    SERVER_PORT,
+)
 from assistant import Assistant
 from stt import STT
 from llm import LLM
@@ -43,15 +54,40 @@ stt_lock = asyncio.Semaphore(1)
 _tmp_dir = None
 
 
+async def require_api_token(authorization: str = Header(default="")):
+    if not API_TOKEN:
+        return
+    scheme, _, supplied = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, API_TOKEN):
+        raise HTTPException(status_code=401, detail="需要有效的 API Token")
+
+
+def _audio_duration(path, ext):
+    if ext != ".wav":
+        raise ValueError("当前服务端只支持 WAV 音频的时长校验")
+    try:
+        with wave.open(path, "rb") as wav:
+            frames = wav.getnframes()
+            rate = wav.getframerate()
+            if not rate:
+                raise ValueError("音频采样率无效")
+            return frames / float(rate)
+    except (wave.Error, OSError) as exc:
+        raise ValueError("音频格式无效") from exc
+
+
 async def reminder_loop():
     """后台提醒循环：每分钟扫描物品到期情况，刷新 due_items。"""
     global due_items
-    while True:
-        try:
-            due_items = assistant.items.get_due(days=3)
-        except Exception:
-            pass  # 扫描失败不影响服务
-        await asyncio.sleep(60)
+    try:
+        while True:
+            try:
+                due_items = await asyncio.to_thread(assistant.items.get_due, days=3)
+            except Exception:
+                traceback.print_exc()
+            await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        raise
 
 
 @asynccontextmanager
@@ -65,9 +101,24 @@ async def lifespan(app: FastAPI):
     # 启动到期提醒后台任务
     reminder_task = asyncio.create_task(reminder_loop())
     print(f"✅ 系统就绪。记忆库 {assistant.memory.count()} 条 | 物品 {assistant.items.count()} 件 | 网页: http://{SERVER_HOST}:{SERVER_PORT}")
-    yield
-    reminder_task.cancel()
-    print("🛑 服务关闭")
+    try:
+        yield
+    finally:
+        reminder_task.cancel()
+        try:
+            await reminder_task
+        except asyncio.CancelledError:
+            pass
+        if assistant is not None:
+            assistant.memory.close()
+            assistant.items.close()
+        if _tmp_dir:
+            shutil.rmtree(_tmp_dir, ignore_errors=True)
+        stt = None
+        tts = None
+        assistant = None
+        _tmp_dir = None
+        print("🛑 服务关闭")
 
 
 app = FastAPI(title="家庭智能终端", lifespan=lifespan)
@@ -76,8 +127,8 @@ app = FastAPI(title="家庭智能终端", lifespan=lifespan)
 # ---------- 请求模型 ----------
 
 class ChatRequest(BaseModel):
-    text: str
-    client_id: str = ""
+    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+    client_id: str = Field(default="", max_length=MAX_CLIENT_ID_CHARS)
 
 
 # ---------- 核心处理 ----------
@@ -107,10 +158,44 @@ async def _synthesize(reply: str) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
+async def _save_upload(file, ext):
+    if _tmp_dir is None:
+        raise HTTPException(status_code=503, detail="服务尚未就绪")
+    handle = tempfile.NamedTemporaryFile(dir=_tmp_dir, suffix=ext, delete=False)
+    tmp_path = handle.name
+    total = 0
+    try:
+        while True:
+            chunk = await file.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail=f"音频过大，最大 {MAX_UPLOAD_BYTES // 1024 // 1024}MB")
+            handle.write(chunk)
+        handle.close()
+        if total == 0:
+            raise HTTPException(status_code=400, detail="音频为空")
+        try:
+            duration = _audio_duration(tmp_path, ext)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if duration > MAX_AUDIO_SECONDS:
+            raise HTTPException(status_code=413, detail=f"音频过长，最大 {MAX_AUDIO_SECONDS} 秒")
+        return tmp_path
+    except Exception:
+        try:
+            handle.close()
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        raise
+
+
 # ---------- API 路由 ----------
 
 @app.get("/api/status")
-async def api_status():
+async def api_status(_auth=Depends(require_api_token)):
     return {
         "ok": True,
         "stt_ready": stt is not None,
@@ -122,7 +207,7 @@ async def api_status():
 
 
 @app.post("/api/chat")
-async def api_chat(req: ChatRequest):
+async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
 
@@ -140,37 +225,33 @@ async def api_chat(req: ChatRequest):
         "memories": _slim_memories(result.get("memories", [])),
         "text": req.text,
         "audio": await _synthesize(result.get("reply", "")),
+        "used_tools": result.get("used_tools", []),
+        "domain": result.get("domain", "chat"),
+        "action": result.get("action", "chat"),
     }
 
 
 @app.post("/api/voice")
-async def api_voice(file: UploadFile = File(...), client_id: str = Form("")):
-    if not file.filename or not file.filename.lower().endswith((".wav", ".mp3", ".webm", ".m4a", ".ogg")):
-        raise HTTPException(status_code=400, detail="仅支持 wav/mp3/webm/m4a/ogg 音频")
+async def api_voice(file: UploadFile = File(...), client_id: str = Form(""), _auth=Depends(require_api_token)):
+    if len(client_id) > MAX_CLIENT_ID_CHARS:
+        raise HTTPException(status_code=422, detail="client_id 过长")
+    if not file.filename or not file.filename.lower().endswith(".wav"):
+        raise HTTPException(status_code=400, detail="仅支持 WAV 音频")
 
-    # 读取并校验大小（防止恶意大文件）
-    data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"音频过大，最大 {MAX_UPLOAD_BYTES // 1024 // 1024}MB")
-
-    if len(data) == 0:
-        raise HTTPException(status_code=400, detail="音频为空")
-
-    # 落临时文件（STT 接口收文件路径）
-    ext = os.path.splitext(file.filename)[1].lower()
-    tmp_path = os.path.join(_tmp_dir, f"voice_{id(data)}_{ext}")
+    ext = ".wav"
+    tmp_path = None
     try:
-        with open(tmp_path, "wb") as f:
-            f.write(data)
-
-        # STT 非线程安全 + 编排阻塞：整体放线程池，Semaphore 保证同一时刻只有一个识别
+        tmp_path = await _save_upload(file, ext)
         async with stt_lock:
             result = await asyncio.to_thread(_handle_voice_sync, tmp_path, client_id)
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"处理失败: {e}")
     finally:
-        if os.path.exists(tmp_path):
+        await file.close()
+        if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
     return {
@@ -180,6 +261,9 @@ async def api_voice(file: UploadFile = File(...), client_id: str = Form("")):
         "memories": _slim_memories(result.get("memories", [])),
         "text": result.get("text", ""),
         "audio": await _synthesize(result.get("reply", "")),
+        "used_tools": result.get("used_tools", []),
+        "domain": result.get("domain", "chat"),
+        "action": result.get("action", "chat"),
     }
 
 

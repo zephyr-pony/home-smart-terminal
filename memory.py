@@ -27,7 +27,9 @@ class Memory:
         线程安全：服务端用 asyncio.to_thread 跑编排，会跨线程访问，
         所以连接放开线程检查，并用 RLock 串行化所有数据库操作。
         """
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._migrate_legacy()

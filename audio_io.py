@@ -113,7 +113,8 @@ def record_audio(max_duration=MAX_RECORD_SECONDS, silence_threshold=SILENCE_THRE
 def save_audio(audio_np, file_path=None, sample_rate=SAMPLE_RATE):
     """将 numpy 数组保存为 WAV 文件。不指定路径则用临时文件。"""
     if file_path is None:
-        file_path = tempfile.mktemp(suffix='.wav')
+        fd, file_path = tempfile.mkstemp(suffix='.wav')
+        os.close(fd)
     sf.write(file_path, audio_np, sample_rate)
     return file_path
 

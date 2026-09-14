@@ -113,6 +113,14 @@ def _fmt_memories(memories):
     return "\n".join(str(m) for m in memories)
 
 
+def _add_item(items, name, expiry_date=None):
+    try:
+        item = items.add(name, expiry_date)
+    except ValueError as exc:
+        return f"无法添加物品：{exc}"
+    return f"已添加物品：{item['name']}，到期日 {item['expiry_date'] or '未知'}"
+
+
 def get_items_tools(items):
     """物品管理工具（4 件套，阶段 B 加入）。items 由调用方传入（保持单例）。"""
     def _fmt_items(item_list):
@@ -140,10 +148,7 @@ def get_items_tools(items):
                 "expiry_date": {"type": "string", "description": "到期日期 YYYY-MM-DD，如 2026-08-05"},
             },
             required=["name"],
-            execute=lambda name, expiry_date=None: (
-                f"已添加物品：{name}，到期日 {expiry_date or '未知'}"
-                if (items.add(name, expiry_date) and True) else ""
-            ),
+            execute=lambda name, expiry_date=None: _add_item(items, name, expiry_date),
         ),
         _build(
             name="item_search",
@@ -163,7 +168,7 @@ def get_items_tools(items):
         ),
         _build(
             name="item_delete",
-            description="删除物品。用户说'删掉酸奶''不要酸奶了'时调用。返回被删除的物品。",
+            description="删除物品。用户说'删掉酸奶''不要酸奶了'时调用，会删除名称包含关键词的全部物品。返回被删除的物品。",
             properties={
                 "name": {"type": "string", "description": "要删除的物品名称"},
             },

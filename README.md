@@ -67,9 +67,11 @@ start.bat cli        # 或 python main.py
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `/api/status` | GET | 健康检查（服务/记忆条数） |
+| `/api/status` | GET | 状态、记忆/物品数量和到期缓存（配置 API_TOKEN 后需 Bearer Token） |
 | `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64 |
-| `/api/voice` | POST | 语音交互（multipart: file + client_id，支持 wav/mp3/webm 等） |
+| `/api/voice` | POST | WAV 语音交互（multipart: file + client_id） |
+
+配置 `API_TOKEN` 后，三个 API 都需要请求头 `Authorization: Bearer <API_TOKEN>`。当前服务端限制文本 2000 字符、音频 10MB/30 秒；Web 页面会保存并自动发送 Token。
 
 ## 配置说明（.env）
 
@@ -82,10 +84,21 @@ start.bat cli        # 或 python main.py
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |
 | `STT_LANGUAGE` | `zh` | 识别语言 |
 | `MEMORY_DB_PATH` | `./data/memory.db` | 记忆库位置 |
+| `ITEMS_DB_PATH` | `./data/items.db` | 物品库位置 |
 | `SAMPLE_RATE` | `16000` | 录音采样率 |
-| `MAX_RECORD_SECONDS` | `15` | 最长录音时长（秒） |
-| `SILENCE_THRESHOLD` | `0.015` | 静音能量阈值（自适应环境底噪） |
+| `CHUNK_SIZE` | `1024` | 音频块大小 |
+| `MAX_RECORD_SECONDS` | `15` | CLI 最长录音时长（秒） |
+| `SILENCE_THRESHOLD` | `0.015` | 静音能量阈值 |
 | `SILENCE_DURATION` | `1.2` | 停顿多久视为说完（秒） |
+| `SERVER_HOST` | `127.0.0.1` | 服务监听地址；局域网使用可改为 `0.0.0.0` |
+| `SERVER_PORT` | `8000` | 服务端口 |
+| `API_TOKEN` | 空 | API Bearer Token；局域网使用建议必填 |
+| `MAX_TEXT_CHARS` | `2000` | 单次文本上限 |
+| `MAX_CLIENT_ID_CHARS` | `128` | 会话 ID 上限 |
+| `MAX_UPLOAD_BYTES` | `10485760` | WAV 上传上限 |
+| `MAX_AUDIO_SECONDS` | `30` | WAV 音频时长上限 |
+| `SESSION_TTL_SECONDS` | `86400` | 会话空闲过期时间 |
+| `MAX_SESSIONS` | `1000` | 最大内存会话数 |
 
 ## 使用方式
 
@@ -108,17 +121,24 @@ start.bat cli        # 或 python main.py
 ## 目录结构
 
 ```
-├── main.py          # 主程序：编排录音/识别/分类/记忆/播报
+├── main.py          # CLI 入口
+├── assistant.py     # 核心编排和 Agent loop
+├── tools.py         # OpenAI function calling 工具注册
+├── server.py        # FastAPI 服务端
 ├── config.py        # 集中配置（从 .env 加载）
-├── audio_io.py      # 录音（PyAudio）与播放（pygame）
-├── stt.py           # 语音识别（FunASR SenseVoice）
-├── llm.py           # LLM 交互（意图分类 + 记忆问答）
-├── memory.py        # 记忆存储（SQLite FTS5 中文检索）
-├── tts.py           # 语音合成（Edge TTS）
-├── test_record.py   # 录音/回放测试工具
+├── audio_io.py      # PyAudio 录音与 pygame 播放
+├── stt.py           # FunASR SenseVoice 语音识别
+├── llm.py           # OpenAI 兼容 LLM 交互
+├── memory.py        # SQLite FTS5 中文记忆检索
+├── items.py         # SQLite 物品管理（名称/到期日）
+├── tts.py           # Edge TTS 语音合成
+├── static/index.html # Web 客户端
+├── test_record.py   # 手工录音/播放诊断工具
+├── tests/           # pytest 自动化测试
 ├── requirements.txt
+├── requirements-dev.txt
 ├── .env.example     # 配置模板（复制为 .env）
-└── data/            # 记忆数据库（已 gitignore，不入库）
+└── data/            # 数据库（已 gitignore，不入库）
 ```
 
 ## 技术栈
@@ -136,9 +156,11 @@ start.bat cli        # 或 python main.py
 
 ## 路线图
 
-- [x] 阶段 1：本地语音 MVP（当前）
-- [ ] 阶段 2：服务端 API + Web 客户端（手机/平板访问）
-- [ ] 阶段 3：物品管理 + 到期提醒（主动播报）
+- [x] 阶段 1：本地语音 MVP
+- [x] 阶段 2：FastAPI 服务端 + Web 客户端
+- [x] 阶段 3 基础：Agent、物品管理、到期扫描和页面状态展示
+- [x] 基础稳固：API Token、输入边界、资源清理、会话 TTL、自动化测试
+- [ ] 阶段 3 完善：WebSocket/SSE 主动推送、提醒确认、数量/位置/消耗管理
 - [ ] 阶段 4：菜谱推荐
 - [ ] 阶段 5：唤醒词 + 蓝牙音箱联动
 - [ ] 阶段 6：视觉能力（摄像头识别）

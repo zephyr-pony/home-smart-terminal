@@ -78,24 +78,19 @@ class TTS:
         if not text.strip():
             return
 
-        # 生成临时 MP3 文件
-        mp3_path = tempfile.mktemp(suffix='.mp3')
-
+        fd, mp3_path = tempfile.mkstemp(suffix='.mp3')
+        os.close(fd)
         try:
             self.synthesize_to_file(text, mp3_path)
+            from audio_io import play_audio_file
+            play_audio_file(mp3_path)
         except Exception as e:
             print(f"TTS 出错: {e}")
-            return
-
-        # 播放
-        from audio_io import play_audio_file
-        play_audio_file(mp3_path)
-
-        # 清理临时文件
-        try:
-            os.remove(mp3_path)
-        except Exception:
-            pass
+        finally:
+            try:
+                os.remove(mp3_path)
+            except OSError:
+                pass
 
     async def _synthesize(self, text, output_path):
         """异步合成语音到文件。"""
