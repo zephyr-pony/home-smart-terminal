@@ -6,7 +6,7 @@
 import sqlite3
 import os
 import threading
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from config import ITEMS_DB_PATH
 
@@ -92,7 +92,7 @@ class Items:
         with self._lock:
             self.conn.execute(
                 "UPDATE items SET status='expired' "
-                "WHERE expiry_date IS NOT NULL AND expiry_date < ? AND status='active'",
+                "WHERE expiry_date IS NOT NULL AND expiry_date < ? AND status <> 'expired'",
                 (today.isoformat(),),
             )
             self.conn.commit()
@@ -161,6 +161,61 @@ class Items:
                 })
         result.sort(key=lambda x: (x["days_left"], x["expiry_date"], x["id"]))
         return result
+
+    def claim_due_reminders(self, days=3, cooldown_hours=24, now=None):
+        """领取“需要新提醒”的到期物品，并落库去重（供后台提醒循环调用）。
+
+        返回本次应当提醒的物品（含 days_left），并把这些物品的 reminded_at 置为 now，
+        使其在 cooldown_hours 内不再重复提醒（cooldown_hours<=0 表示只提醒一次）。
+        选择与标记在同一把锁内完成，避免多循环/并发重复领取。
+
+        Args:
+            days: 未来几天内算“即将到期”（含已过期）
+            cooldown_hours: 同一物品再次提醒的最小间隔小时数
+            now: 注入当前时间（便于测试），默认 datetime.now()
+        """
+        now = now or datetime.now()
+        today = now.date()
+        self._sync_expired_status(today)
+        if cooldown_hours and cooldown_hours > 0:
+            cutoff = (now - timedelta(hours=cooldown_hours)).isoformat()
+            where = "(reminded_at IS NULL OR reminded_at <= ?)"
+            params = (cutoff,)
+        else:
+            where = "reminded_at IS NULL"
+            params = ()
+
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, name, expiry_date, status FROM items "
+                f"WHERE expiry_date IS NOT NULL AND {where}",
+                params,
+            ).fetchall()
+            claimed = []
+            for rid, name, exp, status in rows:
+                try:
+                    exp_date = date.fromisoformat(exp)
+                except (TypeError, ValueError):
+                    continue
+                days_left = (exp_date - today).days
+                if days_left <= days:
+                    claimed.append({
+                        "id": rid, "name": name, "expiry_date": exp,
+                        "status": status, "days_left": days_left,
+                    })
+            if claimed:
+                ids = [c["id"] for c in claimed]
+                placeholders = ",".join("?" * len(ids))
+                self.conn.execute(
+                    "UPDATE items SET reminded_at=?, "
+                    "status=CASE WHEN status='active' THEN 'reminded' ELSE status END "
+                    f"WHERE id IN ({placeholders})",
+                    [now.isoformat()] + ids,
+                )
+                self.conn.commit()
+
+        claimed.sort(key=lambda x: (x["days_left"], x["expiry_date"], x["id"]))
+        return claimed
 
     def count(self):
         """物品总数。"""

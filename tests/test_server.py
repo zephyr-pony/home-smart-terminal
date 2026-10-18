@@ -83,3 +83,32 @@ def test_voice_rejects_overlong_wav_before_stt(monkeypatch):
         files={"file": ("voice.wav", wav_bytes(2), "audio/wav")},
     )
     assert response.status_code in (400, 413, 503)
+
+
+def test_reminder_text_formatting():
+    assert "已经过期 3 天" in server._reminder_text({"name": "酸奶", "days_left": -3})
+    assert "今天到期" in server._reminder_text({"name": "酸奶", "days_left": 0})
+    assert "还有 2 天过期" in server._reminder_text({"name": "酸奶", "days_left": 2})
+
+
+def test_events_requires_token(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    client = TestClient(server.app)
+    assert client.get("/api/events").status_code == 401
+
+
+def test_broadcast_delivers_to_subscriber():
+    import asyncio
+
+    async def run():
+        queue = asyncio.Queue(maxsize=10)
+        server._subscribers.add(queue)
+        try:
+            await server._broadcast({"type": "reminder", "reply": "提醒：酸奶还有 2 天过期"})
+            return queue.get_nowait()
+        finally:
+            server._subscribers.discard(queue)
+
+    payload = asyncio.run(run())
+    assert "reminder" in payload
+    assert "酸奶" in payload

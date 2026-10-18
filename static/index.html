@@ -221,6 +221,7 @@ html, body {
      apiToken = tokenInput.value.trim();
      localStorage.setItem(TOKEN_KEY, apiToken);
      pollStatus();
+     connectEvents();
    });
 
    function authHeaders(extra) {
@@ -312,6 +313,61 @@ html, body {
   }
   pollStatus();
   setInterval(pollStatus, 30000);
+
+  // ---- 主动提醒：SSE 事件流（fetch 流式读取，才能带 Authorization 头）----
+  var eventsAbort = null;
+
+  function connectEvents() {
+    if (eventsAbort) { try { eventsAbort.abort(); } catch (e) {} }
+    eventsAbort = new AbortController();
+
+    fetch('/api/events', {
+      headers: authHeaders({ 'Accept': 'text/event-stream' }),
+      signal: eventsAbort.signal
+    })
+    .then(function(r) {
+      if (!r.ok || !r.body) throw new Error(r.status);
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+      function pump() {
+        return reader.read().then(function(res) {
+          if (res.done) throw new Error('closed');
+          buf += decoder.decode(res.value, { stream: true });
+          var frames = buf.split('\n\n');
+          buf = frames.pop();
+          frames.forEach(handleFrame);
+          return pump();
+        });
+      }
+      return pump();
+    })
+    .catch(function() {
+      if (eventsAbort && eventsAbort.signal.aborted) return;  // 主动断开时不重连
+      setTimeout(connectEvents, 5000);                        // 掉线 5s 后重连
+    });
+  }
+
+  function handleFrame(frame) {
+    var data = null;
+    frame.split('\n').forEach(function(l) {
+      if (l.indexOf('data:') === 0) data = l.slice(5).trim();
+    });
+    if (!data) return;  // 心跳 / 注释行
+    var ev;
+    try { ev = JSON.parse(data); } catch (e) { return; }
+    if (ev.type === 'reminder') handleReminder(ev);
+  }
+
+  function handleReminder(ev) {
+    addMsg(ev.reply || '有物品快到期了', 'bot', ev.audio || null);
+    if (ev.audio) {
+      try { new Audio('data:audio/mp3;base64,' + ev.audio).play().catch(function() {}); } catch (e) {}
+    }
+    pollStatus();  // 刷新状态栏到期列表
+  }
+
+  connectEvents();
 
   // ---- welcome message ----
   addMsg('你好，我是小马，家里的记忆助手。按住说话，或者打字跟我聊。先试试这样用我：告诉我"酸奶8月5号过期"，我会记住；之后你随时问我"酸奶还有几天过期"，我就能答上来啦。', 'bot');

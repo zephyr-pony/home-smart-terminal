@@ -67,3 +67,8 @@ MAX_SESSIONS = _get_int("MAX_SESSIONS", 1000)
 # ---- 多轮对话上下文（注入 agent 的历史轮次）----
 SESSION_CONTEXT_TURNS = _get_int("SESSION_CONTEXT_TURNS", 5)
 SESSION_CONTEXT_MAX_CHARS = _get_int("SESSION_CONTEXT_MAX_CHARS", 300)
+
+# ---- 到期提醒 ----
+REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"
+REMINDER_INTERVAL_SECONDS = _get_int("REMINDER_INTERVAL_SECONDS", 60)  # 后台扫描间隔
+REMINDER_COOLDOWN_HOURS = _get_int("REMINDER_COOLDOWN_HOURS", 24)      # 同一物品再次提醒的间隔（0=只提醒一次）

@@ -4,12 +4,14 @@
 - POST /api/voice  语音文件 → 识别+理解+回答（返回 mp3 音频 base64）
 - POST /api/chat   文字 → 理解+回答（返回 mp3 音频 base64）
 - GET  /api/status 健康检查（含 due_items 到期物品提醒）
+- GET  /api/events SSE 事件流（主动推送到期提醒）
 - GET  /           静态 Web 客户端（static/index.html）
 
 启动：python server.py  （或 uvicorn server:app --host 0.0.0.0 --port 8000）
 """
 import asyncio
 import base64
+import json
 import os
 import secrets
 import shutil
@@ -19,7 +21,7 @@ import wave
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from config import (
@@ -28,6 +30,9 @@ from config import (
     MAX_CLIENT_ID_CHARS,
     MAX_TEXT_CHARS,
     MAX_UPLOAD_BYTES,
+    REMINDER_COOLDOWN_HOURS,
+    REMINDER_DAYS,
+    REMINDER_INTERVAL_SECONDS,
     SERVER_HOST,
     SERVER_PORT,
 )
@@ -44,8 +49,11 @@ stt: STT = None
 tts: TTS = None
 assistant: Assistant = None
 
-# 到期提醒缓存（提醒循环每分钟刷新）
+# 到期提醒缓存（提醒循环按 REMINDER_INTERVAL_SECONDS 刷新）
 due_items = []
+
+# SSE 订阅者队列集合（每个在线客户端一个 asyncio.Queue，提醒循环向其广播）
+_subscribers = set()
 
 # FunASR 非线程安全：同一时间只允许一个识别请求
 stt_lock = asyncio.Semaphore(1)
@@ -76,18 +84,65 @@ def _audio_duration(path, ext):
         raise ValueError("音频格式无效") from exc
 
 
-async def reminder_loop():
-    """后台提醒循环：每分钟扫描物品到期情况，刷新 due_items。"""
-    global due_items
-    try:
-        while True:
+def _reminder_text(item):
+    """把到期物品转成一句口语化提醒。"""
+    name = item.get("name", "物品")
+    left = item.get("days_left")
+    if left is None:
+        return f"提醒：{name} 快到保质期了"
+    if left < 0:
+        return f"提醒：{name} 已经过期 {-left} 天了"
+    if left == 0:
+        return f"提醒：{name} 今天到期"
+    return f"提醒：{name} 还有 {left} 天过期"
+
+
+async def _broadcast(event):
+    """把事件推给所有 SSE 订阅者；队列满时丢最旧的，保证最新提醒送达。"""
+    payload = json.dumps(event, ensure_ascii=False)
+    for queue in list(_subscribers):
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
             try:
-                due_items = await asyncio.to_thread(assistant.items.get_due, days=3)
+                queue.get_nowait()
+                queue.put_nowait(payload)
             except Exception:
-                traceback.print_exc()
-            await asyncio.sleep(60)
-    except asyncio.CancelledError:
-        raise
+                pass
+
+
+async def reminder_loop():
+    """后台提醒循环：扫描到期物品，落库去重后向在线客户端主动推送提醒。
+
+    只有存在在线订阅者时才"领取"提醒——否则没通知到人，不应消耗去重额度。
+    """
+    global due_items
+    while True:
+        try:
+            due_items = await asyncio.to_thread(assistant.items.get_due, days=REMINDER_DAYS)
+            if _subscribers:
+                fresh = await asyncio.to_thread(
+                    assistant.items.claim_due_reminders,
+                    REMINDER_DAYS,
+                    REMINDER_COOLDOWN_HOURS,
+                )
+                for item in fresh:
+                    text = _reminder_text(item)
+                    # TTS 失败不能连累提醒：降级为纯文本照常推送
+                    try:
+                        audio = await _synthesize(text)
+                    except Exception:
+                        traceback.print_exc()
+                        audio = ""
+                    await _broadcast({
+                        "type": "reminder",
+                        "item": item,
+                        "reply": text,
+                        "audio": audio,
+                    })
+        except Exception:
+            traceback.print_exc()
+        await asyncio.sleep(REMINDER_INTERVAL_SECONDS)
 
 
 @asynccontextmanager
@@ -114,6 +169,7 @@ async def lifespan(app: FastAPI):
             assistant.items.close()
         if _tmp_dir:
             shutil.rmtree(_tmp_dir, ignore_errors=True)
+        _subscribers.clear()
         stt = None
         tts = None
         assistant = None
@@ -204,6 +260,40 @@ async def api_status(_auth=Depends(require_api_token)):
         "due_items": due_items,  # 到期物品提醒（提醒循环刷新）
         "sessions": len(assistant.sessions),
     }
+
+
+@app.get("/api/events")
+async def api_events(_auth=Depends(require_api_token)):
+    """SSE 事件流：主动推送到期提醒。
+
+    前端用 fetch 流式读取（EventSource 无法携带 Authorization 头）。
+    每个连接一个队列，提醒循环通过 _broadcast 投递。
+    """
+    queue = asyncio.Queue(maxsize=50)
+    _subscribers.add(queue)
+
+    async def event_stream():
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=25)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"  # 心跳，防代理/浏览器断流
+                    continue
+                yield f"data: {payload}\n\n"
+        finally:
+            _subscribers.discard(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/chat")
