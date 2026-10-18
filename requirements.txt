@@ -1,6 +1,6 @@
 funasr==1.2.6
 modelscope==1.20.1
-edge-tts==7.2.8
+edge-tts==7.3.1
 numpy==1.26.4
 soundfile==0.13.1
 pygame-ce==2.5.6
