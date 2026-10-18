@@ -7,7 +7,12 @@ import json
 import threading
 import time
 
-from config import MAX_SESSIONS, SESSION_TTL_SECONDS
+from config import (
+    MAX_SESSIONS,
+    SESSION_CONTEXT_MAX_CHARS,
+    SESSION_CONTEXT_TURNS,
+    SESSION_TTL_SECONDS,
+)
 from memory import Memory
 from items import Items
 from llm import LLM, _chat_with_tools
@@ -43,6 +48,7 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 - 记忆管理（"看看记忆""忘掉X"）→ memory_list / memory_delete
 - 时间相关问题（还有几天/什么时候/是否过期）→ 调用 get_current_date 拿今天日期，结合物品/记忆日期计算
 - 查无结果时老实说"我还没有这方面的记录"
+- 对话历史里可能已有相关上下文，理解"那个""它""还有呢"这类指代时结合历史
 - 回答简洁口语化，像家人聊天，不超过 3 句话
 - 只有闲聊（打招呼/无关话题）才直接回答，不需要调用工具"""
 
@@ -62,6 +68,9 @@ class Assistant:
         self.max_session_turns = 20
         self.session_ttl_seconds = SESSION_TTL_SECONDS
         self.max_sessions = MAX_SESSIONS
+        # 注入 agent 的历史轮数（0=关闭多轮上下文）与单条截断长度
+        self.session_context_turns = SESSION_CONTEXT_TURNS
+        self.session_context_max_chars = SESSION_CONTEXT_MAX_CHARS
         self._session_lock = threading.RLock()
 
     # ---------- 对外接口 ----------
@@ -88,8 +97,8 @@ class Assistant:
         if cmd_result is not None:
             return cmd_result
 
-        # 2) agent loop：LLM 自主决策调工具 → 基于结果回答
-        rtype, answer, extras = self._agent_loop(text)
+        # 2) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
+        rtype, answer, extras = self._agent_loop(text, client_id)
         reply = {"type": rtype, "reply": answer}
         reply.update(extras)
 
@@ -112,8 +121,10 @@ class Assistant:
 
     # ---------- agent loop ----------
 
-    def _agent_loop(self, user_text):
+    def _agent_loop(self, user_text, client_id=None):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
+
+        client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
 
         Returns:
             (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）
@@ -121,10 +132,9 @@ class Assistant:
         sys_prompt = AGENT_SYSTEM_PROMPT.replace(
             "{today}", __import__("datetime").datetime.now().strftime("%Y年%m月%d日")
         )
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_text},
-        ]
+        messages = [{"role": "system", "content": sys_prompt}]
+        messages.extend(self._context_messages(client_id))
+        messages.append({"role": "user", "content": user_text})
         schemas = [t["schema"] for t in self.tools]
         tools_by_name = {t["schema"]["function"]["name"]: t["execute"] for t in self.tools}
         used_tools = []
@@ -214,7 +224,32 @@ class Assistant:
         result.update(extra)
         return result
 
-    # ---------- 会话上下文（阶段 3 多轮对话的底子，暂不注入 prompt） ----------
+    # ---------- 会话上下文（多轮对话：注入 agent messages） ----------
+
+    def _context_messages(self, client_id, n=None):
+        """取该客户端最近若干轮对话，拼成 role 消息（供 agent 多轮上下文）。
+
+        只回放 user/assistant 纯文本，单条超长截断，避免上下文膨胀。
+        client_id 为空或 session_context_turns<=0 时返回空列表（退化为单轮）。
+        """
+        if not client_id or self.session_context_turns <= 0:
+            return []
+        n = self.session_context_turns if n is None else n
+        messages = []
+        for user_text, reply in self.get_history(client_id, n):
+            if user_text:
+                messages.append({"role": "user", "content": self._clip(user_text)})
+            if reply:
+                messages.append({"role": "assistant", "content": self._clip(reply)})
+        return messages
+
+    def _clip(self, text):
+        """截断过长的历史消息。limit<=0 表示不截断。"""
+        limit = self.session_context_max_chars
+        text = str(text)
+        if limit and len(text) > limit:
+            return text[:limit] + "…"
+        return text
 
     def _purge_sessions(self, now=None):
         now = now or time.time()
