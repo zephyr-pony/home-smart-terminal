@@ -55,6 +55,9 @@ due_items = []
 # SSE 订阅者队列集合（每个在线客户端一个 asyncio.Queue，提醒循环向其广播）
 _subscribers = set()
 
+# 因订阅队列满而丢弃的事件次数（丢最旧或补投失败都计入；/api/status 暴露）
+dropped_events = 0
+
 # FunASR 非线程安全：同一时间只允许一个识别请求
 stt_lock = asyncio.Semaphore(1)
 
@@ -98,17 +101,25 @@ def _reminder_text(item):
 
 
 async def _broadcast(event):
-    """把事件推给所有 SSE 订阅者；队列满时丢最旧的，保证最新提醒送达。"""
+    """把事件推给所有 SSE 订阅者；队列满时丢最旧的，保证最新提醒送达。
+
+    丢事件不再静默：计数累加并通过 /api/status 的 dropped_events 暴露。
+    """
+    global dropped_events
     payload = json.dumps(event, ensure_ascii=False)
     for queue in list(_subscribers):
         try:
             queue.put_nowait(payload)
         except asyncio.QueueFull:
+            # 队列满 = 该客户端消费过慢（或已断连但尚未清理）
+            dropped_events += 1
             try:
                 queue.get_nowait()
                 queue.put_nowait(payload)
+                print(f"⚠️ SSE 队列满，丢弃最旧事件（累计 {dropped_events} 次）")
             except Exception:
-                pass
+                print(f"⚠️ SSE 队列满且补投失败，事件未送达（累计 {dropped_events} 次）")
+                traceback.print_exc()
 
 
 async def reminder_loop():
@@ -258,6 +269,7 @@ async def api_status(_auth=Depends(require_api_token)):
         "memory_count": assistant.memory.count(),
         "item_count": assistant.items.count(),
         "due_items": due_items,  # 到期物品提醒（提醒循环刷新）
+        "dropped_events": dropped_events,  # SSE 队列满导致丢弃的事件数
         "sessions": len(assistant.sessions),
     }
 

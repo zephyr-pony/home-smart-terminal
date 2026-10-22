@@ -83,3 +83,19 @@ def test_claim_marks_status_reminded():
     items.add("酸奶", (today + timedelta(days=2)).isoformat())
     items.claim_due_reminders(days=3, cooldown_hours=24)
     assert items.list_all()[0]["status"] == "reminded"
+
+
+def test_claim_syncs_expired_status_before_selecting():
+    """过期同步与领取在同一把锁内：已过期物品按 expired 领取，不会错标成 reminded。"""
+    items = Items(":memory:")
+    items.add("过期酸奶", "2020-01-01")
+    claimed = items.claim_due_reminders(days=3, cooldown_hours=24)
+    assert [c["status"] for c in claimed] == ["expired"]
+    assert items.list_all("reminded") == []
+
+
+def test_get_due_and_list_all_sync_expired_status():
+    items = Items(":memory:")
+    items.add("过期牛奶", "2020-01-01")
+    assert items.get_due(days=3)[0]["status"] == "expired"
+    assert items.list_all("expired")[0]["name"] == "过期牛奶"

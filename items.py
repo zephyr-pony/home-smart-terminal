@@ -87,15 +87,15 @@ class Items:
 
     # ---------- 读操作 ----------
 
-    def _sync_expired_status(self, today=None):
+    def _sync_expired_status_locked(self, today=None):
+        """把已过期的物品标记为 expired。调用方必须已持有 self._lock。"""
         today = today or date.today()
-        with self._lock:
-            self.conn.execute(
-                "UPDATE items SET status='expired' "
-                "WHERE expiry_date IS NOT NULL AND expiry_date < ? AND status <> 'expired'",
-                (today.isoformat(),),
-            )
-            self.conn.commit()
+        self.conn.execute(
+            "UPDATE items SET status='expired' "
+            "WHERE expiry_date IS NOT NULL AND expiry_date < ? AND status <> 'expired'",
+            (today.isoformat(),),
+        )
+        self.conn.commit()
 
     @staticmethod
     def _row_to_dict(row):
@@ -103,8 +103,8 @@ class Items:
 
     def list_all(self, status=None):
         """列出物品。status: active/reminded/expired/None=全部。"""
-        self._sync_expired_status()
         with self._lock:
+            self._sync_expired_status_locked()
             if status:
                 rows = self.conn.execute(
                     "SELECT id, name, expiry_date, status, created_at FROM items "
@@ -123,8 +123,8 @@ class Items:
         keyword = str(keyword or "").strip()
         if not keyword:
             return []
-        self._sync_expired_status()
         with self._lock:
+            self._sync_expired_status_locked()
             rows = self.conn.execute(
                 "SELECT id, name, expiry_date, status, created_at FROM items "
                 "WHERE name LIKE ? ORDER BY created_at DESC, id DESC",
@@ -142,8 +142,8 @@ class Items:
             list[dict]: 每条含 days_left 字段（负数=已过期）
         """
         today = date.today()
-        self._sync_expired_status(today)
         with self._lock:
+            self._sync_expired_status_locked(today)
             rows = self.conn.execute(
                 "SELECT id, name, expiry_date, status FROM items WHERE expiry_date IS NOT NULL"
             ).fetchall()
@@ -167,7 +167,7 @@ class Items:
 
         返回本次应当提醒的物品（含 days_left），并把这些物品的 reminded_at 置为 now，
         使其在 cooldown_hours 内不再重复提醒（cooldown_hours<=0 表示只提醒一次）。
-        选择与标记在同一把锁内完成，避免多循环/并发重复领取。
+        过期状态同步、选择与标记在同一把锁内完成，避免并发窗口。
 
         Args:
             days: 未来几天内算“即将到期”（含已过期）
@@ -176,7 +176,6 @@ class Items:
         """
         now = now or datetime.now()
         today = now.date()
-        self._sync_expired_status(today)
         if cooldown_hours and cooldown_hours > 0:
             cutoff = (now - timedelta(hours=cooldown_hours)).isoformat()
             where = "(reminded_at IS NULL OR reminded_at <= ?)"
@@ -186,6 +185,7 @@ class Items:
             params = ()
 
         with self._lock:
+            self._sync_expired_status_locked(today)
             rows = self.conn.execute(
                 "SELECT id, name, expiry_date, status FROM items "
                 f"WHERE expiry_date IS NOT NULL AND {where}",

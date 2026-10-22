@@ -112,3 +112,35 @@ def test_broadcast_delivers_to_subscriber():
     payload = asyncio.run(run())
     assert "reminder" in payload
     assert "酸奶" in payload
+
+
+def test_broadcast_drops_oldest_and_counts_when_queue_full(capsys):
+    """队列满时丢最旧保最新，并累加 dropped_events（不再静默丢事件）。"""
+    import asyncio
+
+    async def run():
+        queue = asyncio.Queue(maxsize=1)
+        server._subscribers.add(queue)
+        try:
+            await server._broadcast({"type": "reminder", "reply": "第一条"})
+            before = server.dropped_events
+            await server._broadcast({"type": "reminder", "reply": "第二条"})
+            return server.dropped_events - before, queue.get_nowait()
+        finally:
+            server._subscribers.discard(queue)
+
+    dropped, payload = asyncio.run(run())
+    assert dropped == 1
+    assert "第二条" in payload
+    assert "SSE 队列满" in capsys.readouterr().out
+
+
+def test_status_exposes_drop_counter(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    monkeypatch.setattr(server, "dropped_events", 7)
+    monkeypatch.setattr(server, "due_items", [])
+    client = TestClient(server.app)
+    body = client.get("/api/status", headers={"Authorization": "Bearer secret"}).json()
+    assert body["dropped_events"] == 7
+    assert body["due_items"] == []
