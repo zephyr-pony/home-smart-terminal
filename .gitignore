@@ -17,6 +17,9 @@ config.local.*
 # ---- 内部工具 ----
 .sisyphus/
 
+# ---- IDE ----
+.vscode/
+
 # ---- AI 代理本地状态（不入库）----
 .commandcode/
 PROJECT_STATUS.md
