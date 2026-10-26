@@ -161,7 +161,8 @@ start.bat cli        # 或 python main.py
 ├── items.py         # SQLite 物品管理（名称/到期日）
 ├── tts.py           # Edge TTS 语音合成
 ├── static/index.html # Web 客户端
-├── test_record.py   # 手工录音/播放诊断工具
+├── scripts/
+│   └── record_diagnostic.py  # 手工录音/播放诊断（不参与 pytest）
 ├── tests/           # pytest 自动化测试
 ├── requirements.txt
 ├── requirements-dev.txt

@@ -53,15 +53,10 @@ pip install -r requirements-dev.txt
 pytest tests -q
 ```
 
-- `llm.py` 在 **import 时**校验 `LLM_*` 配置；没有 `.env` 时需给占位环境变量：
-
-```bash
-LLM_BASE_URL=http://127.0.0.1/v1 LLM_API_KEY=x LLM_MODEL=x pytest tests -q
-```
-
-- 只跑 `tests/`。根目录的 `test_record.py` 是手工录音诊断脚本，依赖 `numpy/soundfile/pyaudio`，会被 pytest 误收集。
+- 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
+- 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")`，不要碰 `data/`。
-- 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过 monkeypatch `assistant._chat_with_tools` 模拟 LLM。
+- 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
 
 ## 必须保持的约定
 
@@ -69,6 +64,7 @@ LLM_BASE_URL=http://127.0.0.1/v1 LLM_API_KEY=x LLM_MODEL=x pytest tests -q
 
 - `Assistant` 是唯一业务编排层，CLI / 服务端不要重复实现业务逻辑。
 - Agent loop 最多 `max_agent_loops`（5）轮：LLM → 执行工具 → 工具结果回传 → 再决策。
+- `self.llm.chat_with_tools(...)` 对网络错误和畸形响应自动重试；重试耗尽后 agent loop 降级为文字回复，不向 API 抛 500。
 - `process_text` 返回的 dict 是对外契约：
   - 通用：`type`、`reply`、`used_tools`、`domain`、`action`
   - `record`：额外带 `summary`
@@ -117,10 +113,11 @@ LLM_BASE_URL=http://127.0.0.1/v1 LLM_API_KEY=x LLM_MODEL=x pytest tests -q
 
 ## 常见坑
 
-- 没有 `.env` 时 `import llm` 会直接 `RuntimeError`，会导致 `import server`、pytest 收集失败。
+- 缺少 `.env` 时 `LLM()` 会在启动阶段抛 `RuntimeError`；import 模块本身不受影响，pytest 收集也不会失败。
 - `stt.py` 内部才 `import funasr`，导入模块本身不会加载模型。
 - `TTS` 的私有事件循环刻意不关闭（Windows Proactor 下 close 会产生告警）。
-- `assistant.llm` 目前未参与 agent loop，真正的请求走 `llm._chat_with_tools`；重构时注意不要把注入当成已生效。
+- agent loop 通过 `self.llm.chat_with_tools(...)` 调用 LLM，测试注入一个带同名方法的假实现即可。
+- `_synthesize` 已兜底：TTS 失败只丢语音，文字回复照常返回。
 - `README.md`、`.env.example`、`config.py` 三处配置说明要同步更新。
 
 ## 提交前检查

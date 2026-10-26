@@ -1,4 +1,9 @@
-"""测试 PyAudio 录音"""
+"""手工录音/播放诊断脚本（不参与 pytest）。"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 
 from audio_io import record_audio, save_audio, play_audio_file
@@ -21,7 +26,6 @@ def main():
             print("播放录音回放...")
             play_audio_file(wav)
         finally:
-            import os
             if os.path.exists(wav):
                 os.remove(wav)
 
