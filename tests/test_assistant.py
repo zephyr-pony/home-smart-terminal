@@ -1,3 +1,5 @@
+import json
+
 from assistant import Assistant
 from items import Items
 from memory import Memory
@@ -90,3 +92,62 @@ def test_context_messages_clips_long_history():
     messages = assistant._context_messages("c1")
     assert messages[0]["content"] == "很长的用…"
     assert messages[1]["content"] == "很长的助…"
+
+
+def _tool_call_reply(name, arguments, call_id="call-1"):
+    return {
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": call_id,
+                    "function": {"name": name, "arguments": json.dumps(arguments)},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }]
+    }
+
+
+def _stop_reply(content):
+    return {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
+
+
+def test_agent_loop_returns_record_summary(monkeypatch):
+    assistant = make_assistant()
+    calls = []
+
+    def fake_chat(messages, tools, **kwargs):
+        calls.append(messages)
+        if len(calls) == 1:
+            return _tool_call_reply(
+                "memory_store",
+                {"text": "明天交电费", "summary": "8月9日交电费"},
+            )
+        return _stop_reply("记住了")
+
+    monkeypatch.setattr("assistant._chat_with_tools", fake_chat)
+    result = assistant.process_text("明天交电费")
+
+    assert result["type"] == "record"
+    assert result["reply"] == "记住了"
+    assert result["summary"] == "8月9日交电费"
+
+
+def test_agent_loop_returns_search_memories(monkeypatch):
+    assistant = make_assistant()
+    assistant.memory.store("酸奶8月5号过期", "酸奶8月5号过期")
+    calls = []
+
+    def fake_chat(messages, tools, **kwargs):
+        calls.append(messages)
+        if len(calls) == 1:
+            return _tool_call_reply("memory_search", {"keywords": "酸奶 过期"})
+        return _stop_reply("酸奶8月5号过期")
+
+    monkeypatch.setattr("assistant._chat_with_tools", fake_chat)
+    result = assistant.process_text("酸奶什么时候过期")
+
+    assert result["type"] == "query"
+    assert result["memories"]
+    assert "酸奶" in result["memories"][0]

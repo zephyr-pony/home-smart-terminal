@@ -139,6 +139,9 @@ class Assistant:
         tools_by_name = {t["schema"]["function"]["name"]: t["execute"] for t in self.tools}
         used_tools = []
         used_tool_names = set()
+        summary = None
+        search_keywords = None
+        search_n = 5
 
         for _turn in range(self.max_agent_loops):
             data = _chat_with_tools(messages, schemas)
@@ -158,6 +161,15 @@ class Assistant:
                         args = json.loads(fn.get("arguments") or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    if name == "memory_store":
+                        summary = (args.get("summary") or "").strip() or summary
+                    elif name == "memory_search" and args.get("keywords"):
+                        search_keywords = args["keywords"]
+                        try:
+                            search_n = int(args.get("n_results", 5))
+                        except (TypeError, ValueError):
+                            search_n = 5
+                        search_n = max(1, min(search_n, 50))
                     execute = tools_by_name.get(name)
                     if execute is None:
                         result = f"错误：未知工具 {name}"
@@ -187,11 +199,16 @@ class Assistant:
         else:
             rtype = "chat"
         domain, action = self._tool_metadata(used_tools)
-        return rtype, answer, {
+        extras = {
             "used_tools": used_tools,
             "domain": domain,
             "action": action,
         }
+        if rtype == "record" and summary:
+            extras["summary"] = summary
+        elif rtype == "query" and search_keywords:
+            extras["memories"] = self.memory.search(search_keywords, search_n)
+        return rtype, answer, extras
 
     @staticmethod
     def _tool_metadata(used_tools):

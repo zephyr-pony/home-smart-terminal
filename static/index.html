@@ -480,6 +480,7 @@ html, body {
     recBtn.classList.remove('recording');
 
     var duration = (Date.now() - recStart) / 1000;
+    var srcRate = audioCtx ? audioCtx.sampleRate : 48000;
 
     // Collect all chunks into one buffer
     var totalLen = 0;
@@ -500,8 +501,6 @@ html, body {
     }
 
     // ---- resample to 16000 Hz (linear interpolation) ----
-    // Capture sampleRate before cleanupAudio closes the context
-    var srcRate = audioCtx ? audioCtx.sampleRate : 48000;
     var dstRate = 16000;
     var ratio   = srcRate / dstRate;
     var newLen  = Math.round(merged.length / ratio);
