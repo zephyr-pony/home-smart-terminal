@@ -139,12 +139,7 @@ async def reminder_loop():
                 )
                 for item in fresh:
                     text = _reminder_text(item)
-                    # TTS 失败不能连累提醒：降级为纯文本照常推送
-                    try:
-                        audio = await _synthesize(text)
-                    except Exception:
-                        traceback.print_exc()
-                        audio = ""
+                    audio = await _synthesize(text)
                     await _broadcast({
                         "type": "reminder",
                         "item": item,
@@ -216,10 +211,17 @@ def _handle_voice_sync(audio_path: str, client_id: str) -> dict:
 
 
 async def _synthesize(reply: str) -> str:
-    """合成回复语音，返回 base64 mp3（空回复返回空串）。"""
+    """合成回复语音，返回 base64 mp3（空回复返回空串）。
+
+    TTS 失败只丢语音，不影响文字回复。
+    """
     if not reply:
         return ""
-    data = await tts.synthesize_bytes(reply)
+    try:
+        data = await tts.synthesize_bytes(reply)
+    except Exception:
+        traceback.print_exc()
+        return ""
     if not data:
         return ""
     return base64.b64encode(data).decode("ascii")
@@ -239,7 +241,7 @@ async def _save_upload(file, ext):
             total += len(chunk)
             if total > MAX_UPLOAD_BYTES:
                 raise HTTPException(status_code=413, detail=f"音频过大，最大 {MAX_UPLOAD_BYTES // 1024 // 1024}MB")
-            handle.write(chunk)
+            await asyncio.to_thread(handle.write, chunk)
         handle.close()
         if total == 0:
             raise HTTPException(status_code=400, detail="音频为空")
@@ -263,11 +265,14 @@ async def _save_upload(file, ext):
 
 @app.get("/api/status")
 async def api_status(_auth=Depends(require_api_token)):
+    memory_count, item_count = await asyncio.to_thread(
+        lambda: (assistant.memory.count(), assistant.items.count())
+    )
     return {
         "ok": True,
         "stt_ready": stt is not None,
-        "memory_count": assistant.memory.count(),
-        "item_count": assistant.items.count(),
+        "memory_count": memory_count,
+        "item_count": item_count,
         "due_items": due_items,  # 到期物品提醒（提醒循环刷新）
         "dropped_events": dropped_events,  # SSE 队列满导致丢弃的事件数
         "sessions": len(assistant.sessions),

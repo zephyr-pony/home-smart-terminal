@@ -9,6 +9,15 @@ from datetime import datetime
 from memory import Memory
 
 
+def _clamp_int(value, default, low, high):
+    """把 LLM 传来的数值参数限制在安全范围内（缺省/非法值回退）。"""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(value, high))
+
+
 def _build(name, description, properties, required, execute):
     """构造一个标准工具条目。"""
     return {
@@ -49,7 +58,9 @@ def get_memory_tools(memory: Memory):
                 },
             },
             required=["keywords"],
-            execute=lambda keywords, n_results=5: _fmt_memories(memory.search(keywords, n_results)),
+            execute=lambda keywords, n_results=5: _fmt_memories(
+                memory.search(keywords, _clamp_int(n_results, 5, 1, 50))
+            ),
         ),
         _build(
             name="memory_store",
@@ -71,7 +82,9 @@ def get_memory_tools(memory: Memory):
                 "n": {"type": "integer", "description": "返回条数，默认 10"},
             },
             required=[],
-            execute=lambda n=10: _fmt_memories(memory.list_all(n)),
+            execute=lambda n=10: _fmt_memories(
+                memory.list_all(_clamp_int(n, 10, 1, 50))
+            ),
         ),
         _build(
             name="memory_delete",

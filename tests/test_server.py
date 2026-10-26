@@ -27,6 +27,11 @@ class FakeTTS:
         return b"audio"
 
 
+class FailingTTS:
+    async def synthesize_bytes(self, reply):
+        raise RuntimeError("tts down")
+
+
 class FakeAssistant:
     def __init__(self):
         self.memory = FakeMemory()
@@ -83,6 +88,21 @@ def test_voice_rejects_overlong_wav_before_stt(monkeypatch):
         files={"file": ("voice.wav", wav_bytes(2), "audio/wav")},
     )
     assert response.status_code in (400, 413, 503)
+
+
+def test_chat_survives_tts_failure(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    monkeypatch.setattr(server, "tts", FailingTTS())
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/chat",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "你好"},
+    )
+    assert response.status_code == 200
+    assert response.json()["reply"] == "你好"
+    assert response.json()["audio"] == ""
 
 
 def test_reminder_text_formatting():

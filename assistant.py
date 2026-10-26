@@ -6,6 +6,7 @@
 import json
 import threading
 import time
+from datetime import datetime
 
 from config import (
     MAX_SESSIONS,
@@ -15,7 +16,7 @@ from config import (
 )
 from memory import Memory
 from items import Items
-from llm import LLM, _chat_with_tools
+from llm import LLM
 from tools import get_all_tools
 
 
@@ -130,7 +131,7 @@ class Assistant:
             (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）
         """
         sys_prompt = AGENT_SYSTEM_PROMPT.replace(
-            "{today}", __import__("datetime").datetime.now().strftime("%Y年%m月%d日")
+            "{today}", datetime.now().strftime("%Y年%m月%d日")
         )
         messages = [{"role": "system", "content": sys_prompt}]
         messages.extend(self._context_messages(client_id))
@@ -144,7 +145,15 @@ class Assistant:
         search_n = 5
 
         for _turn in range(self.max_agent_loops):
-            data = _chat_with_tools(messages, schemas)
+            try:
+                data = self.llm.chat_with_tools(messages, schemas)
+            except Exception as exc:
+                print(f"⚠️ LLM 调用失败：{exc}")
+                return "chat", "抱歉，我现在连不上大脑，请稍后再试。", {
+                    "used_tools": used_tools,
+                    "domain": "chat",
+                    "action": "chat",
+                }
             choice = data["choices"][0]
             message = choice["message"]
             finish = choice.get("finish_reason")

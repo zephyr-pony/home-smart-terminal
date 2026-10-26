@@ -47,8 +47,8 @@ def main():
     # --- 初始化各模块 ---
     print("\n🔧 正在初始化系统...\n")
 
-    stt = STT()
     llm = LLM()
+    stt = STT()
     memory = Memory()
     tts = TTS()
     assistant = Assistant(memory=memory, llm=llm)

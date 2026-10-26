@@ -6,11 +6,62 @@ from memory import Memory
 
 
 class FakeLLM:
-    pass
+    """默认返回一句闲聊；记录收到的 messages 供断言。"""
+
+    def __init__(self, reply="好的"):
+        self.reply = reply
+        self.calls = []
+
+    def chat_with_tools(self, messages, tools, **kwargs):
+        self.calls.append(messages)
+        return _stop_reply(self.reply)
 
 
-def make_assistant():
-    return Assistant(memory=Memory(":memory:"), items=Items(":memory:"), llm=FakeLLM())
+class ScriptedLLM:
+    """按预设顺序返回响应，用于模拟工具调用回合。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def chat_with_tools(self, messages, tools, **kwargs):
+        self.calls.append(messages)
+        return self.responses.pop(0)
+
+
+class FailingLLM:
+    def __init__(self, error=None):
+        self.error = error or RuntimeError("boom")
+
+    def chat_with_tools(self, messages, tools, **kwargs):
+        raise self.error
+
+
+def make_assistant(llm=None):
+    return Assistant(
+        memory=Memory(":memory:"),
+        items=Items(":memory:"),
+        llm=llm or FakeLLM(),
+    )
+
+
+def _tool_call_reply(name, arguments, call_id="call-1"):
+    return {
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": call_id,
+                    "function": {"name": name, "arguments": json.dumps(arguments)},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }]
+    }
+
+
+def _stop_reply(content):
+    return {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
 
 
 def test_tool_metadata():
@@ -43,46 +94,34 @@ def test_empty_result_has_structured_metadata():
     assert result["used_tools"] == []
 
 
-def test_agent_loop_injects_session_history(monkeypatch):
+def test_agent_loop_injects_session_history():
     """多轮上下文：同 client_id 的历史轮次要进 agent 的 messages。"""
     assistant = make_assistant()
     assistant._record_turn("c1", "我买了酸奶", "已记录")
 
-    captured = {}
-
-    def fake_chat(messages, tools, **kwargs):
-        captured["messages"] = messages
-        return {"choices": [{"message": {"content": "好的"}, "finish_reason": "stop"}]}
-
-    monkeypatch.setattr("assistant._chat_with_tools", fake_chat)
     assistant.process_text("那牛奶呢", client_id="c1")
 
-    pairs = [(m["role"], m["content"]) for m in captured["messages"]]
+    messages = assistant.llm.calls[-1]
+    pairs = [(m["role"], m["content"]) for m in messages]
     assert ("user", "我买了酸奶") in pairs
     assert ("assistant", "已记录") in pairs
     # 本轮问题必须排在最后
-    assert captured["messages"][-1] == {"role": "user", "content": "那牛奶呢"}
+    assert messages[-1] == {"role": "user", "content": "那牛奶呢"}
     # 系统提示在最前
-    assert captured["messages"][0]["role"] == "system"
+    assert messages[0]["role"] == "system"
 
 
-def test_agent_loop_without_client_id_has_no_history(monkeypatch):
+def test_agent_loop_without_client_id_has_no_history():
     """无 client_id 时退化为单轮：messages 只有 system + 本轮。"""
     assistant = make_assistant()
     assistant._record_turn("c1", "我买了酸奶", "已记录")
 
-    captured = {}
-
-    def fake_chat(messages, tools, **kwargs):
-        captured["messages"] = messages
-        return {"choices": [{"message": {"content": "好的"}, "finish_reason": "stop"}]}
-
-    monkeypatch.setattr("assistant._chat_with_tools", fake_chat)
     assistant.process_text("你好")
 
-    assert len(captured["messages"]) == 2
-    assert captured["messages"][0]["role"] == "system"
-    assert captured["messages"][1] == {"role": "user", "content": "你好"}
+    messages = assistant.llm.calls[-1]
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {"role": "user", "content": "你好"}
 
 
 def test_context_messages_clips_long_history():
@@ -94,39 +133,14 @@ def test_context_messages_clips_long_history():
     assert messages[1]["content"] == "很长的助…"
 
 
-def _tool_call_reply(name, arguments, call_id="call-1"):
-    return {
-        "choices": [{
-            "message": {
-                "content": "",
-                "tool_calls": [{
-                    "id": call_id,
-                    "function": {"name": name, "arguments": json.dumps(arguments)},
-                }],
-            },
-            "finish_reason": "tool_calls",
-        }]
-    }
-
-
-def _stop_reply(content):
-    return {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
-
-
-def test_agent_loop_returns_record_summary(monkeypatch):
-    assistant = make_assistant()
-    calls = []
-
-    def fake_chat(messages, tools, **kwargs):
-        calls.append(messages)
-        if len(calls) == 1:
-            return _tool_call_reply(
-                "memory_store",
-                {"text": "明天交电费", "summary": "8月9日交电费"},
-            )
-        return _stop_reply("记住了")
-
-    monkeypatch.setattr("assistant._chat_with_tools", fake_chat)
+def test_agent_loop_returns_record_summary():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply(
+            "memory_store",
+            {"text": "明天交电费", "summary": "8月9日交电费"},
+        ),
+        _stop_reply("记住了"),
+    ]))
     result = assistant.process_text("明天交电费")
 
     assert result["type"] == "record"
@@ -134,20 +148,39 @@ def test_agent_loop_returns_record_summary(monkeypatch):
     assert result["summary"] == "8月9日交电费"
 
 
-def test_agent_loop_returns_search_memories(monkeypatch):
-    assistant = make_assistant()
+def test_agent_loop_returns_search_memories():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("memory_search", {"keywords": "酸奶 过期"}),
+        _stop_reply("酸奶8月5号过期"),
+    ]))
     assistant.memory.store("酸奶8月5号过期", "酸奶8月5号过期")
-    calls = []
 
-    def fake_chat(messages, tools, **kwargs):
-        calls.append(messages)
-        if len(calls) == 1:
-            return _tool_call_reply("memory_search", {"keywords": "酸奶 过期"})
-        return _stop_reply("酸奶8月5号过期")
-
-    monkeypatch.setattr("assistant._chat_with_tools", fake_chat)
     result = assistant.process_text("酸奶什么时候过期")
 
     assert result["type"] == "query"
     assert result["memories"]
     assert "酸奶" in result["memories"][0]
+
+
+def test_agent_loop_degrades_when_llm_fails():
+    result = make_assistant(FailingLLM()).process_text("你好")
+
+    assert result["type"] == "chat"
+    assert result["domain"] == "chat"
+    assert result["action"] == "chat"
+    assert result["used_tools"] == []
+    assert "抱歉" in result["reply"]
+
+
+def test_agent_loop_reports_unknown_tool_without_crashing():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("no_such_tool", {}),
+        _stop_reply("好的"),
+    ]))
+    result = assistant.process_text("你好")
+
+    assert result["reply"] == "好的"
+    tool_messages = [
+        m["content"] for m in assistant.llm.calls[-1] if m.get("role") == "tool"
+    ]
+    assert tool_messages == ["错误：未知工具 no_such_tool"]
