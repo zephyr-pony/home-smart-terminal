@@ -7,18 +7,24 @@ import os
 from config import SAMPLE_RATE, CHUNK_SIZE, MAX_RECORD_SECONDS, SILENCE_THRESHOLD, SILENCE_DURATION
 
 
-def record_audio(max_duration=MAX_RECORD_SECONDS, silence_threshold=SILENCE_THRESHOLD, silence_duration=SILENCE_DURATION):
+def record_audio(max_duration=MAX_RECORD_SECONDS, silence_threshold=SILENCE_THRESHOLD,
+                 silence_duration=SILENCE_DURATION, verbose=True):
     """录音，检测到静音自动停止。使用 PyAudio（Windows 兼容性最好）。
 
     Args:
         max_duration: 最大录音时长（秒）
         silence_threshold: 静音能量阈值
         silence_duration: 连续静音多久后停止（秒）
+        verbose: 是否打印录音状态（常驻监听时关闭，避免刷屏）
 
     Returns:
         numpy.ndarray: PCM 音频数据（float32, mono, 16kHz），或 None
     """
-    print("🎤 录音中... (说完停顿即可)", flush=True)
+    def log(message):
+        if verbose:
+            print(message, flush=True)
+
+    log("🎤 录音中... (说完停顿即可)")
 
     # 释放 pygame.mixer，避免占用音频设备
     try:
@@ -55,7 +61,7 @@ def record_audio(max_duration=MAX_RECORD_SECONDS, silence_threshold=SILENCE_THRE
     ambient = np.concatenate(ambient_chunks)
     ambient_rms = float(np.sqrt(np.mean(ambient ** 2)))
     effective_threshold = max(silence_threshold, ambient_rms * 2.0)
-    print(f"  (环境底噪 {ambient_rms:.4f}, 静音阈值 {effective_threshold:.4f})", flush=True)
+    log(f"  (环境底噪 {ambient_rms:.4f}, 静音阈值 {effective_threshold:.4f})")
 
     chunks = []
     silence_count = 0
@@ -85,7 +91,7 @@ def record_audio(max_duration=MAX_RECORD_SECONDS, silence_threshold=SILENCE_THRE
         pa.terminate()
 
     if not chunks or not has_speech:
-        print("（未检测到语音）")
+        log("（未检测到语音）")
         return None
 
     audio = np.concatenate(chunks).flatten()
@@ -104,7 +110,7 @@ def record_audio(max_duration=MAX_RECORD_SECONDS, silence_threshold=SILENCE_THRE
         audio = audio * (0.9 / peak)
 
     if len(audio) < SAMPLE_RATE * 0.3:  # 不到 0.3 秒
-        print("（录音太短）")
+        log("（录音太短）")
         return None
 
     return audio
