@@ -5,6 +5,7 @@
 ## 功能特性
 
 - 🎤 **全程语音交互**：麦克风说话 → 识别 → 理解 → 语音回答
+- 🗣️ **语音唤醒**：CLI 常驻监听，说「小马」唤醒；支持「小马，明天要交电费」一次说完
 - 🧠 **记忆为核心**：陈述事实自动记录，疑问句自动检索回答
 - 🔍 **中文全文检索**：任意子串匹配，零依赖（SQLite FTS5 中文空格化方案）
 - 🤖 **Agent 驱动**：LLM 通过 function calling 自主选择工具（记忆 / 物品 / 日期），不是硬编码规则
@@ -72,6 +73,14 @@ start.bat            # Windows 一键启动
 start.bat cli        # 或 python main.py
 ```
 
+**唤醒词常驻模式（说「小马」唤醒）**
+```bash
+start.bat wake       # 或 python main.py wake
+```
+
+> 唤醒词目前只做在 CLI（本机麦克风常驻监听）；Web 端仍为按住说话。
+> 唤醒后可以直接说指令，也可以只喊「小马」等回应后再说。说「退出」或按 Ctrl+C 结束。
+
 > 首次运行会自动下载 FunASR 语音识别模型（约 900MB），需要一些时间。
 
 ## 服务端 API
@@ -111,6 +120,9 @@ start.bat cli        # 或 python main.py
 | `MAX_RECORD_SECONDS` | `15` | CLI 最长录音时长（秒） |
 | `SILENCE_THRESHOLD` | `0.015` | 静音能量阈值 |
 | `SILENCE_DURATION` | `1.2` | 停顿多久视为说完（秒） |
+| `WAKE_WORD` | `小马` | CLI 常驻监听的唤醒词 |
+| `WAKE_WORD_MAX_SECONDS` | `8` | 唤醒句最长录音时长（秒） |
+| `WAKE_ACK_TEXT` | `我在` | 只喊唤醒词时的应答，留空则不播报 |
 | `SERVER_HOST` | `127.0.0.1` | 服务监听地址；局域网使用可改为 `0.0.0.0` |
 | `SERVER_PORT` | `8000` | 服务端口 |
 | `API_TOKEN` | 空 | API Bearer Token；局域网使用建议必填 |
@@ -134,6 +146,14 @@ start.bat cli        # 或 python main.py
 输入 quit     退出
 ```
 
+### 唤醒词模式
+
+```
+说「小马，明天要交电费」   唤醒并直接执行后半句
+说「小马」                 回应「我在」，再说指令
+说「退出」 / Ctrl+C        结束
+```
+
 ### 示例对话
 
 | 用户说 | 系统行为 |
@@ -149,7 +169,8 @@ start.bat cli        # 或 python main.py
 ## 目录结构
 
 ```
-├── main.py          # CLI 入口
+├── main.py          # CLI 入口（含唤醒词常驻模式）
+├── wake_word.py     # 唤醒词解析
 ├── assistant.py     # 核心编排和 Agent loop
 ├── tools.py         # OpenAI function calling 工具注册
 ├── server.py        # FastAPI 服务端
@@ -192,7 +213,8 @@ start.bat cli        # 或 python main.py
 - [x] 增强：多轮对话上下文、SSE 主动推送提醒（落库去重）、API Token、输入边界、资源清理、自动化测试
 - [ ] 阶段 3 完善：提醒确认/静音、物品数量/位置/消耗管理
 - [ ] 阶段 4：菜谱推荐
-- [ ] 阶段 5：唤醒词 + 蓝牙音箱联动
+- [x] 唤醒词「小马」（CLI 常驻监听）
+- [ ] 阶段 5 完善：蓝牙音箱联动
 - [ ] 阶段 6：视觉能力（摄像头识别）
 
 ## License

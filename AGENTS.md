@@ -10,7 +10,8 @@
 
 | 文件 | 职责 |
 |---|---|
-| `main.py` | CLI 入口：录音 → STT → `Assistant` → 打印 + TTS 播报 |
+| `main.py` | CLI 入口：录音 → STT → `Assistant` → 打印 + TTS 播报；含唤醒词常驻模式 |
+| `wake_word.py` | 唤醒词解析：从 STT 文本提取「小马」后的指令 |
 | `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
 | `assistant.py` | 核心编排 + 手写 Agent loop；CLI 与服务端共用 |
 | `tools.py` | OpenAI function calling 工具注册表（schema + execute） |
@@ -42,6 +43,8 @@ python server.py       # Web 服务端，http://127.0.0.1:8000
 start.bat              # Windows 一键启动服务端
 start.bat cli          # Windows 启动 CLI
 python main.py         # CLI 模式
+start.bat wake         # Windows 启动唤醒词常驻监听
+python main.py wake    # 常驻监听唤醒词「小马」
 ```
 
 首次启动会下载 FunASR 模型（约 900MB），服务端启动时同步加载，属正常现象。
@@ -98,6 +101,13 @@ pytest tests -q
 - `srcRate` 必须在 `cleanupAudio()` 之前读取（`audioCtx` 关闭后为 null）。
 - 页面是单文件原生 JS，无打包流程；不要引入前端框架/构建工具。
 
+### 唤醒词（CLI）
+
+- 只有 CLI 常驻模式：`python main.py wake`；Web 端仍是按住说话。
+- 被动监听用 `record_audio(verbose=False)`，避免每次检测都刷屏。
+- 命中唤醒词后，同句带指令就直接执行；只喊唤醒词则播报 `WAKE_ACK_TEXT` 再录一句。
+- STT 只在检测到语音段后运行；唤醒词匹配是纯文本处理（`wake_word.extract_wake_command`）。
+
 ### 配置与隐私
 
 - 所有可调参数走 `config.py` + `.env`；新增配置项要同步 `.env.example` 和 README 配置表。
@@ -118,6 +128,7 @@ pytest tests -q
 - `TTS` 的私有事件循环刻意不关闭（Windows Proactor 下 close 会产生告警）。
 - agent loop 通过 `self.llm.chat_with_tools(...)` 调用 LLM，测试注入一个带同名方法的假实现即可。
 - `_synthesize` 已兜底：TTS 失败只丢语音，文字回复照常返回。
+- 唤醒词常驻模式会持续占用麦克风，不要和其他录音模式同时运行。
 - `README.md`、`.env.example`、`config.py` 三处配置说明要同步更新。
 
 ## 提交前检查
