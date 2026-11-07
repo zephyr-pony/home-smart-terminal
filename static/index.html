@@ -108,6 +108,67 @@ html, body {
 }
 .play-btn:active { background: var(--border); }
 
+/* ---- tabs / views ---- */
+#tabs {
+  flex-shrink: 0; display: flex; gap: 4px;
+  padding: 8px 12px; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  flex: 1; height: 34px; border: none; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-secondary);
+  font-size: 14px; cursor: pointer;
+}
+.tab.active { background: var(--surface-alt); color: var(--text-primary); font-weight: 600; }
+#views { flex: 1; min-height: 0; display: flex; }
+.view { display: none; flex: 1; min-height: 0; }
+.view.active { display: flex; flex-direction: column; }
+.view-inner { flex: 1; overflow-y: auto; padding: 16px; }
+.view-title { font-size: 18px; margin-bottom: 14px; }
+.section-title { font-size: 14px; color: var(--text-secondary); margin: 18px 0 8px; }
+.muted { color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px;
+}
+.card .num { font-size: 22px; font-weight: 700; color: var(--text-primary); }
+.card .label { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.list { display: flex; flex-direction: column; gap: 8px; }
+.list-row {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+  font-size: 14px; line-height: 1.5;
+}
+.list-row .meta { color: var(--text-secondary); font-size: 12px; margin-top: 3px; }
+.row-actions { display: flex; gap: 8px; margin-top: 8px; }
+.small-btn {
+  padding: 5px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface-alt);
+  color: var(--accent); font-size: 12px; cursor: pointer;
+}
+.small-btn.danger { color: var(--danger); }
+.empty { color: var(--text-secondary); font-size: 13px; padding: 10px 0; }
+.subtabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.subtab {
+  padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 999px; background: transparent;
+  color: var(--text-secondary); font-size: 13px; cursor: pointer;
+}
+.subtab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+.field input {
+  width: 100%; height: 38px; padding: 0 10px;
+  background: var(--input-bg); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.primary-btn {
+  width: 100%; height: 42px; border: none; border-radius: var(--radius-sm);
+  background: var(--accent); color: #fff; font-size: 15px; font-weight: 600;
+  cursor: pointer; margin-top: 4px;
+}
+
 /* ---- input area ---- */
 #input-area {
   flex-shrink: 0; display: flex; align-items: center; gap: 10px;
@@ -186,16 +247,59 @@ html, body {
     </div>
   </div>
 
-  <div id="messages"></div>
+  <nav id="tabs">
+    <button class="tab active" data-tab="chat" type="button">聊天</button>
+    <button class="tab" data-tab="overview" type="button">概览</button>
+    <button class="tab" data-tab="data" type="button">数据</button>
+    <button class="tab" data-tab="settings" type="button">设置</button>
+  </nav>
 
-  <div id="input-area">
-    <button id="record-btn" aria-label="按住说话">
-      <span id="record-label">正在录音… 0s</span>
-      🎤
-    </button>
-    <input id="text-input" type="text" placeholder="打字跟小马说话…" autocomplete="off">
-    <button id="send-btn">发送</button>
-  </div>
+  <main id="views">
+    <section id="view-chat" class="view active">
+      <div id="messages"></div>
+      <div id="input-area">
+        <button id="record-btn" aria-label="按住说话">
+          <span id="record-label">正在录音… 0s</span>
+          🎤
+        </button>
+        <input id="text-input" type="text" placeholder="打字跟小马说话…" autocomplete="off">
+        <button id="send-btn">发送</button>
+      </div>
+    </section>
+
+    <section id="view-overview" class="view">
+      <div class="view-inner">
+        <h2 class="view-title">概览</h2>
+        <div id="stat-cards" class="cards"></div>
+        <h3 class="section-title">到期提醒</h3>
+        <div id="overview-due" class="list"></div>
+      </div>
+    </section>
+
+    <section id="view-data" class="view">
+      <div class="view-inner">
+        <h2 class="view-title">数据</h2>
+        <div id="data-tabs" class="subtabs">
+          <button class="subtab active" data-kind="memories" type="button">记忆</button>
+          <button class="subtab" data-kind="items" type="button">物品</button>
+          <button class="subtab" data-kind="tasks" type="button">任务</button>
+          <button class="subtab" data-kind="facts" type="button">事实</button>
+          <button class="subtab" data-kind="entities" type="button">实体</button>
+        </div>
+        <div id="data-list" class="list"></div>
+      </div>
+    </section>
+
+    <section id="view-settings" class="view">
+      <div class="view-inner">
+        <h2 class="view-title">系统配置</h2>
+        <div id="settings-summary" class="muted"></div>
+        <form id="settings-form"></form>
+        <button id="settings-save" class="primary-btn" type="button">保存配置</button>
+        <div id="settings-msg" class="muted"></div>
+      </div>
+    </section>
+  </main>
 </div>
 
 <script>
@@ -211,6 +315,17 @@ html, body {
   var recLabel   = document.getElementById('record-label');
   var textInput  = document.getElementById('text-input');
   var sendBtn    = document.getElementById('send-btn');
+  var tabs       = document.querySelectorAll('.tab');
+  var views      = document.querySelectorAll('.view');
+  var statCards  = document.getElementById('stat-cards');
+  var overviewDue = document.getElementById('overview-due');
+  var dataTabs   = document.getElementById('data-tabs');
+  var dataList   = document.getElementById('data-list');
+  var settingsForm = document.getElementById('settings-form');
+  var settingsSave = document.getElementById('settings-save');
+  var settingsSummary = document.getElementById('settings-summary');
+  var settingsMsg = document.getElementById('settings-msg');
+  var currentDataKind = 'memories';
 
   // ---- client id ----
   var CID_KEY = 'hst_client_id';
@@ -239,6 +354,26 @@ html, body {
   }
 
   // ---- helpers ----
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
+
+  function apiFetch(path, options) {
+    options = options || {};
+    options.headers = authHeaders(options.headers || {});
+    return fetch(path, options).then(function(r) {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    });
+  }
+
+  function daysText(left) {
+    if (left == null) return '';
+    return left < 0 ? '已过期 ' + (-left) + ' 天' : '剩 ' + left + ' 天';
+  }
+
   function scrollBottom() {
     requestAnimationFrame(function() { msgBox.scrollTop = msgBox.scrollHeight; });
   }
@@ -287,6 +422,210 @@ html, body {
     if (el) el.remove();
   }
 
+  // ---- tabs / overview / data / settings ----
+  function switchTab(name) {
+    tabs.forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-tab') === name);
+    });
+    views.forEach(function(view) {
+      view.classList.toggle('active', view.id === 'view-' + name);
+    });
+    if (name === 'overview') loadOverview();
+    if (name === 'data') loadData(currentDataKind);
+    if (name === 'settings') loadConfig();
+    if (name === 'chat') setTimeout(scrollBottom, 0);
+  }
+
+  function loadOverview() {
+    apiFetch('/api/stats').then(function(d) {
+      var counts = d.counts || {};
+      var byStatus = d.tasks_by_status || {};
+      var cards = [
+        ['记忆', counts.memories],
+        ['物品', counts.items],
+        ['任务', counts.tasks],
+        ['待办任务', byStatus.pending],
+        ['事实', counts.facts],
+        ['实体', counts.entities]
+      ];
+      statCards.innerHTML = cards.map(function(card) {
+        return '<div class="card"><div class="num">' + esc(card[1] == null ? 0 : card[1]) +
+          '</div><div class="label">' + esc(card[0]) + '</div></div>';
+      }).join('');
+
+      var rows = [];
+      (d.due_items || []).forEach(function(item) {
+        rows.push('<div class="list-row">' + esc(item.name) +
+          '<div class="meta">物品 · ' + esc(daysText(item.days_left)) + '</div></div>');
+      });
+      (d.due_tasks || []).forEach(function(task) {
+        rows.push('<div class="list-row">' + esc(task.title) +
+          '<div class="meta">任务 · ' + esc(daysText(task.days_left)) + '</div></div>');
+      });
+      overviewDue.innerHTML = rows.length ? rows.join('') : '<div class="empty">暂无到期提醒</div>';
+    }).catch(function(err) {
+      overviewDue.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
+    });
+  }
+
+  var DATA_ENDPOINTS = {
+    memories: '/api/memories',
+    items: '/api/items',
+    tasks: '/api/tasks',
+    facts: '/api/facts',
+    entities: '/api/entities'
+  };
+
+  var STATUS_LABELS = {
+    active: '有效', reminded: '已提醒', expired: '已过期',
+    pending: '待办', done: '已完成', cancelled: '已取消'
+  };
+
+  var ENTITY_LABELS = {
+    property: '住所', person: '家庭成员', product: '物品',
+    provider: '缴费单位', place: '地点', device: '设备'
+  };
+
+  function loadData(kind) {
+    currentDataKind = kind;
+    dataTabs.querySelectorAll('.subtab').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-kind') === kind);
+    });
+    apiFetch(DATA_ENDPOINTS[kind]).then(function(d) {
+      renderData(kind, d);
+    }).catch(function(err) {
+      dataList.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
+    });
+  }
+
+  function renderData(kind, data) {
+    var rows = [];
+    if (kind === 'memories') {
+      (data.memories || []).forEach(function(m) {
+        rows.push('<div class="list-row">' + esc(m.text) +
+          '<div class="meta">' + esc(m.time) +
+          (m.summary ? ' · ' + esc(m.summary) : '') + '</div></div>');
+      });
+    } else if (kind === 'items') {
+      (data.items || []).forEach(function(item) {
+        rows.push('<div class="list-row">' + esc(item.name) +
+          '<div class="meta">到期 ' + esc(item.expiry_date || '未知') +
+          ' · ' + esc(STATUS_LABELS[item.status] || item.status) + '</div></div>');
+      });
+    } else if (kind === 'tasks') {
+      (data.tasks || []).forEach(function(task) {
+        var actions = '';
+        if (task.status === 'pending' || task.status === 'reminded') {
+          actions = '<div class="row-actions">' +
+            '<button class="small-btn" data-task-id="' + esc(task.id) + '" data-action="complete">完成</button>' +
+            '<button class="small-btn danger" data-task-id="' + esc(task.id) + '" data-action="cancel">取消</button>' +
+            '</div>';
+        }
+        rows.push('<div class="list-row">#' + esc(task.id) + ' ' + esc(task.title) +
+          '<div class="meta">' + esc(task.due_at || '未定') +
+          ' · ' + esc(STATUS_LABELS[task.status] || task.status) + '</div>' + actions + '</div>');
+      });
+    } else if (kind === 'facts') {
+      (data.facts || []).forEach(function(fact) {
+        rows.push('<div class="list-row">' + esc(fact.subject) + ' · ' +
+          esc(fact.predicate) + '：' + esc(fact.value) +
+          (fact.source ? '<div class="meta">来源：' + esc(fact.source) + '</div>' : '') +
+          '</div>');
+      });
+    } else if (kind === 'entities') {
+      (data.entities || []).forEach(function(entity) {
+        var aliases = (entity.aliases || []).join('、');
+        rows.push('<div class="list-row">' + esc(entity.canonical_name) +
+          '<div class="meta">' + esc(ENTITY_LABELS[entity.type] || entity.type) +
+          (aliases ? ' · 别名：' + esc(aliases) : '') + '</div></div>');
+      });
+    }
+    dataList.innerHTML = rows.length ? rows.join('') : '<div class="empty">暂无数据</div>';
+  }
+
+  var CONFIG_FIELDS = [
+    ['TTS_VOICE', '语音角色', 'text'],
+    ['REMINDER_DAYS', '提前提醒天数', 'number'],
+    ['REMINDER_INTERVAL_SECONDS', '扫描间隔（秒）', 'number'],
+    ['REMINDER_COOLDOWN_HOURS', '重复提醒冷却（小时）', 'number'],
+    ['SESSION_CONTEXT_TURNS', '多轮上下文轮数', 'number'],
+    ['SESSION_CONTEXT_MAX_CHARS', '单条历史最大字数', 'number'],
+    ['PROPOSAL_DEDUPE_SECONDS', '写提案去重窗口（秒）', 'number'],
+    ['PENDING_ACTION_TTL_SECONDS', '待澄清过期（秒）', 'number'],
+    ['WAKE_WORD', '唤醒词', 'text'],
+    ['WAKE_ACK_TEXT', '唤醒应答', 'text']
+  ];
+
+  function loadConfig() {
+    apiFetch('/api/config').then(function(d) {
+      var llm = d.llm || {};
+      settingsSummary.innerHTML =
+        '模型：' + esc(llm.model || '未配置') +
+        '（' + (llm.configured ? '已配置' : '未配置') + '）<br>' +
+        'API Token：' + (d.api_token_enabled ? '已启用' : '未启用') + '<br>' +
+        '数据库：' + esc(JSON.stringify(d.db_paths || {}));
+      var values = d.values || {};
+      settingsForm.innerHTML = CONFIG_FIELDS.map(function(field) {
+        return '<div class="field"><label>' + esc(field[1]) + '（' + esc(field[0]) +
+          '）</label><input data-config-key="' + esc(field[0]) + '" type="' + field[2] +
+          '" value="' + esc(values[field[0]]) + '"></div>';
+      }).join('');
+      settingsMsg.textContent = '配置保存到本地 .env，重启服务端后生效。';
+    }).catch(function(err) {
+      settingsSummary.textContent = '加载失败：' + err.message;
+    });
+  }
+
+  function saveConfig() {
+    var values = {};
+    CONFIG_FIELDS.forEach(function(field) {
+      var input = settingsForm.querySelector('[data-config-key="' + field[0] + '"]');
+      if (input) values[field[0]] = input.value;
+    });
+    apiFetch('/api/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: values })
+    }).then(function() {
+      settingsMsg.textContent = '已保存。重启服务端后生效。';
+    }).catch(function(err) {
+      settingsMsg.textContent = '保存失败：' + err.message;
+    });
+  }
+
+  tabs.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      switchTab(btn.getAttribute('data-tab'));
+    });
+  });
+
+  dataTabs.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('button[data-kind]') : null;
+    if (btn) loadData(btn.getAttribute('data-kind'));
+  });
+
+  dataList.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('button[data-task-id]') : null;
+    if (!btn) return;
+    var id = btn.getAttribute('data-task-id');
+    var action = btn.getAttribute('data-action');
+    apiFetch('/api/tasks/' + encodeURIComponent(id) + '/' + action, { method: 'POST' })
+      .then(function() {
+        loadData('tasks');
+        loadOverview();
+        pollStatus();
+      })
+      .catch(function(err) {
+        alert('操作失败：' + err.message);
+      });
+  });
+
+  settingsSave.addEventListener('click', saveConfig);
+  settingsForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+    saveConfig();
+  });
+
   // ---- status poll ----
   function pollStatus() {
     fetch('/api/status', { headers: authHeaders() })
@@ -307,6 +646,9 @@ html, body {
           });
           if (due.length > 0) {
             statusEl.textContent += ' ⏰ ' + due.join('、');
+          }
+          if (document.getElementById('view-overview').classList.contains('active')) {
+            loadOverview();
           }
         } else {
           statusEl.textContent = '🔴 服务异常';
@@ -370,6 +712,9 @@ html, body {
       try { new Audio('data:audio/mp3;base64,' + ev.audio).play().catch(function() {}); } catch (e) {}
     }
     pollStatus();  // 刷新状态栏到期列表
+    if (document.getElementById('view-overview').classList.contains('active')) {
+      loadOverview();
+    }
   }
 
   connectEvents();

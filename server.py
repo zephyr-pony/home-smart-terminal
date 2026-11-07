@@ -16,10 +16,12 @@ import os
 import secrets
 import shutil
 import tempfile
+import threading
 import traceback
 import wave
 from contextlib import asynccontextmanager
 
+import config
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -65,6 +67,23 @@ stt_lock = asyncio.Semaphore(1)
 # 临时音频文件保留目录（关闭时清理）
 _tmp_dir = None
 
+# 本地 .env（系统配置页只写白名单字段）
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+_config_lock = threading.Lock()
+
+CONFIG_FIELDS = {
+    "TTS_VOICE": ("str", 1, 100),
+    "REMINDER_DAYS": ("int", 0, 30),
+    "REMINDER_INTERVAL_SECONDS": ("int", 5, 3600),
+    "REMINDER_COOLDOWN_HOURS": ("int", 0, 720),
+    "SESSION_CONTEXT_TURNS": ("int", 0, 50),
+    "SESSION_CONTEXT_MAX_CHARS": ("int", 0, 2000),
+    "PROPOSAL_DEDUPE_SECONDS": ("int", 0, 86400),
+    "PENDING_ACTION_TTL_SECONDS": ("int", 60, 86400),
+    "WAKE_WORD": ("str", 1, 20),
+    "WAKE_ACK_TEXT": ("str", 0, 50),
+}
+
 
 async def require_api_token(authorization: str = Header(default="")):
     if not API_TOKEN:
@@ -72,6 +91,97 @@ async def require_api_token(authorization: str = Header(default="")):
     scheme, _, supplied = authorization.partition(" ")
     if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, API_TOKEN):
         raise HTTPException(status_code=401, detail="需要有效的 API Token")
+
+
+def _coerce_config_value(key, value):
+    spec = CONFIG_FIELDS.get(key)
+    if spec is None:
+        raise ValueError(f"不允许修改 {key}")
+    kind, low, high = spec
+    if kind == "int":
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} 必须是整数")
+        if number < low or number > high:
+            raise ValueError(f"{key} 必须在 {low}..{high} 之间")
+        return number
+
+    text = str(value or "").strip()
+    if "\n" in text or len(text) < low or len(text) > high:
+        raise ValueError(f"{key} 长度必须在 {low}..{high} 之间")
+    return text
+
+
+def _update_env(updates):
+    """把白名单配置写回本地 .env，保留注释和其他行。"""
+    with _config_lock:
+        lines = []
+        if os.path.exists(ENV_PATH):
+            with open(ENV_PATH, "r", encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+
+        remaining = dict(updates)
+        output = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in line:
+                key = line.split("=", 1)[0].strip()
+                if key in remaining:
+                    output.append(f"{key}={remaining.pop(key)}")
+                    continue
+            output.append(line)
+
+        for key, value in remaining.items():
+            output.append(f"{key}={value}")
+
+        text = "\n".join(output).rstrip() + "\n"
+        tmp_path = ENV_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_path, ENV_PATH)
+
+
+def _safe_config():
+    return {
+        "llm": {
+            "model": config.LLM_MODEL,
+            "configured": bool(config.LLM_BASE_URL and config.LLM_API_KEY),
+        },
+        "api_token_enabled": bool(config.API_TOKEN),
+        "values": {
+            key: getattr(config, key) for key in CONFIG_FIELDS
+        },
+        "server": {
+            "host": config.SERVER_HOST,
+            "port": config.SERVER_PORT,
+        },
+        "db_paths": {
+            "memory": config.MEMORY_DB_PATH,
+            "items": config.ITEMS_DB_PATH,
+            "agent": config.AGENT_DB_PATH,
+            "tasks": config.TASKS_DB_PATH,
+            "facts": config.FACTS_DB_PATH,
+        },
+    }
+
+
+def _stats_sync():
+    return {
+        "counts": {
+            "memories": assistant.memory.count(),
+            "items": assistant.items.count(),
+            "tasks": assistant.tasks.count(),
+            "facts": assistant.facts.count(),
+            "entities": len(assistant.clarifier.store.list_entities()),
+        },
+        "tasks_by_status": {
+            status: assistant.tasks.count(status)
+            for status in ("pending", "reminded", "done", "cancelled")
+        },
+        "due_items": assistant.items.get_due(days=REMINDER_DAYS),
+        "due_tasks": assistant.tasks.get_due(days=REMINDER_DAYS),
+    }
 
 
 def _audio_duration(path, ext):
@@ -223,6 +333,10 @@ class ChatRequest(BaseModel):
     client_id: str = Field(default="", max_length=MAX_CLIENT_ID_CHARS)
 
 
+class ConfigUpdate(BaseModel):
+    values: dict
+
+
 # ---------- 核心处理 ----------
 
 def _slim_memories(memories):
@@ -312,6 +426,94 @@ async def api_status(_auth=Depends(require_api_token)):
         "due_tasks": due_tasks,  # 到期任务提醒（提醒循环刷新）
         "dropped_events": dropped_events,  # SSE 队列满导致丢弃的事件数
         "sessions": len(assistant.sessions),
+    }
+
+
+@app.get("/api/stats")
+async def api_stats(_auth=Depends(require_api_token)):
+    data = await asyncio.to_thread(_stats_sync)
+    data["ok"] = True
+    return data
+
+
+@app.get("/api/memories")
+async def api_memories(limit: int = 50, _auth=Depends(require_api_token)):
+    limit = max(1, min(int(limit), 200))
+    memories = await asyncio.to_thread(assistant.memory.list_all, limit)
+    return {"memories": memories}
+
+
+@app.get("/api/items")
+async def api_items(status: str = None, _auth=Depends(require_api_token)):
+    if status and status not in ("active", "reminded", "expired"):
+        raise HTTPException(status_code=400, detail="status 必须是 active/reminded/expired")
+    items = await asyncio.to_thread(assistant.items.list_all, status)
+    return {"items": items}
+
+
+@app.get("/api/tasks")
+async def api_tasks(status: str = None, _auth=Depends(require_api_token)):
+    allowed = ("pending", "reminded", "done", "cancelled")
+    if status and status not in allowed:
+        raise HTTPException(status_code=400, detail="status 无效")
+    tasks = await asyncio.to_thread(assistant.tasks.list_all, status)
+    return {"tasks": tasks}
+
+
+@app.get("/api/facts")
+async def api_facts(q: str = "", limit: int = 50, _auth=Depends(require_api_token)):
+    limit = max(1, min(int(limit), 200))
+    facts = await asyncio.to_thread(
+        assistant.facts.search, q or None, None, None, limit
+    )
+    return {"facts": facts}
+
+
+@app.get("/api/entities")
+async def api_entities(type: str = None, _auth=Depends(require_api_token)):
+    entities = await asyncio.to_thread(
+        assistant.clarifier.store.list_entities, type
+    )
+    return {"entities": entities}
+
+
+@app.post("/api/tasks/{task_id}/complete")
+async def api_task_complete(task_id: int, _auth=Depends(require_api_token)):
+    ok = await asyncio.to_thread(assistant.tasks.complete, task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="任务不存在或已完成")
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def api_task_cancel(task_id: int, _auth=Depends(require_api_token)):
+    ok = await asyncio.to_thread(assistant.tasks.cancel, task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="任务不存在或已结束")
+    return {"ok": True}
+
+
+@app.get("/api/config")
+async def api_config(_auth=Depends(require_api_token)):
+    return {"ok": True, **_safe_config()}
+
+
+@app.patch("/api/config")
+async def api_config_update(req: ConfigUpdate, _auth=Depends(require_api_token)):
+    updates = {}
+    for key, value in req.values.items():
+        try:
+            updates[key] = _coerce_config_value(key, value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if not updates:
+        raise HTTPException(status_code=400, detail="没有可更新的配置")
+
+    await asyncio.to_thread(_update_env, updates)
+    return {
+        "ok": True,
+        "restart_required": True,
+        "updated": sorted(updates),
     }
 
 
