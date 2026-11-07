@@ -124,13 +124,19 @@ class AgentStore:
             self.conn.commit()
             return cur.lastrowid
 
-    def list_entities(self, type):
+    def list_entities(self, type=None):
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT id, type, canonical_name, aliases FROM entities "
-                "WHERE type=? ORDER BY id",
-                (type,),
-            ).fetchall()
+            if type:
+                rows = self.conn.execute(
+                    "SELECT id, type, canonical_name, aliases FROM entities "
+                    "WHERE type=? ORDER BY id",
+                    (type,),
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT id, type, canonical_name, aliases FROM entities "
+                    "ORDER BY type, id"
+                ).fetchall()
         return [
             {
                 "id": row[0],
@@ -140,6 +146,29 @@ class AgentStore:
             }
             for row in rows
         ]
+
+    def get_entity(self, type, name):
+        """按规范名或别名精确查找实体。"""
+        normalized = normalize_text(name)
+        if not normalized:
+            return None
+        for entity in self.list_entities(type):
+            for candidate in [entity["canonical_name"]] + entity["aliases"]:
+                if normalize_text(candidate) == normalized:
+                    return entity
+        return None
+
+    def update_entity(self, entity_id, canonical_name, aliases):
+        with self._lock:
+            self.conn.execute(
+                "UPDATE entities SET canonical_name=?, aliases=? WHERE id=?",
+                (
+                    canonical_name,
+                    json.dumps(sorted(set(aliases)), ensure_ascii=False),
+                    entity_id,
+                ),
+            )
+            self.conn.commit()
 
     def find_entity(self, type, text):
         """按规范名/别名在文本中找实体，取最长匹配。"""

@@ -204,9 +204,74 @@ def get_items_tools(items, proposals=None):
     ]
 
 
-def get_all_tools(memory: Memory, items=None, proposals=None):
-    """聚合全部工具（memory 4 件套 + 日期 + 可选 items 4 件套）。"""
+def get_entity_tools(entities):
+    """实体管理工具：新增、改名、别名、列表。"""
+    entity_type_schema = {
+        "type": "string",
+        "enum": ["property", "person", "product", "provider", "place", "device"],
+        "description": "实体类型：property 住所 / person 人 / product 物品 / provider 缴费单位 / place 地点 / device 设备",
+    }
+
+    return [
+        _build(
+            name="entity_add",
+            description=(
+                "新增家庭实体，或给已有实体加别名。"
+                "用户说'把爸妈家也叫父母家''新建一个房子叫老家'时调用。"
+            ),
+            properties={
+                "type": entity_type_schema,
+                "canonical_name": {
+                    "type": "string",
+                    "description": "规范名称，如 '爸妈家'",
+                },
+                "aliases": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "别名列表，如 ['父母家', '我爸妈家']",
+                },
+            },
+            required=["type", "canonical_name"],
+            execute=lambda type, canonical_name, aliases=None: entities.add_entity(
+                type, canonical_name, aliases
+            ),
+        ),
+        _build(
+            name="entity_rename",
+            description=(
+                "修改实体规范名。用户说'把爸妈家改名叫父母家'时调用。"
+                "旧名字会自动保留为别名。"
+            ),
+            properties={
+                "type": entity_type_schema,
+                "old_name": {"type": "string", "description": "旧名称或别名"},
+                "new_name": {"type": "string", "description": "新规范名"},
+            },
+            required=["type", "old_name", "new_name"],
+            execute=lambda type, old_name, new_name: entities.rename_entity(
+                type, old_name, new_name
+            ),
+        ),
+        _build(
+            name="entity_list",
+            description=(
+                "列出已记录的家庭实体和别名。用户问'看看我记了哪些房子/人/地点'时调用。"
+                "不传 type 时列出全部。"
+            ),
+            properties={
+                "type": entity_type_schema,
+            },
+            required=[],
+            execute=lambda type=None: entities.list_entities(type),
+        ),
+    ]
+
+
+def get_all_tools(memory: Memory, items=None, proposals=None, entities=None):
+    """聚合全部工具（memory + 日期 + items + 实体管理）。"""
     tools = get_memory_tools(memory, proposals) + [get_current_date_tool()]
     if items is not None:
         tools += get_items_tools(items, proposals)
+    if entities is not None:
+        tools += get_entity_tools(entities)
     return tools

@@ -16,6 +16,7 @@ from config import (
 )
 from agent.clarify import Clarifier
 from agent.confirm import ConfirmationManager, ConfirmationRequired
+from agent.entities import EntityService
 from agent.propose import ProposalService
 from memory import Memory
 from items import Items
@@ -74,8 +75,15 @@ class Assistant:
         self.confirmations = ConfirmationManager(
             self.clarifier.store, self.memory, self.items
         )
-        # 工具注册表（memory 4 件套 + 日期 + items 4 件套）
-        self.tools = get_all_tools(self.memory, self.items, self.proposals)
+        # 实体管理：新增/改名/别名/列表
+        self.entities = EntityService(self.clarifier.store)
+        # 工具注册表（memory + 日期 + items + 实体）
+        self.tools = get_all_tools(
+            self.memory,
+            self.items,
+            proposals=self.proposals,
+            entities=self.entities,
+        )
         self.max_agent_loops = 5
         # 轻量会话上下文：client_id -> [(user_text, reply), ...]（阶段 3 多轮对话的底子）
         self.sessions = {}
