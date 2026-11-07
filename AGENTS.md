@@ -36,16 +36,17 @@
 
 ## 演进路线与架构约束
 
-当前处于阶段 1：`entities` / `pending_actions`、电费/牛奶澄清、CLI 关联已落地；优先把家庭场景的澄清和两阶段提交做通用，再扩展 RAG 和多终端。
+当前优先 Web 控制台：聊天之外增加统计、列表、系统配置；随后 Android App；RAG 延后。CLI 和现有服务端能力保留。
 
 ### 开发顺序
 
 1. 阶段 0：分层重构（`domain/` / `agent/` / `adapters/`），保持现有行为。
 2. 阶段 1：`entities` + `pending_actions`，电费/牛奶澄清，两阶段提交。
 3. 阶段 2：通用化 `facts` / `tasks` / 提醒。
-4. 阶段 3：RAG + 地图/公交/天气。
-5. 阶段 4：统一网关 + 小程序/App。
-6. 阶段 5：ESP32 与语音终端。
+4. 阶段 3：Web 控制台（统计 / 列表 / 系统配置）。
+5. 阶段 4：Android App。
+6. 阶段 5：RAG + 本地生活工具（延后）。
+7. 阶段 6：ESP32 与语音终端。
 
 ### 硬性约束
 
@@ -99,6 +100,7 @@ pytest tests -q
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
 - 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`；任务/事实在 `tests/test_tasks.py` / `tests/test_facts.py`。
 - 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
+- Web API 的统计/列表/配置测试在 `tests/test_server.py`；配置写入测试用 `monkeypatch.setattr(server, "ENV_PATH", ...)` 指向临时文件。
 
 ## 必须保持的约定
 
@@ -157,6 +159,16 @@ pytest tests -q
 - 提醒状态落库（`reminded_at`），冷却由 `REMINDER_COOLDOWN_HOURS` 控制。
 - SSE 事件格式：`data: {json}\n\n`，心跳为注释行；队列满时丢最旧并累加 `dropped_events`，不要静默丢。
 - 前端用 `fetch` 流式读取而非 `EventSource`（需要携带 `Authorization`）。
+
+### Web 控制台
+
+- 页面保持单文件原生 JS，无构建步骤。
+- 聊天、统计、列表、配置共用同一套 API；不要在前端重复业务逻辑。
+- 列表/统计走只读 API；任务完成/取消走 tasks，删除仍走确认。
+- 系统配置只允许白名单字段写 `.env`，密钥绝不返回前端；保存后提示重启生效。
+- `server.py` 的 `CONFIG_FIELDS` 与 `static/index.html` 的 `CONFIG_FIELDS` 要保持同步。
+- 新增列表接口时保持只读；需要写操作就复用现有任务/确认逻辑。
+- 移动端优先，所有操作要能在手机浏览器完成。
 
 ### 前端音频
 
