@@ -100,7 +100,7 @@ pytest tests -q
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
 - 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`；任务/事实在 `tests/test_tasks.py` / `tests/test_facts.py`。
 - 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
-- Web API 的统计/列表/配置测试在 `tests/test_server.py`；配置写入测试用 `monkeypatch.setattr(server, "ENV_PATH", ...)` 指向临时文件。
+- Web API 的统计/列表/搜索/分页/删除/编辑/配置测试在 `tests/test_server.py`；配置写入测试用 `monkeypatch.setattr(server, "ENV_PATH", ...)` 指向临时文件。
 
 ## 必须保持的约定
 
@@ -167,6 +167,9 @@ pytest tests -q
 - 列表/统计走只读 API；任务完成/取消走 tasks，删除仍走确认。
 - 系统配置只允许白名单字段写 `.env`，密钥绝不返回前端；保存后提示重启生效。
 - `server.py` 的 `CONFIG_FIELDS` 与 `static/index.html` 的 `CONFIG_FIELDS` 要保持同步。
+- 列表接口支持 `q` / `status` / `limit` / `offset`，返回 `total`；前端每页 20 条。
+- 删除接口必须带 `confirm=true`；前端还要弹二次确认，不能静默删除。
+- 任务编辑走 `PATCH /api/tasks/{id}`，只允许改标题、时间、类型。
 - 新增列表接口时保持只读；需要写操作就复用现有任务/确认逻辑。
 - 移动端优先，所有操作要能在手机浏览器完成。
 

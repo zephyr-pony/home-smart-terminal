@@ -16,7 +16,7 @@
 - 💬 **多轮对话**：同一客户端最近几轮上下文注入 agent，支持"那个、它、还有呢"这类追问
 - 🗓️ **物品与到期提醒**：记录物品到期日，服务端主动推送（SSE）即将到期 / 已过期提醒并语音播报
 - ✅ **通用任务提醒**：账单、日程、自定义提醒统一进 tasks，和物品到期一起推送；说「电费交了」可标记完成
-- 🖥️ **Web 控制台**：聊天之外提供概览统计、数据列表和系统配置，移动端可用
+- 🖥️ **Web 控制台**：聊天之外提供概览统计、数据列表、搜索/筛选/分页、任务编辑和系统配置，移动端可用
 - ⚙️ **配置集中管理**：所有参数在 `.env` 中，密钥不入库
 
 ## 演进方向：家庭生活 Agent
@@ -110,13 +110,15 @@ start.bat wake       # 或 python main.py wake
 |---|---|---|
 | `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`） |
 | `/api/stats` | GET | 概览统计：数量、任务状态、到期物品/任务 |
-| `/api/memories` | GET | 记忆列表 |
-| `/api/items` | GET | 物品列表，可按状态筛选 |
-| `/api/tasks` | GET | 任务列表，可按状态筛选 |
-| `/api/facts` | GET | 结构化事实列表 / 搜索 |
-| `/api/entities` | GET | 实体与别名列表 |
+| `/api/memories` | GET | 记忆列表，支持 `q` / `limit` / `offset` |
+| `/api/items` | GET | 物品列表，支持 `q` / `status` / `limit` / `offset` |
+| `/api/tasks` | GET | 任务列表，支持 `q` / `status` / `limit` / `offset` |
+| `/api/facts` | GET | 结构化事实列表 / 搜索，支持 `q` / `limit` / `offset` |
+| `/api/entities` | GET | 实体与别名列表，支持 `q` / `type` / `limit` / `offset` |
 | `/api/tasks/{id}/complete` | POST | 完成任务 |
 | `/api/tasks/{id}/cancel` | POST | 取消任务 |
+| `/api/tasks/{id}` | PATCH | 编辑任务标题 / 时间 / 类型 |
+| `/api/{memories\|items\|facts\|tasks}/{id}?confirm=true` | DELETE | 删除记录，必须显式确认 |
 | `/api/config` | GET / PATCH | 读取脱敏配置 / 更新白名单字段 |
 | `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64 |
 | `/api/voice` | POST | WAV 语音交互（multipart: file + client_id） |
@@ -179,6 +181,18 @@ start.bat wake       # 或 python main.py wake
 按 Enter      开始语音录音（说完停顿自动结束）
 直接输入文字   以文本方式交互
 输入 quit     退出
+```
+
+### Web 控制台
+
+```
+聊天    文字 / 语音对话，保留 SSE 提醒
+概览    记忆 / 物品 / 任务 / 事实 / 实体数量，到期提醒
+数据    记忆 / 物品 / 任务 / 事实 / 实体列表
+        支持搜索、状态筛选、分页
+        任务可完成 / 取消 / 编辑；删除需二次确认
+设置    语音角色、提醒天数/间隔/冷却、上下文轮数等
+        写本地 .env，重启服务端后生效，密钥不返回前端
 ```
 
 ### 唤醒词模式
@@ -259,7 +273,7 @@ start.bat wake       # 或 python main.py wake
 - [x] 删除类动作二次确认
 - [x] 实体管理（新增 / 改名 / 别名 / 查看）
 - [x] 通用任务 / 结构化事实 + 提醒扩展
-- [x] Web 控制台基础版（聊天 / 统计 / 列表 / 系统配置）
+- [x] Web 控制台（聊天 / 统计 / 列表 / 搜索筛选 / 分页 / 任务编辑 / 删除确认 / 配置）
 - [ ] Android App
 - [ ] 记忆分层 + RAG + 本地生活工具（延后）
 - [ ] 多渠道网关（小程序 / App）
