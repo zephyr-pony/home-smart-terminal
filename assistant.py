@@ -15,6 +15,7 @@ from config import (
     SESSION_TTL_SECONDS,
 )
 from agent.clarify import Clarifier
+from agent.propose import ProposalService
 from memory import Memory
 from items import Items
 from llm import LLM
@@ -64,8 +65,12 @@ class Assistant:
         self.items = items or Items()
         # 歧义澄清（实体 + 待澄清动作），写操作前先过一遍
         self.clarifier = clarifier or Clarifier(items=self.items)
+        # 写操作统一走「提案 → 提交」，带幂等和审计
+        self.proposals = ProposalService(
+            self.clarifier.store, self.memory, self.items
+        )
         # 工具注册表（memory 4 件套 + 日期 + items 4 件套）
-        self.tools = get_all_tools(self.memory, self.items)
+        self.tools = get_all_tools(self.memory, self.items, self.proposals)
         self.max_agent_loops = 5
         # 轻量会话上下文：client_id -> [(user_text, reply), ...]（阶段 3 多轮对话的底子）
         self.sessions = {}

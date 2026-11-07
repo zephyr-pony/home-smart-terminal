@@ -57,6 +57,21 @@ class AgentStore:
             "CREATE INDEX IF NOT EXISTS idx_pending_conversation "
             "ON pending_actions(conversation_id)"
         )
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action_type TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL,
+                result TEXT,
+                idempotency_key TEXT,
+                created_at TEXT
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposals_key "
+            "ON proposals(idempotency_key, created_at)"
+        )
 
     # ---------- 实体 ----------
 
@@ -194,6 +209,65 @@ class AgentStore:
                 "DELETE FROM pending_actions WHERE id=?", (pending_id,)
             )
             self.conn.commit()
+
+    # ---------- 写操作提案 / 审计 ----------
+
+    def find_recent_proposal(self, idempotency_key, since_iso):
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id, action_type, payload, status, result, created_at "
+                "FROM proposals WHERE idempotency_key=? AND created_at>=? "
+                "ORDER BY id DESC LIMIT 1",
+                (idempotency_key, since_iso),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "action_type": row[1],
+            "payload": json.loads(row[2] or "{}"),
+            "status": row[3],
+            "result": row[4],
+            "created_at": row[5],
+        }
+
+    def record_proposal(self, action_type, payload, status, result,
+                        idempotency_key=None):
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO proposals "
+                "(action_type, payload, status, result, idempotency_key, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    action_type,
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    status,
+                    result,
+                    idempotency_key,
+                    datetime.now().isoformat(),
+                ),
+            )
+            self.conn.commit()
+            return cur.lastrowid
+
+    def list_proposals(self, limit=20):
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, action_type, payload, status, result, created_at "
+                "FROM proposals ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "action_type": row[1],
+                "payload": json.loads(row[2] or "{}"),
+                "status": row[3],
+                "result": row[4],
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
 
     def close(self):
         with self._lock:

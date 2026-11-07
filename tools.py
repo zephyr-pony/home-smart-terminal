@@ -37,8 +37,14 @@ def _build(name, description, properties, required, execute):
     }
 
 
-def get_memory_tools(memory: Memory):
+def get_memory_tools(memory: Memory, proposals=None):
     """memory 相关工具（4 件套）。memory 由调用方传入（保持单例）。"""
+    def store_memory(text, summary):
+        if proposals is not None:
+            return proposals.store_memory(text, summary)
+        memory.store(text, summary)
+        return "已存储"
+
     return [
         _build(
             name="memory_search",
@@ -73,7 +79,7 @@ def get_memory_tools(memory: Memory):
                 "summary": {"type": "string", "description": "精简摘要，含绝对日期"},
             },
             required=["text", "summary"],
-            execute=lambda text, summary: memory.store(text, summary) or "已存储",
+            execute=store_memory,
         ),
         _build(
             name="memory_list",
@@ -126,7 +132,9 @@ def _fmt_memories(memories):
     return "\n".join(str(m) for m in memories)
 
 
-def _add_item(items, name, expiry_date=None):
+def _add_item(items, name, expiry_date=None, proposals=None):
+    if proposals is not None:
+        return proposals.add_item(name, expiry_date)
     try:
         item = items.add(name, expiry_date)
     except ValueError as exc:
@@ -134,7 +142,7 @@ def _add_item(items, name, expiry_date=None):
     return f"已添加物品：{item['name']}，到期日 {item['expiry_date'] or '未知'}"
 
 
-def get_items_tools(items):
+def get_items_tools(items, proposals=None):
     """物品管理工具（4 件套，阶段 B 加入）。items 由调用方传入（保持单例）。"""
     def _fmt_items(item_list):
         if not item_list:
@@ -161,7 +169,9 @@ def get_items_tools(items):
                 "expiry_date": {"type": "string", "description": "到期日期 YYYY-MM-DD，如 2026-08-05"},
             },
             required=["name"],
-            execute=lambda name, expiry_date=None: _add_item(items, name, expiry_date),
+            execute=lambda name, expiry_date=None: _add_item(
+                items, name, expiry_date, proposals
+            ),
         ),
         _build(
             name="item_search",
@@ -194,9 +204,9 @@ def get_items_tools(items):
     ]
 
 
-def get_all_tools(memory: Memory, items=None):
+def get_all_tools(memory: Memory, items=None, proposals=None):
     """聚合全部工具（memory 4 件套 + 日期 + 可选 items 4 件套）。"""
-    tools = get_memory_tools(memory) + [get_current_date_tool()]
+    tools = get_memory_tools(memory, proposals) + [get_current_date_tool()]
     if items is not None:
-        tools += get_items_tools(items)
+        tools += get_items_tools(items, proposals)
     return tools
