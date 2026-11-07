@@ -16,6 +16,7 @@
 | `wake_word.py` | 唤醒词解析：从 STT 文本提取「小马」后的指令 |
 | `domain/store.py` | 实体 + 待澄清动作（SQLite，`data/agent.db`） |
 | `agent/clarify.py` | 澄清引擎：识别歧义、生成问题、合并回答 |
+| `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
 | `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
 | `assistant.py` | 核心编排 + 手写 Agent loop；CLI 与服务端共用 |
 | `tools.py` | OpenAI function calling 工具注册表（schema + execute） |
@@ -94,7 +95,7 @@ pytest tests -q
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
-- 澄清相关测试在 `tests/test_clarify.py`；新增规则时同步补歧义用例。
+- 澄清相关测试在 `tests/test_clarify.py`；写提案测试在 `tests/test_propose.py`。
 - 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
 
 ## 必须保持的约定
@@ -117,6 +118,12 @@ pytest tests -q
 - `pending_action` 按 `conversation_id` 保存，默认 30 分钟过期；一个会话同时只保留一个。
 - 一轮只问一个问题，回答后合并成完整文本再进 agent loop。
 - CLI 固定传 `client_id="cli"`，否则待澄清动作无法关联。
+
+### 写操作
+
+- `memory_store` / `item_add` 不直接写库，统一走 `ProposalService`。
+- 提案记录在 `proposals` 表，带 `idempotency_key`；`PROPOSAL_DEDUPE_SECONDS` 内相同内容自动去重。
+- 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
 
 ### 工具注册
 

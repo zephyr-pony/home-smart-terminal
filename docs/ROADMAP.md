@@ -287,6 +287,16 @@ pending_actions(
   expires_at TEXT
 );
 
+proposals(
+  id TEXT PRIMARY KEY,
+  action_type TEXT,
+  payload TEXT,
+  status TEXT,
+  result TEXT,
+  idempotency_key TEXT,
+  created_at TEXT
+);
+
 documents(
   id TEXT PRIMARY KEY,
   source TEXT,
@@ -353,7 +363,7 @@ POST /v1/actions/act-1/confirm
 
 ## 7. 分阶段计划
 
-当前进展（2026-11-05）：已落地 `entities` + `pending_actions`、电费/牛奶两类澄清、CLI 关联；测试 54 个通过。下一步先把澄清规则和两阶段提交做通用，再进入 RAG。
+当前进展（2026-11-05）：已落地 `entities` / `pending_actions` / `proposals`、电费/牛奶澄清、`ProposalService` 幂等写入、CLI 关联；测试 59 个通过。下一步把澄清规则和实体管理做通用，再进入 RAG。
 
 ### 阶段 0：基础重构
 
@@ -375,7 +385,7 @@ POST /v1/actions/act-1/confirm
 
 ### 阶段 1：澄清与两阶段提交 MVP
 
-状态：基础版已落地（电费/牛奶 + CLI）。
+状态：基础版已落地（电费/牛奶 + CLI + 提案/幂等写入）。
 
 目标：先解决「电费」「牛奶」两类歧义。
 
@@ -482,7 +492,7 @@ POST /v1/actions/act-1/confirm
 - **歧义测试集**：电费、牛奶、父母家、同名物品、指代（那个/它）。
 - **工具测试**：超时、限流、错误降级、幂等。
 - **RAG 评测**：召回率、引用正确率、时效判断。
-- **回归测试**：现有测试全部通过（当前 54 个）。
+- **回归测试**：现有测试全部通过（当前 59 个）。
 - **端到端场景**：Web/小程序/ESP32 各一条主链路。
 - **指标**：澄清率、误提交率、槽位准确率、平均延迟、单次成本。
 
@@ -530,9 +540,9 @@ POST /v1/actions/act-1/confirm
 
 ## 12. 下一步
 
-阶段 0 + 阶段 1 的基础版已经落地。接下来：
+阶段 0 + 阶段 1 的基础版已经落地，写操作也已统一走 `ProposalService`。接下来：
 
 1. 通用化澄清规则：水费/燃气费/物业费/暖气费、实体别名、候选管理。
-2. 把 `memory_store` / `item_add` 真正改成「提案 → 提交」，不再在澄清后直接交给 LLM 写库。
+2. 高风险动作确认：删除/付款/通知他人走确认流程，并记录审计。
 3. 扩充歧义测试集：指代、同名物品、父母家、多个账单。
 4. 再进入阶段 2（`facts` / `tasks` 通用化），然后才是 RAG 和多终端。

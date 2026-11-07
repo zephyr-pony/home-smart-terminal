@@ -8,6 +8,7 @@
 - 🗣️ **语音唤醒**：CLI 常驻监听，说「小马」唤醒；支持「小马，明天要交电费」一次说完
 - 🧠 **记忆为核心**：陈述事实自动记录，疑问句自动检索回答
 - 🧩 **主动澄清**：电费/水费缺「哪个家」、物品有多个候选时，先追问再记录，避免歧义
+- 🧾 **写操作可审计**：记忆/物品创建走提案服务，短时间重复内容自动去重
 - 🔍 **中文全文检索**：任意子串匹配，零依赖（SQLite FTS5 中文空格化方案）
 - 🤖 **Agent 驱动**：LLM 通过 function calling 自主选择工具（记忆 / 物品 / 日期），不是硬编码规则
 - 💬 **多轮对话**：同一客户端最近几轮上下文注入 agent，支持"那个、它、还有呢"这类追问
@@ -131,8 +132,9 @@ start.bat wake       # 或 python main.py wake
 | `STT_LANGUAGE` | `zh` | 识别语言 |
 | `MEMORY_DB_PATH` | `./data/memory.db` | 记忆库位置 |
 | `ITEMS_DB_PATH` | `./data/items.db` | 物品库位置 |
-| `AGENT_DB_PATH` | `./data/agent.db` | 实体 / 待澄清动作库位置 |
+| `AGENT_DB_PATH` | `./data/agent.db` | 实体 / 待澄清动作 / 提案库位置 |
 | `PENDING_ACTION_TTL_SECONDS` | `1800` | 待澄清动作过期时间（秒） |
+| `PROPOSAL_DEDUPE_SECONDS` | `300` | 相同写提案的去重窗口（秒） |
 | `SAMPLE_RATE` | `16000` | 录音采样率 |
 | `CHUNK_SIZE` | `1024` | 音频块大小 |
 | `MAX_RECORD_SECONDS` | `15` | CLI 最长录音时长（秒） |
