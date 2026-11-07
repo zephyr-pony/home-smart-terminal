@@ -15,6 +15,7 @@
 - 🤖 **Agent 驱动**：LLM 通过 function calling 自主选择工具（记忆 / 物品 / 日期），不是硬编码规则
 - 💬 **多轮对话**：同一客户端最近几轮上下文注入 agent，支持"那个、它、还有呢"这类追问
 - 🗓️ **物品与到期提醒**：记录物品到期日，服务端主动推送（SSE）即将到期 / 已过期提醒并语音播报
+- ✅ **通用任务提醒**：账单、日程、自定义提醒统一进 tasks，和物品到期一起推送；说「电费交了」可标记完成
 - ⚙️ **配置集中管理**：所有参数在 `.env` 中，密钥不入库
 
 ## 演进方向：家庭生活 Agent
@@ -38,10 +39,9 @@
 输入（语音 / 文字）
    ↓  （语音先经 FunASR 识别）
 Agent：LLM 按 function calling 自主决策调哪个工具
-   ├─ memory_store / memory_delete  → 记 / 删家庭事实
-   ├─ memory_search / memory_list   → 检索记忆并回答
-   ├─ item_add / item_delete        → 记 / 删到期物品
-   ├─ item_search / item_list       → 查物品到期情况
+   ├─ memory_* / fact_*             → 记 / 查家庭事实与结构化信息
+   ├─ item_*                        → 物品与到期
+   ├─ task_*                        → 账单 / 日程 / 提醒
    └─ get_current_date              → 时间推理（还有几天 / 是否过期）
    ↓
 回答（文字 + Edge TTS 语音）
@@ -106,7 +106,7 @@ start.bat wake       # 或 python main.py wake
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `/api/status` | GET | 状态、记忆/物品数量和当前到期物品（`due_items`） |
+| `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`） |
 | `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64 |
 | `/api/voice` | POST | WAV 语音交互（multipart: file + client_id） |
 | `/api/events` | GET | SSE 事件流，主动推送到期提醒（`{"type":"reminder", ...}`） |
@@ -135,6 +135,8 @@ start.bat wake       # 或 python main.py wake
 | `MEMORY_DB_PATH` | `./data/memory.db` | 记忆库位置 |
 | `ITEMS_DB_PATH` | `./data/items.db` | 物品库位置 |
 | `AGENT_DB_PATH` | `./data/agent.db` | 实体 / 待澄清动作 / 提案库位置 |
+| `TASKS_DB_PATH` | `./data/tasks.db` | 任务 / 提醒库位置 |
+| `FACTS_DB_PATH` | `./data/facts.db` | 结构化事实库位置 |
 | `PENDING_ACTION_TTL_SECONDS` | `1800` | 待澄清动作过期时间（秒） |
 | `PROPOSAL_DEDUPE_SECONDS` | `300` | 相同写提案的去重窗口（秒） |
 | `SAMPLE_RATE` | `16000` | 录音采样率 |
@@ -181,6 +183,9 @@ start.bat wake       # 或 python main.py wake
 | 用户说 | 系统行为 |
 |---|---|
 | 我今天给鼠标换了电池 | 记为记忆：相对时间自动换算成绝对日期（如"8月X日"） |
+| 明天要交电费 | 创建账单任务，到期前主动提醒 |
+| 电费交了 | 找到对应任务并标记完成 |
+| 我有哪些提醒？ | 列出待办任务 |
 | 酸奶 8 月 5 号过期 | 记入物品清单：酸奶，到期日 2026-08-05 |
 | 我的酸奶还有几天过期？ | 查物品 → 结合今天日期回答"还有 4 天"（或已过期 X 天） |
 | 冰箱里有什么东西？ | 列出物品清单及到期情况 |
@@ -242,6 +247,7 @@ start.bat wake       # 或 python main.py wake
 - [x] 实体消歧与两阶段提交（基础版：电费 / 牛奶）
 - [x] 删除类动作二次确认
 - [x] 实体管理（新增 / 改名 / 别名 / 查看）
+- [x] 通用任务 / 结构化事实 + 提醒扩展
 - [ ] 记忆分层 + RAG + 本地生活工具
 - [ ] 多渠道网关（小程序 / App）
 - [ ] ESP32 与语音终端

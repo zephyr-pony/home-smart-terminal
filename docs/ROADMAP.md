@@ -251,28 +251,27 @@ entities(
 );
 
 facts(
-  id TEXT PRIMARY KEY,
-  space_id TEXT NOT NULL,
-  subject_id TEXT,
-  predicate TEXT,
-  value TEXT,
+  id INTEGER PRIMARY KEY,
+  subject TEXT NOT NULL,
+  predicate TEXT NOT NULL,
+  value TEXT NOT NULL,
+  source TEXT,
   valid_from TEXT,
   valid_to TEXT,
-  confidence REAL,
-  source TEXT,
   created_at TEXT
 );
 
 tasks(
-  id TEXT PRIMARY KEY,
-  space_id TEXT NOT NULL,
-  type TEXT,
-  title TEXT,
-  entity_id TEXT,
+  id INTEGER PRIMARY KEY,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
   due_at TEXT,
   status TEXT,
+  entity_id INTEGER,
   payload TEXT,
-  created_at TEXT
+  created_at TEXT,
+  reminded_at TEXT,
+  completed_at TEXT
 );
 
 pending_actions(
@@ -364,7 +363,7 @@ POST /v1/actions/act-1/confirm
 
 ## 7. 分阶段计划
 
-当前进展（2026-11-05）：已落地 `entities` / `pending_actions` / `proposals`、通用澄清规则、实体新增/改名/别名、`ProposalService` 幂等写入、删除二次确认、CLI 关联；测试 77 个通过。下一步补付款确认钩子，再进入 RAG。
+当前进展（2026-11-05）：已落地 `entities` / `pending_actions` / `proposals` / `tasks` / `facts`、通用澄清规则、实体管理、任务与提醒扩展、`ProposalService` 幂等写入、删除二次确认；测试 91 个通过。下一步进入 RAG 与实时生活工具。
 
 ### 阶段 0：基础重构
 
@@ -406,6 +405,8 @@ POST /v1/actions/act-1/confirm
 - 删除等高风险操作需要确认。
 
 ### 阶段 2：通用化记忆与任务
+
+状态：基础版已落地（tasks / facts + 提醒扩展）。
 
 目标：新增生活领域不需要改核心循环。
 
@@ -493,7 +494,7 @@ POST /v1/actions/act-1/confirm
 - **歧义测试集**：电费、牛奶、父母家、同名物品、指代（那个/它）。
 - **工具测试**：超时、限流、错误降级、幂等。
 - **RAG 评测**：召回率、引用正确率、时效判断。
-- **回归测试**：现有测试全部通过（当前 77 个）。
+- **回归测试**：现有测试全部通过（当前 91 个）。
 - **端到端场景**：Web/小程序/ESP32 各一条主链路。
 - **指标**：澄清率、误提交率、槽位准确率、平均延迟、单次成本。
 
@@ -541,9 +542,9 @@ POST /v1/actions/act-1/confirm
 
 ## 12. 下一步
 
-阶段 0 + 阶段 1 的基础版已经落地，写操作已统一走 `ProposalService`，删除也走二次确认，实体可通过工具维护。接下来：
+阶段 0 + 阶段 1 + 阶段 2 的基础版已经落地：实体、澄清、提案、确认、任务、事实都已可用。接下来：
 
-1. 付款类动作接入：确定支付/账单服务后，复用 `ConfirmationManager`。
-2. 扩充歧义测试集：指代、同名物品、父母家、多个账单。
-3. 进入阶段 2（`facts` / `tasks` 通用化），然后才是 RAG 和多终端。
-4. RAG 前先定首批官方来源和地图 API Key。
+1. RAG：首批官方来源、文档接入、分块、混合检索、引用与时效。
+2. 本地生活工具：地图/公交/天气，先确定高德 API Key。
+3. 事实与实体关联：`facts.subject` 升级为实体 ID，支持属性查询。
+4. 付款类动作：确定支付/账单服务后，复用 `ConfirmationManager`。

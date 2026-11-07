@@ -14,7 +14,9 @@
 |---|---|
 | `main.py` | CLI 入口：录音 → STT → `Assistant` → 打印 + TTS 播报；含唤醒词常驻模式 |
 | `wake_word.py` | 唤醒词解析：从 STT 文本提取「小马」后的指令 |
-| `domain/store.py` | 实体 + 待澄清动作（SQLite，`data/agent.db`） |
+| `domain/store.py` | 实体 + 待澄清动作 + 提案（SQLite，`data/agent.db`） |
+| `domain/tasks.py` | 通用任务/提醒：账单、日程、自定义（SQLite，`data/tasks.db`） |
+| `domain/facts.py` | 结构化事实：户号、地址、品牌、型号（SQLite，`data/facts.db`） |
 | `agent/clarify.py` | 澄清引擎：识别歧义、生成问题、合并回答 |
 | `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
 | `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
@@ -53,13 +55,11 @@
 - 删除/付款/通知他人等高风险动作必须确认。
 - RAG 只放静态知识；路线、公交、天气、余额走实时工具。
 - 工具返回结构化结果，外部工具必须有超时、缓存和降级。
-- 业务数据带 `space_id`，为多家庭/多设备预留隔离。
+- 多终端阶段引入 `space_id`，为多家庭/多设备预留隔离；当前单家庭版本先集中在默认空间。
 - 新增产品决策先写入 `docs/ROADMAP.md` 的「待决策」，不要擅自定。
 
 ### 规划中的模块（尚未实现）
 
-- `domain/`：实体、事实、任务、提醒。
-- `agent/`：抽取、实体解析、澄清策略、执行编排。
 - `adapters/`：CLI、Web、API、MQTT/设备。
 - `rag/`：文档接入、分块、embedding、检索。
 
@@ -97,7 +97,7 @@ pytest tests -q
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
-- 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`。
+- 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`；任务/事实在 `tests/test_tasks.py` / `tests/test_facts.py`。
 - 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
 
 ## 必须保持的约定
@@ -130,7 +130,7 @@ pytest tests -q
 
 ### 写操作
 
-- `memory_store` / `item_add` 不直接写库，统一走 `ProposalService`。
+- `memory_store` / `item_add` / `task_add` / `fact_store` 不直接写库，统一走 `ProposalService`。
 - 提案记录在 `proposals` 表，带 `idempotency_key`；`PROPOSAL_DEDUPE_SECONDS` 内相同内容自动去重。
 - 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
 - 删除类动作（`memory_delete` / `item_delete`）不直接执行，先经 `ConfirmationManager` 请求确认。
@@ -145,13 +145,14 @@ pytest tests -q
 
 ### 存储与并发
 
-- `Memory` / `Items` 的连接是 `check_same_thread=False`，所有数据库操作必须持有 `RLock`。
+- `Memory` / `Items` / `Tasks` / `Facts` / `AgentStore` 的连接是 `check_same_thread=False`，所有数据库操作必须持有 `RLock`。
 - 服务端用 `asyncio.to_thread` 跑同步编排；不要在 async handler 里直接做重 IO。
 - 到期状态同步、筛选、标记必须在同一把锁内完成（见 `Items.claim_due_reminders`），避免并发窗口。
 - `memories` 是 `memories_raw` + `memories_fts` 双表；检索依赖“逐字空格化”，换分词方案需要数据迁移。
 
 ### 提醒与 SSE
 
+- 提醒循环同时扫描 `items`（物品到期）和 `tasks`（账单/日程/自定义）。
 - 只有存在在线 SSE 订阅者时才 `claim_due_reminders`，避免没送达却消耗提醒额度。
 - 提醒状态落库（`reminded_at`），冷却由 `REMINDER_COOLDOWN_HOURS` 控制。
 - SSE 事件格式：`data: {json}\n\n`，心跳为注释行；队列满时丢最旧并累加 `dropped_events`，不要静默丢。
