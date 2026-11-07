@@ -189,6 +189,32 @@ class Memory:
             for rid, summary, text, ts in hits
         ]
 
+    def search_details(self, query, n_results=50):
+        """全文检索并返回结构化结果（供 Web 列表使用）。"""
+        with self._lock:
+            rows = self._search_rows(query, n_results)
+        return [
+            {
+                "id": rid,
+                "summary": summary,
+                "text": text,
+                "time": self._format_time(ts),
+            }
+            for rid, summary, text, ts in rows
+        ]
+
+    def delete_by_id(self, memory_id):
+        """按 id 删除一条记忆，返回是否命中。"""
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM memories_raw WHERE id=?", (memory_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM memories_fts WHERE rowid=?", (memory_id,)
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
     def count(self):
         """返回记忆总数。"""
         with self._lock:

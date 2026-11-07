@@ -63,6 +63,36 @@ def test_complete_task_removes_it_from_due():
     assert tasks.get_due(days=3, now=datetime(2026, 11, 5, 12)) == []
 
 
+def test_update_and_delete_task():
+    tasks = Tasks(":memory:")
+    task = tasks.add("交电费", "2026-11-08", "bill")
+
+    assert tasks.update(task["id"], title="交水费", due_at="2026-11-12", type="custom")
+    updated = tasks.list_all()[0]
+    assert updated["title"] == "交水费"
+    assert updated["due_at"].startswith("2026-11-12")
+    assert updated["type"] == "custom"
+
+    assert tasks.update(task["id"], due_at="")
+    assert tasks.list_all()[0]["due_at"] is None
+
+    deleted = tasks.delete_by_id(task["id"])
+    assert deleted["title"] == "交水费"
+    assert tasks.count() == 0
+
+
+def test_update_rejects_invalid_fields():
+    tasks = Tasks(":memory:")
+    task = tasks.add("交电费", "2026-11-08", "bill")
+
+    with pytest.raises(ValueError):
+        tasks.update(task["id"], title="")
+    with pytest.raises(ValueError):
+        tasks.update(task["id"], type="unknown")
+    with pytest.raises(ValueError):
+        tasks.update(task["id"], due_at="2026-02-30")
+
+
 def test_invalid_due_date_is_rejected():
     tasks = Tasks(":memory:")
 

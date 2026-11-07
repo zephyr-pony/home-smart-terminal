@@ -18,6 +18,17 @@ def test_store_search_and_list_facts():
     assert len(facts.list_all()) == 2
 
 
+def test_delete_by_id():
+    facts = Facts(":memory:")
+    fact = facts.store("爸妈家", "电费户号", "123456")
+
+    deleted = facts.delete_by_id(fact["id"])
+
+    assert deleted["value"] == "123456"
+    assert facts.count() == 0
+    assert facts.delete_by_id(999) is None
+
+
 def test_invalid_fact_is_rejected():
     facts = Facts(":memory:")
 

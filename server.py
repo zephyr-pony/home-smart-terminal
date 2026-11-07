@@ -20,6 +20,7 @@ import threading
 import traceback
 import wave
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import config
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
@@ -164,6 +165,17 @@ def _safe_config():
             "facts": config.FACTS_DB_PATH,
         },
     }
+
+
+def _page(rows, limit, offset):
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
+    return rows[offset:offset + limit], len(rows), limit, offset
+
+
+def _require_confirm(confirm):
+    if not confirm:
+        raise HTTPException(status_code=400, detail="需要确认删除")
 
 
 def _stats_sync():
@@ -337,6 +349,12 @@ class ConfigUpdate(BaseModel):
     values: dict
 
 
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    due_at: Optional[str] = None
+    type: Optional[str] = None
+
+
 # ---------- 核心处理 ----------
 
 def _slim_memories(memories):
@@ -437,44 +455,164 @@ async def api_stats(_auth=Depends(require_api_token)):
 
 
 @app.get("/api/memories")
-async def api_memories(limit: int = 50, _auth=Depends(require_api_token)):
-    limit = max(1, min(int(limit), 200))
-    memories = await asyncio.to_thread(assistant.memory.list_all, limit)
-    return {"memories": memories}
+async def api_memories(q: str = "", limit: int = 20, offset: int = 0,
+                       _auth=Depends(require_api_token)):
+    if q:
+        rows = await asyncio.to_thread(
+            assistant.memory.search_details, q, 500
+        )
+    else:
+        rows = await asyncio.to_thread(assistant.memory.list_all, 500)
+    page, total, limit, offset = _page(rows, limit, offset)
+    return {
+        "memories": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/api/items")
-async def api_items(status: str = None, _auth=Depends(require_api_token)):
+async def api_items(q: str = "", status: str = None, limit: int = 20,
+                    offset: int = 0, _auth=Depends(require_api_token)):
     if status and status not in ("active", "reminded", "expired"):
         raise HTTPException(status_code=400, detail="status 必须是 active/reminded/expired")
-    items = await asyncio.to_thread(assistant.items.list_all, status)
-    return {"items": items}
+    rows = await asyncio.to_thread(assistant.items.list_all, status)
+    if q:
+        keyword = q.strip().lower()
+        rows = [
+            item for item in rows
+            if keyword in str(item.get("name", "")).lower()
+        ]
+    page, total, limit, offset = _page(rows, limit, offset)
+    return {
+        "items": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/api/tasks")
-async def api_tasks(status: str = None, _auth=Depends(require_api_token)):
+async def api_tasks(q: str = "", status: str = None, limit: int = 20,
+                    offset: int = 0, _auth=Depends(require_api_token)):
     allowed = ("pending", "reminded", "done", "cancelled")
     if status and status not in allowed:
         raise HTTPException(status_code=400, detail="status 无效")
-    tasks = await asyncio.to_thread(assistant.tasks.list_all, status)
-    return {"tasks": tasks}
+    rows = await asyncio.to_thread(assistant.tasks.list_all, status)
+    if q:
+        keyword = q.strip().lower()
+        rows = [
+            task for task in rows
+            if keyword in str(task.get("title", "")).lower()
+        ]
+    page, total, limit, offset = _page(rows, limit, offset)
+    return {
+        "tasks": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/api/facts")
-async def api_facts(q: str = "", limit: int = 50, _auth=Depends(require_api_token)):
-    limit = max(1, min(int(limit), 200))
-    facts = await asyncio.to_thread(
-        assistant.facts.search, q or None, None, None, limit
+async def api_facts(q: str = "", limit: int = 20, offset: int = 0,
+                    _auth=Depends(require_api_token)):
+    rows = await asyncio.to_thread(
+        assistant.facts.search, q or None, None, None, 500
     )
-    return {"facts": facts}
+    page, total, limit, offset = _page(rows, limit, offset)
+    return {
+        "facts": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/api/entities")
-async def api_entities(type: str = None, _auth=Depends(require_api_token)):
-    entities = await asyncio.to_thread(
+async def api_entities(q: str = "", type: str = None, limit: int = 20,
+                       offset: int = 0, _auth=Depends(require_api_token)):
+    rows = await asyncio.to_thread(
         assistant.clarifier.store.list_entities, type
     )
-    return {"entities": entities}
+    if q:
+        keyword = q.strip().lower()
+        rows = [
+            entity for entity in rows
+            if keyword in str(entity.get("canonical_name", "")).lower()
+            or any(
+                keyword in str(alias).lower()
+                for alias in entity.get("aliases", [])
+            )
+        ]
+    page, total, limit, offset = _page(rows, limit, offset)
+    return {
+        "entities": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.delete("/api/memories/{memory_id}")
+async def api_delete_memory(memory_id: int, confirm: bool = False,
+                            _auth=Depends(require_api_token)):
+    _require_confirm(confirm)
+    ok = await asyncio.to_thread(assistant.memory.delete_by_id, memory_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    return {"ok": True}
+
+
+@app.delete("/api/items/{item_id}")
+async def api_delete_item(item_id: int, confirm: bool = False,
+                          _auth=Depends(require_api_token)):
+    _require_confirm(confirm)
+    deleted = await asyncio.to_thread(assistant.items.delete_by_id, item_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="物品不存在")
+    return {"ok": True, "deleted": deleted}
+
+
+@app.delete("/api/facts/{fact_id}")
+async def api_delete_fact(fact_id: int, confirm: bool = False,
+                          _auth=Depends(require_api_token)):
+    _require_confirm(confirm)
+    deleted = await asyncio.to_thread(assistant.facts.delete_by_id, fact_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="事实不存在")
+    return {"ok": True, "deleted": deleted}
+
+
+@app.delete("/api/tasks/{task_id}")
+async def api_delete_task(task_id: int, confirm: bool = False,
+                          _auth=Depends(require_api_token)):
+    _require_confirm(confirm)
+    deleted = await asyncio.to_thread(assistant.tasks.delete_by_id, task_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {"ok": True, "deleted": deleted}
+
+
+@app.patch("/api/tasks/{task_id}")
+async def api_update_task(task_id: int, req: TaskUpdate,
+                          _auth=Depends(require_api_token)):
+    if req.title is None and req.due_at is None and req.type is None:
+        raise HTTPException(status_code=400, detail="没有可更新的字段")
+    try:
+        ok = await asyncio.to_thread(
+            assistant.tasks.update,
+            task_id,
+            req.title,
+            req.due_at,
+            req.type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {"ok": True}
 
 
 @app.post("/api/tasks/{task_id}/complete")

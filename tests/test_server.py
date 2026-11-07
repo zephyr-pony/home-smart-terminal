@@ -232,6 +232,81 @@ def test_task_complete_endpoint(monkeypatch):
     assert assistant.tasks.list_all()[0]["status"] == "done"
 
 
+def test_list_search_and_pagination(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    for index in range(25):
+        assistant.tasks.add(f"任务{index}", "2026-11-10", "custom")
+    assistant.items.add("牛奶", "2026-11-10")
+    assistant.items.add("面包", "2026-11-10")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer secret"}
+
+    first = client.get("/api/tasks?limit=10&offset=0", headers=headers).json()
+    assert first["total"] == 25
+    assert len(first["tasks"]) == 10
+
+    last = client.get("/api/tasks?limit=10&offset=20", headers=headers).json()
+    assert len(last["tasks"]) == 5
+
+    filtered = client.get("/api/tasks?q=任务1", headers=headers).json()
+    assert filtered["total"] > 0
+    assert all("任务1" in task["title"] for task in filtered["tasks"])
+
+    items = client.get("/api/items?q=牛奶", headers=headers).json()
+    assert items["total"] == 1
+    assert items["items"][0]["name"] == "牛奶"
+
+
+def test_delete_requires_confirmation(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    assistant.memory.store("酸奶8月5号过期", "酸奶过期")
+    memory_id = assistant.memory.list_all()[0]["id"]
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer secret"}
+
+    assert client.delete(
+        f"/api/memories/{memory_id}", headers=headers
+    ).status_code == 400
+
+    assert client.delete(
+        f"/api/memories/{memory_id}?confirm=true", headers=headers
+    ).status_code == 200
+    assert assistant.memory.count() == 0
+
+
+def test_task_update_endpoint(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    task = assistant.tasks.add("交电费", "2026-11-08", "bill")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer secret"}
+
+    response = client.patch(
+        f"/api/tasks/{task['id']}",
+        headers=headers,
+        json={"title": "交水费", "due_at": "2026-11-12", "type": "custom"},
+    )
+    assert response.status_code == 200
+    updated = assistant.tasks.list_all()[0]
+    assert updated["title"] == "交水费"
+    assert updated["type"] == "custom"
+
+    invalid = client.patch(
+        f"/api/tasks/{task['id']}",
+        headers=headers,
+        json={"due_at": "2026-02-30"},
+    )
+    assert invalid.status_code == 400
+
+
 def test_config_endpoint_hides_secrets(monkeypatch):
     monkeypatch.setattr(server, "API_TOKEN", "secret")
     monkeypatch.setattr(server.config, "API_TOKEN", "secret")

@@ -94,6 +94,17 @@ def test_claim_syncs_expired_status_before_selecting():
     assert items.list_all("reminded") == []
 
 
+def test_delete_by_id():
+    items = Items(":memory:")
+    item = items.add("牛奶", "2026-11-10")
+
+    deleted = items.delete_by_id(item["id"])
+
+    assert deleted["name"] == "牛奶"
+    assert items.count() == 0
+    assert items.delete_by_id(999) is None
+
+
 def test_get_due_and_list_all_sync_expired_status():
     items = Items(":memory:")
     items.add("过期牛奶", "2020-01-01")

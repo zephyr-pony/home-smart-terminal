@@ -145,6 +145,59 @@ class Tasks:
             self.conn.commit()
             return cur.rowcount > 0
 
+    def update(self, task_id, title=None, due_at=None, type=None):
+        """更新任务字段；due_at 传空字符串表示清空时间。"""
+        fields = []
+        params = []
+
+        if title is not None:
+            title = str(title).strip()
+            if not title:
+                raise ValueError("任务标题不能为空")
+            fields.append("title=?")
+            params.append(title)
+
+        if type is not None:
+            task_type = str(type).strip()
+            if task_type not in TASK_TYPES:
+                raise ValueError(f"任务类型必须是 {'/'.join(TASK_TYPES)}")
+            fields.append("type=?")
+            params.append(task_type)
+
+        if due_at is not None:
+            due = _parse_due(due_at)
+            fields.append("due_at=?")
+            params.append(due.isoformat() if due else None)
+
+        if not fields:
+            return False
+
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE tasks SET " + ", ".join(fields) + " WHERE id=?",
+                params + [task_id],
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def delete_by_id(self, task_id):
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id, type, title, due_at, status FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                return None
+            self.conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+            self.conn.commit()
+        return {
+            "id": row[0],
+            "type": row[1],
+            "title": row[2],
+            "due_at": row[3],
+            "status": row[4],
+        }
+
     def count(self, status=None):
         with self._lock:
             if status:

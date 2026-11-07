@@ -22,6 +22,18 @@ def test_search_indexes_summary_not_raw_text():
     assert found and "酸酸的奶" in found[0]
 
 
+def test_search_details_and_delete_by_id():
+    memory = Memory(":memory:")
+    memory.store("酸奶8月5号过期", "酸奶过期")
+
+    details = memory.search_details("酸奶")
+    assert details[0]["text"] == "酸奶8月5号过期"
+
+    assert memory.delete_by_id(details[0]["id"])
+    assert memory.count() == 0
+    assert memory.delete_by_id(999) is False
+
+
 def test_list_all_and_delete_by_keywords():
     memory = Memory(":memory:")
     memory.store("第一条", "第一条")

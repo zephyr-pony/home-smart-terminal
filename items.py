@@ -217,6 +217,26 @@ class Items:
         claimed.sort(key=lambda x: (x["days_left"], x["expiry_date"], x["id"]))
         return claimed
 
+    def delete_by_id(self, item_id):
+        """按 id 删除物品，返回被删除的记录或 None。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id, name, expiry_date, status, created_at "
+                "FROM items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+            if not row:
+                return None
+            self.conn.execute("DELETE FROM items WHERE id=?", (item_id,))
+            self.conn.commit()
+        return {
+            "id": row[0],
+            "name": row[1],
+            "expiry_date": row[2],
+            "status": row[3],
+            "created_at": row[4],
+        }
+
     def count(self):
         """物品总数。"""
         with self._lock:

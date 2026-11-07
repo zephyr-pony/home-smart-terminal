@@ -168,6 +168,37 @@ html, body {
   background: var(--accent); color: #fff; font-size: 15px; font-weight: 600;
   cursor: pointer; margin-top: 4px;
 }
+.hidden { display: none !important; }
+.data-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+.data-toolbar input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px;
+  background: var(--input-bg); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.data-toolbar select {
+  height: 34px; padding: 0 8px;
+  background: var(--input-bg); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.pager {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 14px;
+}
+.modal {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: rgba(0, 0, 0, .55);
+}
+.modal-card {
+  width: min(100%, 420px); padding: 18px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.modal-card select {
+  width: 100%; height: 38px; padding: 0 10px;
+  background: var(--input-bg); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
 
 /* ---- input area ---- */
 #input-area {
@@ -286,7 +317,17 @@ html, body {
           <button class="subtab" data-kind="facts" type="button">事实</button>
           <button class="subtab" data-kind="entities" type="button">实体</button>
         </div>
+        <div class="data-toolbar">
+          <input id="data-search" type="search" placeholder="搜索…" autocomplete="off">
+          <select id="data-status" class="hidden"></select>
+          <button id="data-refresh" class="small-btn" type="button">搜索</button>
+        </div>
         <div id="data-list" class="list"></div>
+        <div id="data-pager" class="pager">
+          <button id="page-prev" class="small-btn" type="button">上一页</button>
+          <span id="page-info" class="muted"></span>
+          <button id="page-next" class="small-btn" type="button">下一页</button>
+        </div>
       </div>
     </section>
 
@@ -300,6 +341,35 @@ html, body {
       </div>
     </section>
   </main>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <h3 class="view-title">编辑任务</h3>
+    <form id="task-edit-form">
+      <input type="hidden" id="edit-task-id">
+      <div class="field">
+        <label>标题</label>
+        <input id="edit-task-title" type="text">
+      </div>
+      <div class="field">
+        <label>到期时间</label>
+        <input id="edit-task-due" type="text" placeholder="YYYY-MM-DD">
+      </div>
+      <div class="field">
+        <label>类型</label>
+        <select id="edit-task-type">
+          <option value="bill">账单</option>
+          <option value="schedule">日程</option>
+          <option value="custom">自定义</option>
+        </select>
+      </div>
+      <div class="row-actions">
+        <button type="submit" class="small-btn">保存</button>
+        <button type="button" id="modal-cancel" class="small-btn">取消</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <script>
@@ -321,6 +391,19 @@ html, body {
   var overviewDue = document.getElementById('overview-due');
   var dataTabs   = document.getElementById('data-tabs');
   var dataList   = document.getElementById('data-list');
+  var dataSearch = document.getElementById('data-search');
+  var dataStatus = document.getElementById('data-status');
+  var dataRefresh = document.getElementById('data-refresh');
+  var pagePrev   = document.getElementById('page-prev');
+  var pageNext   = document.getElementById('page-next');
+  var pageInfo   = document.getElementById('page-info');
+  var modal      = document.getElementById('modal');
+  var modalCancel = document.getElementById('modal-cancel');
+  var taskEditForm = document.getElementById('task-edit-form');
+  var editTaskId = document.getElementById('edit-task-id');
+  var editTaskTitle = document.getElementById('edit-task-title');
+  var editTaskDue = document.getElementById('edit-task-due');
+  var editTaskType = document.getElementById('edit-task-type');
   var settingsForm = document.getElementById('settings-form');
   var settingsSave = document.getElementById('settings-save');
   var settingsSummary = document.getElementById('settings-summary');
@@ -476,6 +559,18 @@ html, body {
     entities: '/api/entities'
   };
 
+  var DELETE_ENDPOINTS = {
+    memories: '/api/memories/',
+    items: '/api/items/',
+    tasks: '/api/tasks/',
+    facts: '/api/facts/'
+  };
+
+  var DATA_STATUS_OPTIONS = {
+    items: [['', '全部状态'], ['active', '有效'], ['reminded', '已提醒'], ['expired', '已过期']],
+    tasks: [['', '全部状态'], ['pending', '待办'], ['reminded', '已提醒'], ['done', '已完成'], ['cancelled', '已取消']]
+  };
+
   var STATUS_LABELS = {
     active: '有效', reminded: '已提醒', expired: '已过期',
     pending: '待办', done: '已完成', cancelled: '已取消'
@@ -486,16 +581,77 @@ html, body {
     provider: '缴费单位', place: '地点', device: '设备'
   };
 
-  function loadData(kind) {
+  var dataState = {
+    kind: 'memories', q: '', status: '',
+    limit: 20, offset: 0, total: 0
+  };
+  var lastData = {};
+
+  function configureDataStatus(kind) {
+    var options = DATA_STATUS_OPTIONS[kind];
+    if (!options) {
+      dataStatus.classList.add('hidden');
+      dataStatus.innerHTML = '';
+      dataStatus.value = '';
+      return;
+    }
+    dataStatus.classList.remove('hidden');
+    dataStatus.innerHTML = options.map(function(option) {
+      return '<option value="' + esc(option[0]) + '">' + esc(option[1]) + '</option>';
+    }).join('');
+    dataStatus.value = '';
+  }
+
+  function loadData(kind, reset) {
+    if (kind !== dataState.kind) {
+      dataState.kind = kind;
+      dataState.q = '';
+      dataState.status = '';
+      dataState.offset = 0;
+      dataSearch.value = '';
+      configureDataStatus(kind);
+    }
+    if (reset) dataState.offset = 0;
+
     currentDataKind = kind;
     dataTabs.querySelectorAll('.subtab').forEach(function(btn) {
       btn.classList.toggle('active', btn.getAttribute('data-kind') === kind);
     });
-    apiFetch(DATA_ENDPOINTS[kind]).then(function(d) {
+
+    dataState.q = dataSearch.value.trim();
+    dataState.status = dataStatus.value || '';
+
+    var params = new URLSearchParams();
+    params.set('limit', String(dataState.limit));
+    params.set('offset', String(dataState.offset));
+    if (dataState.q) params.set('q', dataState.q);
+    if (dataState.status) params.set('status', dataState.status);
+
+    apiFetch(DATA_ENDPOINTS[kind] + '?' + params.toString()).then(function(d) {
+      dataState.total = d.total || 0;
+      if (dataState.offset > 0 && dataState.offset >= dataState.total) {
+        dataState.offset = Math.max(0, dataState.offset - dataState.limit);
+        return loadData(kind);
+      }
+      lastData = d;
       renderData(kind, d);
+      renderPager();
     }).catch(function(err) {
       dataList.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
     });
+  }
+
+  function renderPager() {
+    var pages = Math.max(1, Math.ceil(dataState.total / dataState.limit));
+    var page = Math.floor(dataState.offset / dataState.limit) + 1;
+    pageInfo.textContent = '第 ' + page + ' / ' + pages + ' 页 · 共 ' + dataState.total + ' 条';
+    pagePrev.disabled = dataState.offset <= 0;
+    pageNext.disabled = dataState.offset + dataState.limit >= dataState.total;
+  }
+
+  function deleteButton(kind, id) {
+    return '<button class="small-btn danger" data-delete-kind="' + esc(kind) +
+      '" data-delete-id="' + esc(id) + '">删除</button>';
   }
 
   function renderData(kind, data) {
@@ -504,23 +660,26 @@ html, body {
       (data.memories || []).forEach(function(m) {
         rows.push('<div class="list-row">' + esc(m.text) +
           '<div class="meta">' + esc(m.time) +
-          (m.summary ? ' · ' + esc(m.summary) : '') + '</div></div>');
+          (m.summary ? ' · ' + esc(m.summary) : '') +
+          '</div><div class="row-actions">' + deleteButton('memories', m.id) + '</div></div>');
       });
     } else if (kind === 'items') {
       (data.items || []).forEach(function(item) {
         rows.push('<div class="list-row">' + esc(item.name) +
           '<div class="meta">到期 ' + esc(item.expiry_date || '未知') +
-          ' · ' + esc(STATUS_LABELS[item.status] || item.status) + '</div></div>');
+          ' · ' + esc(STATUS_LABELS[item.status] || item.status) + '</div>' +
+          '<div class="row-actions">' + deleteButton('items', item.id) + '</div></div>');
       });
     } else if (kind === 'tasks') {
       (data.tasks || []).forEach(function(task) {
-        var actions = '';
+        var actions = '<div class="row-actions">';
         if (task.status === 'pending' || task.status === 'reminded') {
-          actions = '<div class="row-actions">' +
-            '<button class="small-btn" data-task-id="' + esc(task.id) + '" data-action="complete">完成</button>' +
-            '<button class="small-btn danger" data-task-id="' + esc(task.id) + '" data-action="cancel">取消</button>' +
-            '</div>';
+          actions += '<button class="small-btn" data-task-id="' + esc(task.id) + '" data-action="complete">完成</button>';
+          actions += '<button class="small-btn danger" data-task-id="' + esc(task.id) + '" data-action="cancel">取消</button>';
         }
+        actions += '<button class="small-btn" data-edit-task="' + esc(task.id) + '">编辑</button>';
+        actions += deleteButton('tasks', task.id);
+        actions += '</div>';
         rows.push('<div class="list-row">#' + esc(task.id) + ' ' + esc(task.title) +
           '<div class="meta">' + esc(task.due_at || '未定') +
           ' · ' + esc(STATUS_LABELS[task.status] || task.status) + '</div>' + actions + '</div>');
@@ -530,7 +689,7 @@ html, body {
         rows.push('<div class="list-row">' + esc(fact.subject) + ' · ' +
           esc(fact.predicate) + '：' + esc(fact.value) +
           (fact.source ? '<div class="meta">来源：' + esc(fact.source) + '</div>' : '') +
-          '</div>');
+          '<div class="row-actions">' + deleteButton('facts', fact.id) + '</div></div>');
       });
     } else if (kind === 'entities') {
       (data.entities || []).forEach(function(entity) {
@@ -541,6 +700,23 @@ html, body {
       });
     }
     dataList.innerHTML = rows.length ? rows.join('') : '<div class="empty">暂无数据</div>';
+  }
+
+  function openTaskEdit(taskId) {
+    var task = null;
+    (lastData.tasks || []).forEach(function(item) {
+      if (String(item.id) === String(taskId)) task = item;
+    });
+    if (!task) return;
+    editTaskId.value = task.id;
+    editTaskTitle.value = task.title || '';
+    editTaskDue.value = task.due_at || '';
+    editTaskType.value = task.type || 'custom';
+    modal.classList.remove('hidden');
+  }
+
+  function closeTaskEdit() {
+    modal.classList.add('hidden');
   }
 
   var CONFIG_FIELDS = [
@@ -601,23 +777,95 @@ html, body {
 
   dataTabs.addEventListener('click', function(e) {
     var btn = e.target.closest ? e.target.closest('button[data-kind]') : null;
-    if (btn) loadData(btn.getAttribute('data-kind'));
+    if (btn) loadData(btn.getAttribute('data-kind'), true);
+  });
+
+  dataRefresh.addEventListener('click', function() {
+    loadData(dataState.kind, true);
+  });
+  dataSearch.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      loadData(dataState.kind, true);
+    }
+  });
+  dataStatus.addEventListener('change', function() {
+    loadData(dataState.kind, true);
+  });
+  pagePrev.addEventListener('click', function() {
+    dataState.offset = Math.max(0, dataState.offset - dataState.limit);
+    loadData(dataState.kind);
+  });
+  pageNext.addEventListener('click', function() {
+    dataState.offset += dataState.limit;
+    loadData(dataState.kind);
   });
 
   dataList.addEventListener('click', function(e) {
-    var btn = e.target.closest ? e.target.closest('button[data-task-id]') : null;
-    if (!btn) return;
-    var id = btn.getAttribute('data-task-id');
-    var action = btn.getAttribute('data-action');
-    apiFetch('/api/tasks/' + encodeURIComponent(id) + '/' + action, { method: 'POST' })
-      .then(function() {
-        loadData('tasks');
+    if (!e.target.closest) return;
+
+    var editBtn = e.target.closest('button[data-edit-task]');
+    if (editBtn) {
+      openTaskEdit(editBtn.getAttribute('data-edit-task'));
+      return;
+    }
+
+    var taskBtn = e.target.closest('button[data-task-id]');
+    if (taskBtn) {
+      var taskId = taskBtn.getAttribute('data-task-id');
+      var action = taskBtn.getAttribute('data-action');
+      apiFetch('/api/tasks/' + encodeURIComponent(taskId) + '/' + action, { method: 'POST' })
+        .then(function() {
+          loadData('tasks');
+          loadOverview();
+          pollStatus();
+        })
+        .catch(function(err) {
+          alert('操作失败：' + err.message);
+        });
+      return;
+    }
+
+    var deleteBtn = e.target.closest('button[data-delete-kind]');
+    if (deleteBtn) {
+      var kind = deleteBtn.getAttribute('data-delete-kind');
+      var id = deleteBtn.getAttribute('data-delete-id');
+      if (!confirm('确认删除这条记录？')) return;
+      apiFetch(DELETE_ENDPOINTS[kind] + encodeURIComponent(id) + '?confirm=true', {
+        method: 'DELETE'
+      }).then(function() {
+        loadData(kind);
         loadOverview();
         pollStatus();
-      })
-      .catch(function(err) {
-        alert('操作失败：' + err.message);
+      }).catch(function(err) {
+        alert('删除失败：' + err.message);
       });
+    }
+  });
+
+  taskEditForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var values = {
+      title: editTaskTitle.value.trim(),
+      due_at: editTaskDue.value.trim(),
+      type: editTaskType.value
+    };
+    apiFetch('/api/tasks/' + encodeURIComponent(editTaskId.value), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(values)
+    }).then(function() {
+      closeTaskEdit();
+      loadData('tasks');
+      loadOverview();
+    }).catch(function(err) {
+      alert('保存失败：' + err.message);
+    });
+  });
+
+  modalCancel.addEventListener('click', closeTaskEdit);
+  modal.addEventListener('click', function(e) {
+    if (e.target === modal) closeTaskEdit();
   });
 
   settingsSave.addEventListener('click', saveConfig);
@@ -625,6 +873,8 @@ html, body {
     e.preventDefault();
     saveConfig();
   });
+
+  configureDataStatus('memories');
 
   // ---- status poll ----
   function pollStatus() {

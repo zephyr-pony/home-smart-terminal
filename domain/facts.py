@@ -106,6 +106,23 @@ class Facts:
             "created_at": row[7],
         }
 
+    def delete_by_id(self, fact_id):
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id, subject, predicate, value FROM facts WHERE id=?",
+                (fact_id,),
+            ).fetchone()
+            if not row:
+                return None
+            self.conn.execute("DELETE FROM facts WHERE id=?", (fact_id,))
+            self.conn.commit()
+        return {
+            "id": row[0],
+            "subject": row[1],
+            "predicate": row[2],
+            "value": row[3],
+        }
+
     def count(self):
         with self._lock:
             return self.conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
