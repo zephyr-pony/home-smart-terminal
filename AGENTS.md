@@ -6,12 +6,16 @@
 
 家庭智能终端「小马」：语音/文字输入 → FunASR 识别 → LLM 通过 function calling 自主调用工具（记忆 / 物品 / 日期）→ 文字 + Edge TTS 回答。SQLite 本地存储，数据不上传。
 
+当前正在从「记忆 + 提醒」演进为家庭生活 Agent，完整计划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
 ## 模块职责
 
 | 文件 | 职责 |
 |---|---|
 | `main.py` | CLI 入口：录音 → STT → `Assistant` → 打印 + TTS 播报；含唤醒词常驻模式 |
 | `wake_word.py` | 唤醒词解析：从 STT 文本提取「小马」后的指令 |
+| `domain/store.py` | 实体 + 待澄清动作（SQLite，`data/agent.db`） |
+| `agent/clarify.py` | 澄清引擎：识别歧义、生成问题、合并回答 |
 | `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
 | `assistant.py` | 核心编排 + 手写 Agent loop；CLI 与服务端共用 |
 | `tools.py` | OpenAI function calling 工具注册表（schema + execute） |
@@ -24,6 +28,37 @@
 | `audio_io.py` | PyAudio 录音、pygame 播放 |
 | `static/index.html` | 单文件 Web 客户端，无构建步骤 |
 | `tests/` | pytest 自动化测试 |
+
+## 演进路线与架构约束
+
+当前处于阶段 1：`entities` / `pending_actions`、电费/牛奶澄清、CLI 关联已落地；优先把家庭场景的澄清和两阶段提交做通用，再扩展 RAG 和多终端。
+
+### 开发顺序
+
+1. 阶段 0：分层重构（`domain/` / `agent/` / `adapters/`），保持现有行为。
+2. 阶段 1：`entities` + `pending_actions`，电费/牛奶澄清，两阶段提交。
+3. 阶段 2：通用化 `facts` / `tasks` / 提醒。
+4. 阶段 3：RAG + 地图/公交/天气。
+5. 阶段 4：统一网关 + 小程序/App。
+6. 阶段 5：ESP32 与语音终端。
+
+### 硬性约束
+
+- LLM 不得直接写正式表；写操作走「提案 → 实体解析 → 澄清 → 提交」。
+- 领域层不 import LLM、FastAPI、音频或具体渠道 SDK。
+- 澄清只问关键槽位，一轮最多一个问题，优先给候选。
+- 删除/付款/通知他人等高风险动作必须确认。
+- RAG 只放静态知识；路线、公交、天气、余额走实时工具。
+- 工具返回结构化结果，外部工具必须有超时、缓存和降级。
+- 业务数据带 `space_id`，为多家庭/多设备预留隔离。
+- 新增产品决策先写入 `docs/ROADMAP.md` 的「待决策」，不要擅自定。
+
+### 规划中的模块（尚未实现）
+
+- `domain/`：实体、事实、任务、提醒。
+- `agent/`：抽取、实体解析、澄清策略、执行编排。
+- `adapters/`：CLI、Web、API、MQTT/设备。
+- `rag/`：文档接入、分块、embedding、检索。
 
 ## 运行
 
@@ -58,7 +93,8 @@ pytest tests -q
 
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
-- 测试里用 `Memory(":memory:")` / `Items(":memory:")`，不要碰 `data/`。
+- 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
+- 澄清相关测试在 `tests/test_clarify.py`；新增规则时同步补歧义用例。
 - 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
 
 ## 必须保持的约定
@@ -74,6 +110,13 @@ pytest tests -q
   - `query`：额外带 `memories`（`"[时间] 原文"` 字符串列表）
   - `list` / `delete`：额外带 `memories` / `deleted`
   - 修改 `_agent_loop` 时必须同步维护这些字段，CLI 和 API 都依赖它们。
+
+### 澄清
+
+- 写操作前先过 `Clarifier`；缺关键槽位时返回 `type=clarify`，不要直接写库。
+- `pending_action` 按 `conversation_id` 保存，默认 30 分钟过期；一个会话同时只保留一个。
+- 一轮只问一个问题，回答后合并成完整文本再进 agent loop。
+- CLI 固定传 `client_id="cli"`，否则待澄清动作无法关联。
 
 ### 工具注册
 
