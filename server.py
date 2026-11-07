@@ -51,6 +51,7 @@ assistant: Assistant = None
 
 # 到期提醒缓存（提醒循环按 REMINDER_INTERVAL_SECONDS 刷新）
 due_items = []
+due_tasks = []
 
 # SSE 订阅者队列集合（每个在线客户端一个 asyncio.Queue，提醒循环向其广播）
 _subscribers = set()
@@ -100,6 +101,19 @@ def _reminder_text(item):
     return f"提醒：{name} 还有 {left} 天过期"
 
 
+def _task_reminder_text(task):
+    """把到期任务转成一句口语化提醒。"""
+    title = task.get("title", "任务")
+    left = task.get("days_left")
+    if left is None:
+        return f"提醒：{title}"
+    if left < 0:
+        return f"提醒：{title} 已经过期 {-left} 天了"
+    if left == 0:
+        return f"提醒：{title} 今天到期"
+    return f"提醒：{title} 还有 {left} 天到期"
+
+
 async def _broadcast(event):
     """把事件推给所有 SSE 订阅者；队列满时丢最旧的，保证最新提醒送达。
 
@@ -127,24 +141,41 @@ async def reminder_loop():
 
     只有存在在线订阅者时才"领取"提醒——否则没通知到人，不应消耗去重额度。
     """
-    global due_items
+    global due_items, due_tasks
     while True:
         try:
-            due_items = await asyncio.to_thread(assistant.items.get_due, days=REMINDER_DAYS)
+            due_items = await asyncio.to_thread(
+                assistant.items.get_due, days=REMINDER_DAYS
+            )
+            due_tasks = await asyncio.to_thread(
+                assistant.tasks.get_due, days=REMINDER_DAYS
+            )
             if _subscribers:
-                fresh = await asyncio.to_thread(
+                fresh_items = await asyncio.to_thread(
                     assistant.items.claim_due_reminders,
                     REMINDER_DAYS,
                     REMINDER_COOLDOWN_HOURS,
                 )
-                for item in fresh:
+                fresh_tasks = await asyncio.to_thread(
+                    assistant.tasks.claim_due_reminders,
+                    REMINDER_DAYS,
+                    REMINDER_COOLDOWN_HOURS,
+                )
+                for item in fresh_items:
                     text = _reminder_text(item)
-                    audio = await _synthesize(text)
                     await _broadcast({
                         "type": "reminder",
                         "item": item,
                         "reply": text,
-                        "audio": audio,
+                        "audio": await _synthesize(text),
+                    })
+                for task in fresh_tasks:
+                    text = _task_reminder_text(task)
+                    await _broadcast({
+                        "type": "reminder",
+                        "task": task,
+                        "reply": text,
+                        "audio": await _synthesize(text),
                     })
         except Exception:
             traceback.print_exc()
@@ -264,15 +295,21 @@ async def _save_upload(file, ext):
 
 @app.get("/api/status")
 async def api_status(_auth=Depends(require_api_token)):
-    memory_count, item_count = await asyncio.to_thread(
-        lambda: (assistant.memory.count(), assistant.items.count())
+    memory_count, item_count, task_count = await asyncio.to_thread(
+        lambda: (
+            assistant.memory.count(),
+            assistant.items.count(),
+            assistant.tasks.count(),
+        )
     )
     return {
         "ok": True,
         "stt_ready": stt is not None,
         "memory_count": memory_count,
         "item_count": item_count,
+        "task_count": task_count,
         "due_items": due_items,  # 到期物品提醒（提醒循环刷新）
+        "due_tasks": due_tasks,  # 到期任务提醒（提醒循环刷新）
         "dropped_events": dropped_events,  # SSE 队列满导致丢弃的事件数
         "sessions": len(assistant.sessions),
     }

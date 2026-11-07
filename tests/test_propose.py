@@ -1,7 +1,9 @@
 from agent.clarify import Clarifier
 from agent.propose import ProposalService
 from assistant import Assistant
+from domain.facts import Facts
 from domain.store import AgentStore
+from domain.tasks import Tasks
 from items import Items
 from memory import Memory
 
@@ -50,6 +52,28 @@ def test_item_add_invalid_date_is_rejected():
     assert store.list_proposals()[0]["status"] == "rejected"
 
 
+def test_task_add_dedupes_within_window():
+    store = AgentStore(":memory:")
+    service = ProposalService(
+        store, Memory(":memory:"), Items(":memory:"), Tasks(":memory:"), Facts(":memory:")
+    )
+
+    assert service.add_task("交电费", "2026-11-10", "bill").startswith("已创建任务")
+    assert service.add_task("交电费", "2026-11-10", "bill") == "已存在相同任务，未重复创建"
+    assert service.tasks.count() == 1
+
+
+def test_fact_store_dedupes_within_window():
+    store = AgentStore(":memory:")
+    service = ProposalService(
+        store, Memory(":memory:"), Items(":memory:"), Tasks(":memory:"), Facts(":memory:")
+    )
+
+    assert service.store_fact("爸妈家", "电费户号", "123456").startswith("已保存")
+    assert service.store_fact("爸妈家", "电费户号", "123456") == "已存在相同事实，未重复保存"
+    assert service.facts.count() == 1
+
+
 def test_assistant_memory_tool_uses_proposal_service():
     items = Items(":memory:")
     store = AgentStore(":memory:")
@@ -58,6 +82,8 @@ def test_assistant_memory_tool_uses_proposal_service():
         items=items,
         llm=object(),
         clarifier=Clarifier(store=store, items=items),
+        tasks=Tasks(":memory:"),
+        facts=Facts(":memory:"),
     )
     tool = next(
         tool for tool in assistant.tools

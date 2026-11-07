@@ -2,7 +2,9 @@ import json
 
 from agent.clarify import Clarifier
 from assistant import Assistant
+from domain.facts import Facts
 from domain.store import AgentStore
+from domain.tasks import Tasks
 from items import Items
 from memory import Memory
 
@@ -47,6 +49,8 @@ def make_assistant(llm=None):
         items=items,
         llm=llm or FakeLLM(),
         clarifier=clarifier,
+        tasks=Tasks(":memory:"),
+        facts=Facts(":memory:"),
     )
 
 
@@ -151,6 +155,52 @@ def test_agent_loop_returns_record_summary():
     assert result["type"] == "record"
     assert result["reply"] == "记住了"
     assert result["summary"] == "8月9日买电池"
+
+
+def test_agent_loop_returns_task_record():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply(
+            "task_add",
+            {"type": "custom", "title": "买电池", "due_at": "2026-11-10"},
+        ),
+        _stop_reply("记下了"),
+    ]))
+
+    result = assistant.process_text("11月10日提醒我买电池")
+
+    assert result["type"] == "record"
+    assert result["domain"] == "tasks"
+    assert result["summary"] == "买电池"
+    assert assistant.tasks.count() == 1
+
+
+def test_agent_loop_returns_task_complete():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("task_list", {}),
+        _tool_call_reply("task_complete", {"task_id": 1}, call_id="call-2"),
+        _stop_reply("完成了"),
+    ]))
+    assistant.tasks.add("交电费", "2026-11-08")
+
+    result = assistant.process_text("电费交了")
+
+    assert result["type"] == "chat"
+    assert result["domain"] == "tasks"
+    assert result["action"] == "complete"
+    assert assistant.tasks.list_all()[0]["status"] == "done"
+
+
+def test_agent_loop_returns_task_list_query():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("task_list", {}),
+        _stop_reply("你有一个任务"),
+    ]))
+
+    result = assistant.process_text("我有哪些提醒")
+
+    assert result["type"] == "query"
+    assert result["domain"] == "tasks"
+    assert result["action"] == "list"
 
 
 def test_assistant_asks_property_before_bill():

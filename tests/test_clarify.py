@@ -70,6 +70,15 @@ def test_property_alias_skips_clarification():
     assert clarifier.check("咱家明天要交电费", "c1") is None
 
 
+def test_bill_completion_skips_clarification():
+    clarifier = make_clarifier()
+    clarifier.store.add_entity("property", "自己家")
+    clarifier.store.add_entity("property", "爸妈家")
+
+    assert clarifier.check("电费交了", "c1") is None
+    assert clarifier.check("电费已经交了", "c1") is None
+
+
 def test_bill_learns_new_property_after_answer():
     clarifier = make_clarifier()
 

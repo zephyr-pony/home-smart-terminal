@@ -51,6 +51,10 @@ AGENT_DB_PATH = _get("AGENT_DB_PATH", "./data/agent.db")
 PENDING_ACTION_TTL_SECONDS = _get_int("PENDING_ACTION_TTL_SECONDS", 30 * 60)
 PROPOSAL_DEDUPE_SECONDS = _get_int("PROPOSAL_DEDUPE_SECONDS", 5 * 60)
 
+# ---- 通用任务与结构化事实 ----
+TASKS_DB_PATH = _get("TASKS_DB_PATH", "./data/tasks.db")
+FACTS_DB_PATH = _get("FACTS_DB_PATH", "./data/facts.db")
+
 # ---- 音频录制 ----
 SAMPLE_RATE = _get_int("SAMPLE_RATE", 16000)
 CHUNK_SIZE = _get_int("CHUNK_SIZE", 1024)

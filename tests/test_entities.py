@@ -1,7 +1,9 @@
 from agent.clarify import Clarifier
 from agent.entities import EntityService
 from assistant import Assistant
+from domain.facts import Facts
 from domain.store import AgentStore
+from domain.tasks import Tasks
 from items import Items
 from memory import Memory
 
@@ -120,6 +122,8 @@ def test_assistant_registers_entity_tools():
         items=items,
         llm=object(),
         clarifier=Clarifier(store=store, items=items),
+        tasks=Tasks(":memory:"),
+        facts=Facts(":memory:"),
     )
     tool = next(
         tool for tool in assistant.tools

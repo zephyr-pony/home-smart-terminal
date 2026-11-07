@@ -267,11 +267,163 @@ def get_entity_tools(entities):
     ]
 
 
-def get_all_tools(memory: Memory, items=None, proposals=None, entities=None):
-    """聚合全部工具（memory + 日期 + items + 实体管理）。"""
+def _fmt_tasks(tasks):
+    if not tasks:
+        return "（暂无任务）"
+    lines = []
+    for task in tasks:
+        due = task.get("due_at") or "未定"
+        lines.append(
+            f"- [{task['id']}] {task['title']}：{due}（{task['status']}）"
+        )
+    return "\n".join(lines)
+
+
+def _fmt_facts(facts):
+    if not facts:
+        return "（暂无结构化事实）"
+    lines = []
+    for fact in facts:
+        source = f"（来源：{fact['source']}）" if fact.get("source") else ""
+        lines.append(
+            f"- {fact['subject']} · {fact['predicate']}：{fact['value']}{source}"
+        )
+    return "\n".join(lines)
+
+
+def get_task_tools(tasks, proposals=None):
+    """任务与提醒工具：账单/日程/自定义提醒。"""
+    def add_task(title, due_at=None, type="custom"):
+        if proposals is not None:
+            return proposals.add_task(title, due_at, type)
+        try:
+            task = tasks.add(title, due_at, type)
+        except ValueError as exc:
+            return f"无法创建任务：{exc}"
+        return (
+            f"已创建任务 #{task['id']}：{task['title']}，"
+            f"时间 {task['due_at'] or '未定'}"
+        )
+
+    def complete_task(task_id):
+        task_id = _clamp_int(task_id, 0, 0, 10 ** 9)
+        if not task_id:
+            return "任务 ID 无效"
+        if tasks.complete(task_id):
+            return f"任务 #{task_id} 已完成"
+        return f"没有找到未完成的任务 #{task_id}"
+
+    return [
+        _build(
+            name="task_add",
+            description=(
+                "创建账单、日程或自定义提醒。用户说'明天交电费''下周三开会'"
+                "'提醒我周五取快递'时调用。due_at 转成 YYYY-MM-DD 或 "
+                "YYYY-MM-DDTHH:MM。"
+            ),
+            properties={
+                "type": {
+                    "type": "string",
+                    "enum": ["bill", "schedule", "custom"],
+                    "description": "bill 账单 / schedule 日程 / custom 自定义提醒",
+                },
+                "title": {"type": "string", "description": "任务标题，如 '交电费'"},
+                "due_at": {
+                    "type": "string",
+                    "description": "到期时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:MM",
+                },
+            },
+            required=["title"],
+            execute=add_task,
+        ),
+        _build(
+            name="task_list",
+            description="列出任务。用户问'我有哪些提醒''还有什么没做'时调用。",
+            properties={
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "reminded", "done", "cancelled"],
+                    "description": "按状态筛选，不传则全部",
+                },
+            },
+            required=[],
+            execute=lambda status=None: _fmt_tasks(tasks.list_all(status)),
+        ),
+        _build(
+            name="task_complete",
+            description="把任务标记为完成。用户说'电费交了''会议开完了'时调用。",
+            properties={
+                "task_id": {"type": "integer", "description": "任务 ID"},
+            },
+            required=["task_id"],
+            execute=complete_task,
+        ),
+    ]
+
+
+def get_fact_tools(facts, proposals=None):
+    """结构化事实工具：户号、地址、品牌、型号、偏好等。"""
+    def store_fact(subject, predicate, value, source=None):
+        if proposals is not None:
+            return proposals.store_fact(subject, predicate, value, source)
+        try:
+            fact = facts.store(subject, predicate, value, source)
+        except ValueError as exc:
+            return f"无法保存事实：{exc}"
+        return (
+            f"已保存：{fact['subject']} · {fact['predicate']} = {fact['value']}"
+        )
+
+    def search_facts(query=None, subject=None, predicate=None):
+        return _fmt_facts(facts.search(query, subject, predicate))
+
+    return [
+        _build(
+            name="fact_store",
+            description=(
+                "保存结构化事实，如户号、地址、品牌、型号、偏好。"
+                "用户说'爸妈家电费户号是123''牛奶是蒙牛的'时调用。"
+            ),
+            properties={
+                "subject": {"type": "string", "description": "主体，如 '爸妈家'"},
+                "predicate": {"type": "string", "description": "属性，如 '电费户号'"},
+                "value": {"type": "string", "description": "值，如 '123456'"},
+                "source": {"type": "string", "description": "来源，可选"},
+            },
+            required=["subject", "predicate", "value"],
+            execute=store_fact,
+        ),
+        _build(
+            name="fact_search",
+            description="查询结构化事实。用户问户号、地址、品牌、型号时调用。",
+            properties={
+                "query": {"type": "string", "description": "关键词"},
+                "subject": {"type": "string", "description": "主体筛选，可选"},
+                "predicate": {"type": "string", "description": "属性筛选，可选"},
+            },
+            required=[],
+            execute=search_facts,
+        ),
+        _build(
+            name="fact_list",
+            description="列出最近保存的结构化事实。",
+            properties={},
+            required=[],
+            execute=lambda: _fmt_facts(facts.list_all()),
+        ),
+    ]
+
+
+def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
+                  tasks=None, facts=None):
+    """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实）。"""
     tools = get_memory_tools(memory, proposals) + [get_current_date_tool()]
     if items is not None:
         tools += get_items_tools(items, proposals)
     if entities is not None:
         tools += get_entity_tools(entities)
+    if tasks is not None:
+        tools += get_task_tools(tasks, proposals)
+    if facts is not None:
+        tools += get_fact_tools(facts, proposals)
     return tools

@@ -22,6 +22,14 @@ class FakeItems:
         pass
 
 
+class FakeTasks:
+    def count(self):
+        return 0
+
+    def close(self):
+        pass
+
+
 class FakeTTS:
     async def synthesize_bytes(self, reply):
         return b"audio"
@@ -36,6 +44,7 @@ class FakeAssistant:
     def __init__(self):
         self.memory = FakeMemory()
         self.items = FakeItems()
+        self.tasks = FakeTasks()
         self.sessions = {}
 
     def process_text(self, text, client_id):
@@ -111,6 +120,12 @@ def test_reminder_text_formatting():
     assert "还有 2 天过期" in server._reminder_text({"name": "酸奶", "days_left": 2})
 
 
+def test_task_reminder_text_formatting():
+    assert "已经过期 2 天" in server._task_reminder_text({"title": "交电费", "days_left": -2})
+    assert "今天到期" in server._task_reminder_text({"title": "交电费", "days_left": 0})
+    assert "还有 1 天到期" in server._task_reminder_text({"title": "交电费", "days_left": 1})
+
+
 def test_events_requires_token(monkeypatch):
     monkeypatch.setattr(server, "API_TOKEN", "secret")
     client = TestClient(server.app)
@@ -160,7 +175,10 @@ def test_status_exposes_drop_counter(monkeypatch):
     monkeypatch.setattr(server, "assistant", FakeAssistant())
     monkeypatch.setattr(server, "dropped_events", 7)
     monkeypatch.setattr(server, "due_items", [])
+    monkeypatch.setattr(server, "due_tasks", [])
     client = TestClient(server.app)
     body = client.get("/api/status", headers={"Authorization": "Bearer secret"}).json()
     assert body["dropped_events"] == 7
     assert body["due_items"] == []
+    assert body["due_tasks"] == []
+    assert body["task_count"] == 0

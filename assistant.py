@@ -18,6 +18,8 @@ from agent.clarify import Clarifier
 from agent.confirm import ConfirmationManager, ConfirmationRequired
 from agent.entities import EntityService
 from agent.propose import ProposalService
+from domain.facts import Facts
+from domain.tasks import Tasks
 from memory import Memory
 from items import Items
 from llm import LLM
@@ -46,12 +48,16 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 今天日期：{today}
 
 工具分工：
-- 家庭事实（如"明天交电费""冰箱里还有三个鸡蛋"）→ memory_store 记住（summary 用绝对日期）
+- 家庭日常事实/闲聊记录（如"今天买了个新鼠标""冰箱里还有三个鸡蛋"）→ memory_store（summary 用绝对日期）
+- 账单/日程/提醒（如"明天交电费""下周三开会""提醒我周五取快递"）→ task_add（type=bill/schedule/custom，due_at 转 YYYY-MM-DD）
+- 结构化属性（户号、地址、品牌、型号、偏好）→ fact_store；查询用 fact_search
+- 任务查询/完成（"我有哪些提醒""电费交了"）→ task_list / task_complete
 - 家庭事务查询（"酸奶还有几天过期""冰箱里有什么"）→ 先 item_search 查物品清单，查不到再用 memory_search 查记忆
 - 会过期的物品（"酸奶8月5号过期""鸡蛋还剩3个"）→ item_add 记到物品清单（expiry_date 转 YYYY-MM-DD）
 - 物品管理（"删掉酸奶""看看有哪些东西"）→ item_delete / item_list
 - 记忆管理（"看看记忆""忘掉X"）→ memory_list / memory_delete
-- 时间相关问题（还有几天/什么时候/是否过期）→ 调用 get_current_date 拿今天日期，结合物品/记忆日期计算
+- 实体管理（"把爸妈家也叫父母家"）→ entity_add / entity_rename / entity_list
+- 时间相关问题（还有几天/什么时候/是否过期）→ 调用 get_current_date 拿今天日期，结合任务/物品/记忆日期计算
 - 查无结果时老实说"我还没有这方面的记录"
 - 对话历史里可能已有相关上下文，理解"那个""它""还有呢"这类指代时结合历史
 - 回答简洁口语化，像家人聊天，不超过 3 句话
@@ -61,15 +67,22 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 class Assistant:
     """家庭智能终端核心编排。"""
 
-    def __init__(self, memory=None, llm=None, items=None, clarifier=None):
+    def __init__(self, memory=None, llm=None, items=None, clarifier=None,
+                 tasks=None, facts=None):
         self.memory = memory or Memory()
         self.llm = llm or LLM()
         self.items = items or Items()
+        self.tasks = tasks or Tasks()
+        self.facts = facts or Facts()
         # 歧义澄清（实体 + 待澄清动作），写操作前先过一遍
         self.clarifier = clarifier or Clarifier(items=self.items)
         # 写操作统一走「提案 → 提交」，带幂等和审计
         self.proposals = ProposalService(
-            self.clarifier.store, self.memory, self.items
+            self.clarifier.store,
+            self.memory,
+            self.items,
+            tasks=self.tasks,
+            facts=self.facts,
         )
         # 删除等高风险动作先确认
         self.confirmations = ConfirmationManager(
@@ -83,6 +96,8 @@ class Assistant:
             self.items,
             proposals=self.proposals,
             entities=self.entities,
+            tasks=self.tasks,
+            facts=self.facts,
         )
         self.max_agent_loops = 5
         # 轻量会话上下文：client_id -> [(user_text, reply), ...]（阶段 3 多轮对话的底子）
@@ -263,6 +278,12 @@ class Assistant:
                         raise ConfirmationRequired(question, pending)
                     if name == "memory_store":
                         summary = (args.get("summary") or "").strip() or summary
+                    elif name == "task_add":
+                        summary = (args.get("title") or "").strip() or summary
+                    elif name == "fact_store":
+                        subject = (args.get("subject") or "").strip()
+                        predicate = (args.get("predicate") or "").strip()
+                        summary = f"{subject} {predicate}".strip() or summary
                     elif name == "memory_search" and args.get("keywords"):
                         search_keywords = args["keywords"]
                         try:
@@ -291,10 +312,14 @@ class Assistant:
         else:
             answer = "抱歉，我绕晕了，能再说一遍吗？"
 
-        # 类型映射：存了记忆→record，查了记忆→query，否则 chat
-        if "memory_store" in used_tools:
+        # 类型映射：写入→record，查询→query，否则 chat
+        if any(t in used_tools for t in ("memory_store", "task_add", "fact_store")):
             rtype = "record"
-        elif any(t in used_tools for t in ("memory_search", "memory_list")):
+        elif "task_complete" in used_tools:
+            rtype = "chat"
+        elif any(t in used_tools for t in (
+            "memory_search", "memory_list", "task_list", "fact_search", "fact_list"
+        )):
             rtype = "query"
         else:
             rtype = "chat"
@@ -329,6 +354,12 @@ class Assistant:
             "item_search": ("items", "search"),
             "item_list": ("items", "list"),
             "item_delete": ("items", "delete"),
+            "task_add": ("tasks", "add"),
+            "task_list": ("tasks", "list"),
+            "task_complete": ("tasks", "complete"),
+            "fact_store": ("facts", "store"),
+            "fact_search": ("facts", "search"),
+            "fact_list": ("facts", "list"),
             "get_current_date": ("date", "query"),
         }
         business = [mappings[name] for name in used_tools if name in mappings and name != "get_current_date"]
@@ -336,11 +367,15 @@ class Assistant:
             return ("date", "query") if "get_current_date" in used_tools else ("chat", "chat")
         domains = {domain for domain, _action in business}
         domain = next(iter(domains)) if len(domains) == 1 else "mixed"
+        if "task_complete" in used_tools:
+            return domain, "complete"
         return domain, business[0][1]
 
     def close(self):
         self.memory.close()
         self.items.close()
+        self.tasks.close()
+        self.facts.close()
         self.clarifier.close()
 
     def _result(self, rtype, reply, domain, action, **extra):

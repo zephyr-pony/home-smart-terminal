@@ -10,6 +10,7 @@ from config import PENDING_ACTION_TTL_SECONDS
 from domain.store import AgentStore, normalize_text
 
 BILL_TRIGGERS = ("电费", "水费", "燃气费", "煤气费", "物业费", "暖气费")
+BILL_COMPLETION_WORDS = ("交了", "付了", "缴了", "完成", "搞定", "已经交", "已交")
 EXPIRY_TRIGGERS = ("过期", "保质期", "到期")
 CANCEL_WORDS = ("算了", "不用了", "取消", "先不记", "不记了", "没事")
 
@@ -82,6 +83,12 @@ class Clarifier:
 
     def _check_entity_rule(self, rule, trigger, text, conversation_id):
         entity_type = rule["entity_type"]
+
+        # 完成态不是新建动作，交给 agent 去完成任务
+        if rule["name"] == "bill_property":
+            normalized = normalize_text(text)
+            if any(word in normalized for word in BILL_COMPLETION_WORDS):
+                return None
 
         # 用户已经明确说了实体，不再追问
         if self.store.find_entity(entity_type, text):
