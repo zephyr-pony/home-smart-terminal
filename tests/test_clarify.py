@@ -52,6 +52,24 @@ def test_bill_no_question_when_property_explicit():
     assert clarifier.check("爸妈家明天要交电费", "c1") is None
 
 
+def test_other_bill_types_use_the_same_property_rule():
+    clarifier = make_clarifier()
+    clarifier.store.add_entity("property", "自己家")
+    clarifier.store.add_entity("property", "爸妈家")
+
+    result = clarifier.check("下个月要交暖气费", "c1")
+
+    assert result["kind"] == "clarify"
+    assert "暖气费" in result["reply"]
+
+
+def test_property_alias_skips_clarification():
+    clarifier = make_clarifier()
+    clarifier.store.add_entity("property", "自己家", aliases=["咱家"])
+
+    assert clarifier.check("咱家明天要交电费", "c1") is None
+
+
 def test_bill_learns_new_property_after_answer():
     clarifier = make_clarifier()
 

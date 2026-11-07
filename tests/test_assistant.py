@@ -198,6 +198,41 @@ def test_agent_loop_degrades_when_llm_fails():
     assert "抱歉" in result["reply"]
 
 
+def test_assistant_delete_requires_confirmation():
+    assistant = make_assistant()
+    assistant.memory.store("酸奶8月5号过期", "酸奶过期")
+
+    result = assistant.process_text("忘掉酸奶", client_id="c1")
+
+    assert result["type"] == "confirm"
+    assert "确认删除" in result["reply"]
+    assert assistant.memory.count() == 1
+
+    result2 = assistant.process_text("确认", client_id="c1")
+
+    assert result2["type"] == "delete"
+    assert len(result2["deleted"]) == 1
+    assert assistant.memory.count() == 0
+
+
+def test_assistant_item_delete_requires_confirmation():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("item_delete", {"name": "牛奶"}),
+        _stop_reply("好的"),
+    ]))
+    assistant.items.add("蒙牛牛奶")
+
+    result = assistant.process_text("删掉牛奶", client_id="c1")
+
+    assert result["type"] == "confirm"
+    assert assistant.items.count() == 1
+
+    result2 = assistant.process_text("确认", client_id="c1")
+
+    assert result2["type"] == "chat"
+    assert assistant.items.count() == 0
+
+
 def test_agent_loop_reports_unknown_tool_without_crashing():
     assistant = make_assistant(ScriptedLLM([
         _tool_call_reply("no_such_tool", {}),

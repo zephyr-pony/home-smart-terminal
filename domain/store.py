@@ -50,13 +50,16 @@ class AgentStore:
                 question TEXT NOT NULL,
                 candidates TEXT DEFAULT '[]',
                 created_at TEXT,
-                expires_at TEXT
+                expires_at TEXT,
+                action_type TEXT,
+                payload TEXT
             )
         """)
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pending_conversation "
             "ON pending_actions(conversation_id)"
         )
+        self._ensure_pending_columns()
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS proposals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +75,17 @@ class AgentStore:
             "CREATE INDEX IF NOT EXISTS idx_proposals_key "
             "ON proposals(idempotency_key, created_at)"
         )
+
+    def _ensure_pending_columns(self):
+        """兼容旧库：补上 action_type / payload 列。"""
+        columns = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(pending_actions)")
+        }
+        if "action_type" not in columns:
+            self.conn.execute("ALTER TABLE pending_actions ADD COLUMN action_type TEXT")
+        if "payload" not in columns:
+            self.conn.execute("ALTER TABLE pending_actions ADD COLUMN payload TEXT")
 
     # ---------- 实体 ----------
 
@@ -146,14 +160,18 @@ class AgentStore:
     # ---------- 待澄清动作 ----------
 
     def create_pending(self, conversation_id, original_text, missing_slot,
-                       question, candidates=None, ttl_seconds=None):
+                       question, candidates=None, ttl_seconds=None,
+                       action_type=None, action_payload=None):
         ttl = PENDING_ACTION_TTL_SECONDS if ttl_seconds is None else ttl_seconds
         now = datetime.now()
         expires_at = (now + timedelta(seconds=ttl)).isoformat()
-        payload = json.dumps(candidates or [], ensure_ascii=False)
+        candidates_json = json.dumps(candidates or [], ensure_ascii=False)
+        action_payload_json = json.dumps(
+            action_payload or {}, ensure_ascii=False
+        )
 
         with self._lock:
-            # 一个会话同时只保留一个待澄清动作
+            # 一个会话同时只保留一个待澄清/待确认动作
             self.conn.execute(
                 "DELETE FROM pending_actions WHERE conversation_id=?",
                 (conversation_id,),
@@ -161,16 +179,18 @@ class AgentStore:
             cur = self.conn.execute(
                 "INSERT INTO pending_actions "
                 "(conversation_id, original_text, missing_slot, question, "
-                " candidates, created_at, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " candidates, created_at, expires_at, action_type, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conversation_id,
                     original_text,
                     missing_slot,
                     question,
-                    payload,
+                    candidates_json,
                     now.isoformat(),
                     expires_at,
+                    action_type,
+                    action_payload_json,
                 ),
             )
             self.conn.commit()
@@ -180,7 +200,8 @@ class AgentStore:
         with self._lock:
             row = self.conn.execute(
                 "SELECT id, conversation_id, original_text, missing_slot, "
-                "       question, candidates, created_at, expires_at "
+                "       question, candidates, created_at, expires_at, "
+                "       action_type, payload "
                 "FROM pending_actions WHERE conversation_id=? "
                 "ORDER BY id DESC LIMIT 1",
                 (conversation_id,),
@@ -201,6 +222,8 @@ class AgentStore:
             "candidates": json.loads(row[5] or "[]"),
             "created_at": row[6],
             "expires_at": row[7],
+            "action_type": row[8],
+            "payload": json.loads(row[9] or "{}"),
         }
 
     def clear_pending(self, pending_id):

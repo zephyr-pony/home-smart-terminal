@@ -41,7 +41,7 @@ def print_result(result, text=None):
         for m in memories:
             print(f"   · {m}")
         print(f"\n🤖 {result.get('reply', '')}")
-    elif rtype == "clarify":
+    elif rtype in ("clarify", "confirm"):
         print(f"❓ {result.get('reply', '')}")
     else:  # chat / empty / 其他
         print(f"🤖 {result.get('reply', '')}")

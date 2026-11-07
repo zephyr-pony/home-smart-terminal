@@ -13,6 +13,25 @@ BILL_TRIGGERS = ("电费", "水费", "燃气费", "煤气费", "物业费", "暖
 EXPIRY_TRIGGERS = ("过期", "保质期", "到期")
 CANCEL_WORDS = ("算了", "不用了", "取消", "先不记", "不记了", "没事")
 
+# 规则注册表：新增一类歧义 = 加一条规则，不用改主流程
+RULES = (
+    {
+        "name": "bill_property",
+        "triggers": BILL_TRIGGERS,
+        "missing_slot": "property",
+        "entity_type": "property",
+        "question": "是哪里的{trigger}？",
+        "empty_hint": "比如自己家、爸妈家。",
+    },
+    {
+        "name": "item_expiry",
+        "triggers": EXPIRY_TRIGGERS,
+        "missing_slot": "product",
+        "candidates": "items",
+        "question": "是哪一件？",
+    },
+)
+
 
 class Clarifier:
     def __init__(self, store=None, items=None, ttl_seconds=PENDING_ACTION_TTL_SECONDS):
@@ -33,6 +52,9 @@ class Clarifier:
         """
         pending = self.store.get_pending(conversation_id)
         if pending:
+            # 待确认动作由 ConfirmationManager 处理，澄清引擎不要误接
+            if pending.get("missing_slot") == "confirm":
+                return None
             return self._resolve(pending, text)
         return self._detect(text, conversation_id)
 
@@ -43,28 +65,41 @@ class Clarifier:
         if not normalized:
             return None
 
-        bill = next((word for word in BILL_TRIGGERS if word in normalized), None)
-        if bill:
-            return self._check_bill(text, conversation_id, bill)
-
-        if any(word in normalized for word in EXPIRY_TRIGGERS):
-            return self._check_expiry(text, conversation_id)
-
+        for rule in RULES:
+            trigger = next(
+                (word for word in rule["triggers"] if word in normalized),
+                None,
+            )
+            if not trigger:
+                continue
+            if rule.get("entity_type"):
+                return self._check_entity_rule(
+                    rule, trigger, text, conversation_id
+                )
+            if rule.get("candidates") == "items":
+                return self._check_item_rule(rule, text, conversation_id)
         return None
 
-    def _check_bill(self, text, conversation_id, bill_word):
-        # 用户已经明确说了哪个家，不再追问
-        if self.store.find_entity("property", text):
+    def _check_entity_rule(self, rule, trigger, text, conversation_id):
+        entity_type = rule["entity_type"]
+
+        # 用户已经明确说了实体，不再追问
+        if self.store.find_entity(entity_type, text):
             return None
 
-        properties = self.store.list_entities("property")
-        if not properties:
-            question = f"是哪里的{bill_word}？比如自己家、爸妈家。"
-            return self._ask(conversation_id, text, "property", question, [])
+        entities = self.store.list_entities(entity_type)
+        question_base = rule["question"].format(trigger=trigger)
 
-        if len(properties) == 1:
-            # 只有一个已知房子时采用它，并明确写进上下文
-            canonical = properties[0]["canonical_name"]
+        if not entities:
+            hint = rule.get("empty_hint", "")
+            question = question_base + hint
+            return self._ask(
+                conversation_id, text, rule["missing_slot"], question, []
+            )
+
+        if len(entities) == 1:
+            # 只有一个已知候选时采用它，并明确写进上下文
+            canonical = entities[0]["canonical_name"]
             return {"kind": "resolved", "text": f"{canonical}，{text}"}
 
         candidates = [
@@ -73,13 +108,15 @@ class Clarifier:
                 "label": entity["canonical_name"],
                 "canonical": entity["canonical_name"],
             }
-            for entity in properties
+            for entity in entities
         ]
         labels = [candidate["label"] for candidate in candidates]
-        question = f"是哪里的{bill_word}？" + "还是".join(labels) + "？"
-        return self._ask(conversation_id, text, "property", question, candidates)
+        question = question_base + "还是".join(labels) + "？"
+        return self._ask(
+            conversation_id, text, rule["missing_slot"], question, candidates
+        )
 
-    def _check_expiry(self, text, conversation_id):
+    def _check_item_rule(self, rule, text, conversation_id):
         matches = self._match_items(text)
         if len(matches) <= 1:
             return None
@@ -89,8 +126,10 @@ class Clarifier:
             for item in matches
         ]
         labels = [candidate["label"] for candidate in candidates]
-        question = "是哪一件？" + "还是".join(labels) + "？"
-        return self._ask(conversation_id, text, "product", question, candidates)
+        question = rule["question"] + "还是".join(labels) + "？"
+        return self._ask(
+            conversation_id, text, rule["missing_slot"], question, candidates
+        )
 
     def _match_items(self, text):
         """找出文本里可能指代的物品；多个最高分候选视为歧义。"""

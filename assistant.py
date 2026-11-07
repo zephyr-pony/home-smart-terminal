@@ -15,6 +15,7 @@ from config import (
     SESSION_TTL_SECONDS,
 )
 from agent.clarify import Clarifier
+from agent.confirm import ConfirmationManager, ConfirmationRequired
 from agent.propose import ProposalService
 from memory import Memory
 from items import Items
@@ -69,6 +70,10 @@ class Assistant:
         self.proposals = ProposalService(
             self.clarifier.store, self.memory, self.items
         )
+        # 删除等高风险动作先确认
+        self.confirmations = ConfirmationManager(
+            self.clarifier.store, self.memory, self.items
+        )
         # 工具注册表（memory 4 件套 + 日期 + items 4 件套）
         self.tools = get_all_tools(self.memory, self.items, self.proposals)
         self.max_agent_loops = 5
@@ -97,12 +102,46 @@ class Assistant:
                 - "query":  agent 查了记忆并回答
                 - "chat":   闲聊
                 - "clarify": 需要用户补充信息
+                - "confirm": 等待用户确认高风险操作
         """
         text = (text or "").strip()
         if not text:
             return self._result("chat", "我没听清，能再说一遍吗？", "chat", "chat")
 
         conversation_id = (client_id or "cli").strip()
+
+        # 0) 待确认动作优先：确认/取消/重新提问
+        pending_confirm = self.confirmations.get_pending(conversation_id)
+        if pending_confirm is not None:
+            outcome = self.confirmations.handle(pending_confirm, text)
+            kind = outcome.get("kind")
+            if kind == "reask":
+                return self._result(
+                    "confirm", outcome.get("reply", ""), "confirm", "ask",
+                    pending_action={
+                        "id": pending_confirm["id"],
+                        "missing_slot": "confirm",
+                        "action_type": pending_confirm.get("action_type"),
+                        "question": pending_confirm.get("question", ""),
+                    },
+                )
+            if kind == "cancelled":
+                reply = outcome.get("reply", "")
+                self._record_turn(client_id, text, reply)
+                return self._result("chat", reply, "confirm", "cancel")
+            if kind == "done":
+                reply = outcome.get("reply", "")
+                extra = {}
+                if "deleted" in outcome:
+                    extra["deleted"] = outcome["deleted"]
+                self._record_turn(client_id, text, reply)
+                return self._result(
+                    outcome.get("type", "chat"),
+                    reply,
+                    outcome.get("domain", "confirm"),
+                    outcome.get("action", "delete"),
+                    **extra,
+                )
 
         # 1) 歧义澄清：缺关键槽位时先问一句，不直接写库
         clarification = self.clarifier.check(text, conversation_id)
@@ -123,12 +162,20 @@ class Assistant:
                 text = clarification.get("text", text)
 
         # 2) 内置命令预检（确定性、零延迟，不进 agent）
-        cmd_result = self._handle_command(text)
+        cmd_result = self._handle_command(text, conversation_id)
         if cmd_result is not None:
+            self._record_turn(client_id, text, cmd_result.get("reply", ""))
             return cmd_result
 
         # 3) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
-        rtype, answer, extras = self._agent_loop(text, client_id)
+        try:
+            rtype, answer, extras = self._agent_loop(text, client_id)
+        except ConfirmationRequired as exc:
+            self._record_turn(client_id, text, exc.reply)
+            return self._result(
+                "confirm", exc.reply, "confirm", "ask",
+                pending_action=exc.pending_action,
+            )
         reply = {"type": rtype, "reply": answer}
         reply.update(extras)
 
@@ -199,6 +246,13 @@ class Assistant:
                         args = json.loads(fn.get("arguments") or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    if name in ("memory_delete", "item_delete"):
+                        question = self._confirmation_question(name, args)
+                        conversation_id = (client_id or "cli").strip()
+                        pending = self.confirmations.request(
+                            conversation_id, name, args, question, user_text
+                        )
+                        raise ConfirmationRequired(question, pending)
                     if name == "memory_store":
                         summary = (args.get("summary") or "").strip() or summary
                     elif name == "memory_search" and args.get("keywords"):
@@ -247,6 +301,14 @@ class Assistant:
         elif rtype == "query" and search_keywords:
             extras["memories"] = self.memory.search(search_keywords, search_n)
         return rtype, answer, extras
+
+    @staticmethod
+    def _confirmation_question(tool_name, args):
+        if tool_name == "memory_delete":
+            target = str(args.get("keywords") or "").strip() or "这条"
+            return f"确认删除关于「{target}」的记忆吗？回复「确认」或「取消」。"
+        target = str(args.get("name") or "").strip() or "这个物品"
+        return f"确认删除物品「{target}」吗？回复「确认」或「取消」。"
 
     @staticmethod
     def _tool_metadata(used_tools):
@@ -352,13 +414,13 @@ class Assistant:
 
     # ---------- 内置命令 ----------
 
-    def _handle_command(self, text):
+    def _handle_command(self, text, conversation_id):
         """处理内置命令。不是命令时返回 None。"""
         if _is_list_command(text):
             return self._cmd_list()
         for w in DELETE_WORDS:
             if w in text:
-                return self._cmd_delete(text, w)
+                return self._cmd_delete(text, w, conversation_id)
         return None
 
     def _cmd_list(self):
@@ -371,7 +433,7 @@ class Assistant:
             "memory", "list", memories=mems,
         )
 
-    def _cmd_delete(self, text, word):
+    def _cmd_delete(self, text, word, conversation_id):
         target = text.replace(word, "").strip()
         for junk in DELETE_JUNK:
             target = target.replace(junk, "")
@@ -380,11 +442,19 @@ class Assistant:
         if not target:
             return self._result("delete_prompt", "想删掉什么记忆呢？比如对我说，忘掉酸奶。", "memory", "delete")
 
-        deleted = self.memory.delete_by_keywords(target)
-        if deleted:
-            return self._result(
-                "delete", f"已删除 {len(deleted)} 条关于{target}的记忆。",
-                "memory", "delete", deleted=deleted, target=target,
-            )
         # 记忆未命中 → 返回 None 降级给 agent loop（用户可能指的是删物品 item_delete）
-        return None
+        if not self.memory.search(target, 1):
+            return None
+
+        question = f"确认删除关于「{target}」的记忆吗？回复「确认」或「取消」。"
+        pending = self.confirmations.request(
+            conversation_id,
+            "memory_delete",
+            {"keywords": target},
+            question,
+            text,
+        )
+        return self._result(
+            "confirm", question, "memory", "delete",
+            pending_action=pending, target=target,
+        )
