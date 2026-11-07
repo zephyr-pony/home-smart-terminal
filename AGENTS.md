@@ -17,6 +17,7 @@
 | `domain/store.py` | 实体 + 待澄清动作（SQLite，`data/agent.db`） |
 | `agent/clarify.py` | 澄清引擎：识别歧义、生成问题、合并回答 |
 | `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
+| `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
 | `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
 | `assistant.py` | 核心编排 + 手写 Agent loop；CLI 与服务端共用 |
 | `tools.py` | OpenAI function calling 工具注册表（schema + execute） |
@@ -95,7 +96,7 @@ pytest tests -q
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
-- 澄清相关测试在 `tests/test_clarify.py`；写提案测试在 `tests/test_propose.py`。
+- 澄清相关测试在 `tests/test_clarify.py`；写提案测试在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`。
 - 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
 
 ## 必须保持的约定
@@ -124,6 +125,9 @@ pytest tests -q
 - `memory_store` / `item_add` 不直接写库，统一走 `ProposalService`。
 - 提案记录在 `proposals` 表，带 `idempotency_key`；`PROPOSAL_DEDUPE_SECONDS` 内相同内容自动去重。
 - 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
+- 删除类动作（`memory_delete` / `item_delete`）不直接执行，先经 `ConfirmationManager` 请求确认。
+- 待确认动作存在 `pending_actions`（`missing_slot=confirm`），用户回复确认/取消后才执行。
+- 付款、通知他人等未来高风险动作也走同一入口。
 
 ### 工具注册
 
