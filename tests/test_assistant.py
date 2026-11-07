@@ -1,6 +1,8 @@
 import json
 
+from agent.clarify import Clarifier
 from assistant import Assistant
+from domain.store import AgentStore
 from items import Items
 from memory import Memory
 
@@ -38,10 +40,13 @@ class FailingLLM:
 
 
 def make_assistant(llm=None):
+    items = Items(":memory:")
+    clarifier = Clarifier(store=AgentStore(":memory:"), items=items)
     return Assistant(
         memory=Memory(":memory:"),
-        items=Items(":memory:"),
+        items=items,
         llm=llm or FakeLLM(),
+        clarifier=clarifier,
     )
 
 
@@ -137,15 +142,36 @@ def test_agent_loop_returns_record_summary():
     assistant = make_assistant(ScriptedLLM([
         _tool_call_reply(
             "memory_store",
-            {"text": "明天交电费", "summary": "8月9日交电费"},
+            {"text": "明天买电池", "summary": "8月9日买电池"},
         ),
         _stop_reply("记住了"),
     ]))
-    result = assistant.process_text("明天交电费")
+    result = assistant.process_text("明天买电池")
 
     assert result["type"] == "record"
     assert result["reply"] == "记住了"
-    assert result["summary"] == "8月9日交电费"
+    assert result["summary"] == "8月9日买电池"
+
+
+def test_assistant_asks_property_before_bill():
+    assistant = make_assistant()
+    assistant.clarifier.store.add_entity("property", "自己家")
+    assistant.clarifier.store.add_entity("property", "爸妈家")
+
+    result = assistant.process_text("明天要交电费", client_id="c1")
+
+    assert result["type"] == "clarify"
+    assert "自己家" in result["reply"]
+    assert "爸妈家" in result["reply"]
+    assert result["pending_action"]["missing_slot"] == "property"
+
+    result2 = assistant.process_text("爸妈家", client_id="c1")
+
+    assert result2["type"] == "chat"
+    assert assistant.llm.calls[-1][-1] == {
+        "role": "user",
+        "content": "爸妈家，明天要交电费",
+    }
 
 
 def test_agent_loop_returns_search_memories():

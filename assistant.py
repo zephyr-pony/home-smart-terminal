@@ -14,6 +14,7 @@ from config import (
     SESSION_CONTEXT_TURNS,
     SESSION_TTL_SECONDS,
 )
+from agent.clarify import Clarifier
 from memory import Memory
 from items import Items
 from llm import LLM
@@ -57,10 +58,12 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 class Assistant:
     """家庭智能终端核心编排。"""
 
-    def __init__(self, memory=None, llm=None, items=None):
+    def __init__(self, memory=None, llm=None, items=None, clarifier=None):
         self.memory = memory or Memory()
         self.llm = llm or LLM()
         self.items = items or Items()
+        # 歧义澄清（实体 + 待澄清动作），写操作前先过一遍
+        self.clarifier = clarifier or Clarifier(items=self.items)
         # 工具注册表（memory 4 件套 + 日期 + items 4 件套）
         self.tools = get_all_tools(self.memory, self.items)
         self.max_agent_loops = 5
@@ -88,17 +91,38 @@ class Assistant:
                 - "record": agent 存了记忆
                 - "query":  agent 查了记忆并回答
                 - "chat":   闲聊
+                - "clarify": 需要用户补充信息
         """
         text = (text or "").strip()
         if not text:
             return self._result("chat", "我没听清，能再说一遍吗？", "chat", "chat")
 
-        # 1) 内置命令预检（确定性、零延迟，不进 agent）
+        conversation_id = (client_id or "cli").strip()
+
+        # 1) 歧义澄清：缺关键槽位时先问一句，不直接写库
+        clarification = self.clarifier.check(text, conversation_id)
+        if clarification is not None:
+            kind = clarification.get("kind")
+            if kind == "clarify":
+                reply = clarification.get("reply", "")
+                self._record_turn(client_id, text, reply)
+                return self._result(
+                    "clarify", reply, "clarify", "ask",
+                    pending_action=clarification.get("pending_action"),
+                )
+            if kind == "cancelled":
+                reply = clarification.get("reply", "")
+                self._record_turn(client_id, text, reply)
+                return self._result("chat", reply, "clarify", "cancel")
+            if kind == "resolved":
+                text = clarification.get("text", text)
+
+        # 2) 内置命令预检（确定性、零延迟，不进 agent）
         cmd_result = self._handle_command(text)
         if cmd_result is not None:
             return cmd_result
 
-        # 2) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
+        # 3) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
         rtype, answer, extras = self._agent_loop(text, client_id)
         reply = {"type": rtype, "reply": answer}
         reply.update(extras)
@@ -238,6 +262,11 @@ class Assistant:
         domains = {domain for domain, _action in business}
         domain = next(iter(domains)) if len(domains) == 1 else "mixed"
         return domain, business[0][1]
+
+    def close(self):
+        self.memory.close()
+        self.items.close()
+        self.clarifier.close()
 
     def _result(self, rtype, reply, domain, action, **extra):
         result = {

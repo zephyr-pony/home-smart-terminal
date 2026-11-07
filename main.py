@@ -41,6 +41,8 @@ def print_result(result, text=None):
         for m in memories:
             print(f"   · {m}")
         print(f"\n🤖 {result.get('reply', '')}")
+    elif rtype == "clarify":
+        print(f"❓ {result.get('reply', '')}")
     else:  # chat / empty / 其他
         print(f"🤖 {result.get('reply', '')}")
 
@@ -151,7 +153,7 @@ def main():
 
                 wav_path = save_audio(audio)
                 try:
-                    result = assistant.process_voice(stt, wav_path)
+                    result = assistant.process_voice(stt, wav_path, client_id="cli")
                 finally:
                     if os.path.exists(wav_path):
                         os.remove(wav_path)
@@ -168,7 +170,7 @@ def main():
             else:
                 # --- 文字输入 ---
                 text = user_input
-                result = assistant.process_text(text)
+                result = assistant.process_text(text, client_id="cli")
                 print_result(result)
                 tts.speak(result.get("reply", ""))
 

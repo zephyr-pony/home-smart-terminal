@@ -46,6 +46,10 @@ STT_LANGUAGE = _get("STT_LANGUAGE", "zh")
 MEMORY_DB_PATH = _get("MEMORY_DB_PATH", "./data/memory.db")
 ITEMS_DB_PATH = _get("ITEMS_DB_PATH", "./data/items.db")
 
+# ---- Agent 状态（实体 / 待澄清动作）----
+AGENT_DB_PATH = _get("AGENT_DB_PATH", "./data/agent.db")
+PENDING_ACTION_TTL_SECONDS = _get_int("PENDING_ACTION_TTL_SECONDS", 30 * 60)
+
 # ---- 音频录制 ----
 SAMPLE_RATE = _get_int("SAMPLE_RATE", 16000)
 CHUNK_SIZE = _get_int("CHUNK_SIZE", 1024)

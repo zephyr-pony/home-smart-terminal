@@ -171,8 +171,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         if assistant is not None:
-            assistant.memory.close()
-            assistant.items.close()
+            assistant.close()
         if _tmp_dir:
             shutil.rmtree(_tmp_dir, ignore_errors=True)
         _subscribers.clear()
@@ -335,6 +334,7 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
         "used_tools": result.get("used_tools", []),
         "domain": result.get("domain", "chat"),
         "action": result.get("action", "chat"),
+        "pending_action": result.get("pending_action"),
     }
 
 
@@ -371,6 +371,7 @@ async def api_voice(file: UploadFile = File(...), client_id: str = Form(""), _au
         "used_tools": result.get("used_tools", []),
         "domain": result.get("domain", "chat"),
         "action": result.get("action", "chat"),
+        "pending_action": result.get("pending_action"),
     }
 
 
