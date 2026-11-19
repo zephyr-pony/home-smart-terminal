@@ -290,7 +290,7 @@ html, body {
       <div id="messages"></div>
       <div id="input-area">
         <button id="record-btn" aria-label="按住说话">
-          <span id="record-label">正在录音… 0s</span>
+          <span id="record-label">按住说话</span>
           🎤
         </button>
         <input id="text-input" type="text" placeholder="打字跟小马说话…" autocomplete="off">
@@ -452,6 +452,16 @@ html, body {
     });
   }
 
+  // 把 fetch 错误翻译成用户能看懂的一句话（网络失败时 message 不是数字）
+  function requestErrorText(err) {
+    var status = Number(err && err.message);
+    if (!status) return '连不上服务端，请检查网络或服务是否已启动';
+    if (status === 401 || status === 403) return '访问令牌无效，请在顶部输入正确的令牌';
+    if (status === 413) return '录音太长，请缩短后重试';
+    if (status === 503) return '服务还在启动（首次要加载语音模型），请稍后再试';
+    return '服务端返回错误（HTTP ' + status + '）';
+  }
+
   function daysText(left) {
     if (left == null) return '';
     return left < 0 ? '已过期 ' + (-left) + ' 天' : '剩 ' + left + ' 天';
@@ -547,7 +557,7 @@ html, body {
       });
       overviewDue.innerHTML = rows.length ? rows.join('') : '<div class="empty">暂无到期提醒</div>';
     }).catch(function(err) {
-      overviewDue.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
+      overviewDue.innerHTML = '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
     });
   }
 
@@ -637,7 +647,7 @@ html, body {
       renderData(kind, d);
       renderPager();
     }).catch(function(err) {
-      dataList.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
+      dataList.innerHTML = '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
     });
   }
 
@@ -748,7 +758,7 @@ html, body {
       }).join('');
       settingsMsg.textContent = '配置保存到本地 .env，重启服务端后生效。';
     }).catch(function(err) {
-      settingsSummary.textContent = '加载失败：' + err.message;
+      settingsSummary.textContent = '加载失败：' + requestErrorText(err);
     });
   }
 
@@ -765,7 +775,7 @@ html, body {
     }).then(function() {
       settingsMsg.textContent = '已保存。重启服务端后生效。';
     }).catch(function(err) {
-      settingsMsg.textContent = '保存失败：' + err.message;
+      settingsMsg.textContent = '保存失败：' + requestErrorText(err);
     });
   }
 
@@ -821,7 +831,7 @@ html, body {
           pollStatus();
         })
         .catch(function(err) {
-          alert('操作失败：' + err.message);
+          alert('操作失败：' + requestErrorText(err));
         });
       return;
     }
@@ -838,7 +848,7 @@ html, body {
         loadOverview();
         pollStatus();
       }).catch(function(err) {
-        alert('删除失败：' + err.message);
+        alert('删除失败：' + requestErrorText(err));
       });
     }
   });
@@ -859,7 +869,7 @@ html, body {
       loadData('tasks');
       loadOverview();
     }).catch(function(err) {
-      alert('保存失败：' + err.message);
+      alert('保存失败：' + requestErrorText(err));
     });
   });
 
@@ -879,7 +889,10 @@ html, body {
   // ---- status poll ----
   function pollStatus() {
     fetch('/api/status', { headers: authHeaders() })
-      .then(function(r) { return r.json(); })
+      .then(function(r) {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
       .then(function(d) {
         if (d.ok) {
           var txt = '🟢 服务正常 · 记忆 ' + (d.memory_count != null ? d.memory_count : '?') + ' 条';
@@ -1004,9 +1017,9 @@ html, body {
       removeTyping();
       addMsg(d.reply || '（空回复）', 'bot', d.audio || null);
     })
-    .catch(function() {
+    .catch(function(err) {
       removeTyping();
-      addMsg('出错了，请检查服务端连接', 'error');
+      addMsg(requestErrorText(err), 'error');
     })
     .finally(function() { setBusy(false); });
   }
@@ -1078,6 +1091,7 @@ html, body {
     recording = false;
     clearInterval(timer);
     recBtn.classList.remove('recording');
+    recLabel.textContent = '按住说话';
 
     var duration = (Date.now() - recStart) / 1000;
     var srcRate = audioCtx ? audioCtx.sampleRate : 48000;
@@ -1136,9 +1150,9 @@ html, body {
       addMsg(d.text || '（语音）', 'user');
       addMsg(d.reply || '（空回复）', 'bot', d.audio || null);
     })
-    .catch(function() {
+    .catch(function(err) {
       removeTyping();
-      addMsg('出错了，请检查服务端连接', 'error');
+      addMsg(requestErrorText(err), 'error');
     })
     .finally(function() { setBusy(false); });
   }

@@ -23,6 +23,7 @@ config.local.*
 # ---- AI 代理本地状态（不入库）----
 .commandcode/
 PROJECT_STATUS.md
+.openchamber/
 
 # ---- 浏览器自动化快照（playwright 测试产物）----
 .playwright-mcp/
