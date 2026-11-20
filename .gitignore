@@ -25,6 +25,9 @@ config.local.*
 PROJECT_STATUS.md
 .openchamber/
 
+# ---- 本地工具脚本（不入库）----
+scripts/oc_usage.py
+
 # ---- 浏览器自动化快照（playwright 测试产物）----
 .playwright-mcp/
 

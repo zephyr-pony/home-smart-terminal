@@ -98,6 +98,17 @@ html, body {
   font-size: 14px; max-width: 90%; text-align: center;
 }
 
+/* 轻量 Markdown 渲染后的元素 */
+.bubble ul { margin: 4px 0; padding-left: 18px; }
+.bubble li { margin: 2px 0; }
+.bubble strong { font-weight: 700; }
+.bubble code {
+  padding: 1px 4px; border-radius: 4px;
+  background: rgba(255,255,255,.10);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
 .play-btn {
   display: inline-block; margin-top: 6px;
   padding: 4px 10px; font-size: 13px;
@@ -471,6 +482,32 @@ html, body {
     requestAnimationFrame(function() { msgBox.scrollTop = msgBox.scrollHeight; });
   }
 
+  // 轻量 Markdown：只处理加粗、行内代码和列表；先 esc 再替换，避免注入
+  function inlineMd(text) {
+    return esc(text)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
+  }
+
+  function renderMarkdown(text) {
+    var lines = String(text == null ? '' : text).split(/\r?\n/);
+    var html = '';
+    var inList = false;
+    lines.forEach(function(line) {
+      var item = /^\s*(?:[-*]|\d+[.)])\s+(.*)$/.exec(line);
+      if (item) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += '<li>' + inlineMd(item[1]) + '</li>';
+        return;
+      }
+      if (inList) { html += '</ul>'; inList = false; }
+      if (line.trim() === '') { html += '<br>'; return; }
+      html += inlineMd(line) + '<br>';
+    });
+    if (inList) html += '</ul>';
+    return html.replace(/(<br>)+$/, '');
+  }
+
   function addMsg(text, type, audio) {
     // type: 'user' | 'bot' | 'error'
     var row = document.createElement('div');
@@ -478,7 +515,7 @@ html, body {
 
     var bubble = document.createElement('div');
     bubble.className = 'bubble';
-    bubble.textContent = text;
+    bubble.innerHTML = renderMarkdown(text);
 
     if (audio) {
       var btn = document.createElement('button');
@@ -1035,6 +1072,8 @@ html, body {
   var MAX_DURATION = 15;    // seconds
 
   var recording = false;
+  var recPending = false;   // 已按下，正在等麦克风授权
+  var recCancel  = false;   // 等授权期间松手 → 授权回来就取消
   var audioCtx  = null;
   var stream    = null;
   var source    = null;
@@ -1043,15 +1082,46 @@ html, body {
   var recStart  = 0;
   var timer     = null;
 
+  // 浏览器只在 HTTPS 或 localhost 下提供麦克风；局域网 http 访问时必须明确提示，
+  // 否则 navigator.mediaDevices 是 undefined，会静默失败。
+  function canUseMic() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+      (window.AudioContext || window.webkitAudioContext));
+  }
+
   function startRecord() {
-    if (busy || recording) return;
+    if (busy || recording || recPending) return;
+
+    if (!canUseMic()) {
+      addMsg('当前地址用不了麦克风：浏览器要求 HTTPS 或 localhost 才允许录音。' +
+        '可以先用下面的输入框打字，或者用 https 地址（例如 Tailscale）打开本页。', 'error');
+      return;
+    }
 
     chunks = [];
-    // Create AudioContext inside user gesture for iOS Safari
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    recPending = true;
+    recCancel = false;
+
+    try {
+      // Create AudioContext inside user gesture for iOS Safari
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (err) {
+      recPending = false;
+      addMsg('浏览器无法创建音频上下文，请更换浏览器或检查音频设备。', 'error');
+      return;
+    }
 
     navigator.mediaDevices.getUserMedia({ audio: true })
     .then(function(s) {
+      if (recCancel) {
+        // 授权回来之前已经松手：不开始录，直接释放设备
+        s.getTracks().forEach(function(t) { t.stop(); });
+        cleanupAudio();
+        recPending = false;
+        addMsg('还没开始录音就松手了，请按住并等麦克风授权完成。', 'error');
+        return;
+      }
+
       stream = s;
       // Resume if suspended (iOS Safari)
       if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -1069,6 +1139,7 @@ html, body {
       source.connect(processor);
       processor.connect(audioCtx.destination);
 
+      recPending = false;
       recording = true;
       recStart  = Date.now();
       recBtn.classList.add('recording');
@@ -1081,12 +1152,18 @@ html, body {
       }, 200);
     })
     .catch(function(err) {
-      addMsg('无法访问麦克风：' + err.message, 'error');
+      recPending = false;
+      addMsg('无法访问麦克风：' + ((err && err.message) || err), 'error');
       cleanupAudio();
     });
   }
 
   function stopAndSend() {
+    // 还在等授权：这次按键作废，等 .then 里取消（fixes 快速松手后一直录到上限）
+    if (recPending) {
+      recCancel = true;
+      return;
+    }
     if (!recording) return;
     recording = false;
     clearInterval(timer);
@@ -1225,12 +1302,12 @@ html, body {
   });
 
   recBtn.addEventListener('pointerleave', function(e) {
-    // finger slid off button while recording
-    if (recording) stopAndSend();
+    // finger slid off button while recording（等授权时也算，取消这次按键）
+    if (recording || recPending) stopAndSend();
   });
 
   recBtn.addEventListener('pointercancel', function(e) {
-    if (recording) stopAndSend();
+    if (recording || recPending) stopAndSend();
   });
 
   // Prevent context menu on long press (mobile)
