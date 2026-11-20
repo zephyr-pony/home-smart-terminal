@@ -571,3 +571,39 @@ POST /v1/actions/act-1/confirm
 2. Web 继续打磨：语音入口、空状态/错误提示、移动端细节。
 3. RAG / 本地生活工具延后，等 Web/App 稳定后再接官方来源和高德 API Key。
 4. 事实与实体关联：`facts.subject` 升级为实体 ID，支持属性查询。
+
+## 13. 网络接入方案（2026-11-20 讨论记录）
+
+### 约束
+
+- 手机浏览器的麦克风只在 HTTPS 或 localhost 下可用，这是必须解决的硬条件。
+- 数据本地优先：记忆、账单、事实尽量留在家里。
+- 服务是单进程 + 单 token + SQLite，没有速率限制和审计，不能裸奔公网。
+
+### 方案对比
+
+| | Tailscale Serve | CF Tunnel + Access | VPS + frp 回源 | 直接部署 VPS |
+|---|---|---|---|---|
+| 数据位置 | 家里 | 家里 | 家里 | VPS |
+| 公网端口 | 不开 | 不开 | VPS 443 | VPS 443 |
+| 自动 HTTPS | ✅ | ✅ | 需 Caddy | 需 Caddy |
+| 需要域名 | 否 | 是 | 是 | 是 |
+| 访问者装客户端 | 要装 Tailscale | 不用 | 不用 | 不用 |
+| 身份层 | 设备身份 | CF Access（邮箱/SSO） | 仅 API_TOKEN | 仅 API_TOKEN |
+| 运维成本 | 极低 | 低 | 中（frps + 证书） | 中（更新/备份） |
+| 大陆注意 | 连接质量看运营商 | 免费线路延迟偏高 | 域名需备案 | 域名需备案、内存 ≥2GB |
+
+### 结论
+
+1. 先上 **Tailscale Serve**：自动 HTTPS、零端口暴露、无需域名，今天即可让手机语音可用。
+2. 只给家里人用且连接稳定 → 停在这里。
+3. 要给不装 App 的家人用 → 二选一：**Cloudflare Tunnel + Access**（省心）或 **VPS + frp**（数据留家、全自主）。
+4. **暂不把服务直接部署到 VPS**：数据要出门，且 FunASR 模型占 ~890MB 内存。
+5. 换方案的成本很低：应用无硬编码地址、无 CORS、前端全相对路径；只需改绑定地址、入口代理和域名，客户端 token 因 localStorage 按源隔离需重填一次。
+
+### 已做的前置准备
+
+- `.env` 配置 `API_TOKEN`（所有 `/api/*` 需 Bearer）。
+- `/docs`、`/redoc`、`/openapi.json` 已关闭，避免公网暴露接口结构。
+- `.env` 设置 `SERVER_PORT=8200`（本机 8000 被 Windows 保留）。
+- 已安装 Tailscale 1.104.7；登录与 `tailscale serve` 待账号授权后执行。

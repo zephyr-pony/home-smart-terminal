@@ -152,6 +152,14 @@ def test_events_requires_token(monkeypatch):
     assert client.get("/api/events").status_code == 401
 
 
+def test_api_docs_are_disabled():
+    """/docs、/redoc、/openapi.json 不对外暴露（公网入口防 schema 泄露）。"""
+    client = TestClient(server.app)
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
 def test_broadcast_delivers_to_subscriber():
     import asyncio
 

@@ -335,7 +335,14 @@ async def lifespan(app: FastAPI):
         print("🛑 服务关闭")
 
 
-app = FastAPI(title="家庭智能终端", lifespan=lifespan)
+app = FastAPI(
+    title="家庭智能终端",
+    lifespan=lifespan,
+    # 公网/隧道入口下不暴露接口文档，避免 schema 泄露
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 # ---------- 请求模型 ----------
