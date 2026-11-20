@@ -25,6 +25,7 @@ from typing import Optional
 import config
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from config import (
@@ -761,9 +762,35 @@ async def api_voice(file: UploadFile = File(...), client_id: str = Form(""), _au
 
 # ---------- 静态客户端 ----------
 
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/manifest.json")
+async def manifest():
+    """PWA 清单：安卓 Chrome / iOS Safari 靠它识别「可安装」。"""
+    return FileResponse(
+        os.path.join(STATIC_DIR, "manifest.json"),
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/sw.js")
+async def service_worker():
+    """Service Worker 必须挂在根路径，作用域才是整个站点。"""
+    path = os.path.join(STATIC_DIR, "sw.js")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Service worker 未生成")
+    response = FileResponse(path, media_type="application/javascript")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
 
 
 if __name__ == "__main__":

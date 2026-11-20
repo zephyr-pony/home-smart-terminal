@@ -2,8 +2,14 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>家庭智能终端 · 小马</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#1b1f2a">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="小马">
 <style>
 :root {
   --bg: #1b1f2a;
@@ -27,7 +33,12 @@
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body {
-  height: 100%; overflow: hidden;
+  /* iOS 主屏模式（standalone）下 100% 只算到安全区上方，底部会多出一条黑边，
+     用 dvh 覆盖整个可视区域；-webkit-fill-available 兜底旧系统 */
+  height: 100%;
+  height: -webkit-fill-available;
+  height: 100dvh;
+  overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   background: var(--bg); color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
@@ -35,12 +46,15 @@ html, body {
 
 #app {
   display: flex; flex-direction: column;
-  height: 100%; max-width: 600px; margin: 0 auto;
+  /* 用 body 的高度（100dvh，包含底部安全区）铺满，不要用 innerHeight：
+     iOS standalone 下 innerHeight 会比 screen.height 少一截，锁死它会留黑边 */
+  height: 100%;
+  max-width: 600px; margin: 0 auto;
 }
 
 /* ---- status bar ---- */
 #status-bar {
-  flex-shrink: 0; padding: 16px 20px 12px;
+  flex-shrink: 0; padding: calc(16px + env(safe-area-inset-top)) 20px 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
@@ -214,7 +228,7 @@ html, body {
 /* ---- input area ---- */
 #input-area {
   flex-shrink: 0; display: flex; align-items: center; gap: 10px;
-  padding: 12px 14px 20px;
+  padding: 12px 14px calc(20px + env(safe-area-inset-bottom));
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
@@ -420,6 +434,52 @@ html, body {
   var settingsSummary = document.getElementById('settings-summary');
   var settingsMsg = document.getElementById('settings-msg');
   var currentDataKind = 'memories';
+
+  // ---- iOS 主屏模式视口自愈 ----
+  // iOS 26 standalone 下，键盘弹出过一次之后视口会永久缩水
+  // （innerHeight / 100dvh 比 screen.height 少一截，底部留一条黑带），
+  // 普通 resize / blur 都拉不回来。唯一的办法是在一个满屏高度元素上做一次
+  // display 翻转，逼 WebKit 重新测量视口。
+  var isStandalone = window.navigator.standalone === true ||
+    window.matchMedia('(display-mode: standalone)').matches;
+  var healFails = 0;
+  var healDisabled = false;
+  var lastHealAt = 0;
+
+  function viewportShortfall() {
+    if (!isStandalone) return 0;
+    return Math.round(window.screen.height - window.innerHeight);
+  }
+
+  function healViewport() {
+    if (healDisabled) return false;
+    if (viewportShortfall() <= 4) return true;
+    if (Date.now() - lastHealAt < 600) return false;
+    lastHealAt = Date.now();
+
+    var app = document.getElementById('app');
+    if (!app) return false;
+    var scrollTop = msgBox ? msgBox.scrollTop : 0;
+    var prevDisplay = app.style.display;
+    app.style.display = 'none';
+    void app.offsetHeight;          // 同步重排，中间不绘制
+    app.style.display = prevDisplay;
+    if (msgBox) msgBox.scrollTop = scrollTop;
+
+    var healed = viewportShortfall() <= 4;
+    if (healed) {
+      healFails = 0;
+    } else if (++healFails >= 3) {
+      // 翻转也救不回来，说明是系统层面裁掉了，别再让界面反复闪
+      healDisabled = true;
+    }
+    return healed;
+  }
+
+  // 注意：自动触发只对「键盘把视口压小」的场景有效（iOS 17/18 可复现）。
+  // 这台 iPhone 上是 iOS 26.1 的系统回归：竖屏 standalone 视口被永久裁掉 47pt，
+  // 翻转也拉不回来（实测 797 → 797），所以不自动触发，避免白白闪屏；
+  // 需要时在诊断面板里手动点「修复视口」。
 
   // ---- client id ----
   var CID_KEY = 'hst_client_id';
@@ -1018,6 +1078,93 @@ html, body {
   }
 
   connectEvents();
+
+  // ---- PWA：注册 Service Worker（安装到主屏幕 + 离线壳 + 后续推送）----
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+      navigator.serviceWorker.register('/sw.js').catch(function() { /* 不支持就算了 */ });
+    });
+  }
+
+  // ---- 临时诊断：连续点三下标题，显示运行环境（排查 iOS 底部空带用）----
+  function toggleDebugPanel() {
+    var existing = document.getElementById('debug-panel');
+    if (existing) { existing.remove(); return; }
+
+    var probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;visibility:hidden;' +
+      'padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);';
+    document.body.appendChild(probe);
+    var probeStyle = getComputedStyle(probe);
+    var safeTop = probeStyle.paddingTop;
+    var safeBottom = probeStyle.paddingBottom;
+    probe.remove();
+
+    var vv = window.visualViewport;
+
+    var dvhProbe = document.createElement('div');
+    dvhProbe.style.cssText = 'position:absolute;visibility:hidden;width:0;height:100dvh;';
+    document.body.appendChild(dvhProbe);
+    var dvhValue = Math.round(dvhProbe.getBoundingClientRect().height);
+    dvhProbe.remove();
+
+    var appEl = document.getElementById('app');
+
+    var lines = [
+      'standalone(navigator): ' + (window.navigator.standalone === true),
+      'display-mode standalone: ' + window.matchMedia('(display-mode: standalone)').matches,
+      'innerHeight: ' + window.innerHeight,
+      'visualViewport: ' + (vv ? Math.round(vv.height) : 'n/a'),
+      'clientHeight: ' + document.documentElement.clientHeight,
+      'screen.height: ' + window.screen.height,
+      'body.height: ' + Math.round(document.body.getBoundingClientRect().height),
+      '#app.height: ' + (appEl ? Math.round(appEl.getBoundingClientRect().height) : 'n/a'),
+      '100dvh: ' + dvhValue,
+      'shortfall: ' + viewportShortfall() + 'px（>4 即缩水）',
+      'heal: ' + (healDisabled ? '已放弃（翻转无效）' : healFails + ' 次失败'),
+      'safe-area top/bottom: ' + safeTop + ' / ' + safeBottom,
+      'dpr: ' + window.devicePixelRatio
+    ];
+
+    var panel = document.createElement('div');
+    panel.id = 'debug-panel';
+    panel.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:9999;' +
+      'background:#000;color:#4ade80;font:12px/1.6 monospace;padding:10px;' +
+      'border-radius:8px;white-space:pre-wrap;word-break:break-all;';
+    panel.textContent = lines.join('\n');
+
+    // 手动触发一次自愈，方便确认「翻转」到底能不能把视口拉回来
+    var healBtn = document.createElement('button');
+    healBtn.type = 'button';
+    healBtn.textContent = '修复视口';
+    healBtn.style.cssText = 'display:block;margin-top:8px;padding:6px 12px;border:0;' +
+      'border-radius:6px;background:#4ade80;color:#000;font:12px monospace;';
+    healBtn.addEventListener('click', function() {
+      healFails = 0;
+      healDisabled = false;
+      lastHealAt = 0;
+      var before = window.innerHeight;
+      var ok = healViewport();
+      healBtn.textContent = '修复视口（' + before + ' → ' + window.innerHeight + '）' +
+        (ok ? ' ✅' : ' ❌');
+    });
+    panel.appendChild(healBtn);
+
+    document.body.appendChild(panel);
+  }
+
+  (function bindDebugTap() {
+    var title = document.querySelector('#status-bar h1');
+    if (!title) return;
+    var taps = 0;
+    var timer = null;
+    title.addEventListener('click', function() {
+      taps += 1;
+      clearTimeout(timer);
+      timer = setTimeout(function() { taps = 0; }, 700);
+      if (taps >= 3) { taps = 0; toggleDebugPanel(); }
+    });
+  })();
 
   // ---- welcome message ----
   addMsg('你好，我是小马，家里的记忆助手。按住说话，或者打字跟我聊。先试试这样用我：告诉我"酸奶8月5号过期"，我会记住；之后你随时问我"酸奶还有几天过期"，我就能答上来啦。', 'bot');

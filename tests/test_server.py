@@ -160,6 +160,22 @@ def test_api_docs_are_disabled():
     assert client.get("/openapi.json").status_code == 404
 
 
+def test_pwa_assets_are_served():
+    client = TestClient(server.app)
+    manifest = client.get("/manifest.json")
+    assert manifest.status_code == 200
+    data = manifest.json()
+    assert data["name"] and data["start_url"] == "/"
+    assert any(icon["sizes"] == "192x192" for icon in data["icons"])
+
+    # sw.js 必须挂在根路径，作用域才是 /
+    sw = client.get("/sw.js")
+    assert sw.status_code == 200
+    assert sw.headers["service-worker-allowed"] == "/"
+
+    assert client.get("/static/icons/icon-192.png").status_code == 200
+
+
 def test_broadcast_delivers_to_subscriber():
     import asyncio
 
