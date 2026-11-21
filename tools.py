@@ -112,8 +112,8 @@ def get_current_date_tool():
     return _build(
         name="get_current_date",
         description=(
-            "获取今天的日期（如 2026年8月8日）。当用户问'还有几天''什么时候''过期'等时间相关问题时，"
-            "必须先调用本工具拿到今天日期，再结合记忆/物品日期计算。"
+            "兜底用的日期工具。系统提示里已经给出了今天的日期，"
+            "常规时间计算直接用它即可，不要为了拿日期专门调用本工具。"
         ),
         properties={},
         required=[],
@@ -414,12 +414,81 @@ def get_fact_tools(facts, proposals=None):
     ]
 
 
+def get_family_search_tool(memory, items, tasks=None):
+    """一次查完物品 / 记忆 / 任务。
+
+    语音链路里每一次工具调用都要多跑一轮 LLM（约 2 秒），
+    「先查物品、查不到再查记忆」会把一轮查询变成三轮。
+    """
+
+    def format_items(rows):
+        if not rows:
+            return ""
+        lines = []
+        for it in rows:
+            expiry = it.get("expiry_date") or "未知"
+            left = it.get("days_left")
+            if left is not None:
+                expiry = "%s（%s）" % (
+                    expiry,
+                    ("已过期%d天" % -left) if left < 0 else ("还剩%d天" % left),
+                )
+            lines.append("- %s：到期 %s" % (it.get("name", ""), expiry))
+        return "\n".join(lines)
+
+    def run(keyword=""):
+        keyword = str(keyword or "").strip()
+        sections = []
+
+        item_rows = items.search(keyword) if keyword else items.list_all()
+        if item_rows:
+            sections.append("【物品】\n" + format_items(item_rows))
+
+        memories = memory.search(keyword, 5) if keyword else memory.list_all(5)
+        if memories:
+            sections.append("【记忆】\n" + "\n".join("- " + str(m) for m in memories))
+
+        if tasks is not None:
+            task_rows = tasks.list_all("pending")
+            if keyword:
+                task_rows = [
+                    t for t in task_rows
+                    if keyword in str(t.get("title", ""))
+                ]
+            if task_rows:
+                sections.append("【待办】\n" + "\n".join(
+                    "- %s（%s）" % (t.get("title", ""), t.get("due_at") or "无日期")
+                    for t in task_rows
+                ))
+
+        return "\n".join(sections) if sections else "（没有找到相关记录）"
+
+    return _build(
+        name="family_search",
+        description=(
+            "一次查完物品清单、家庭记忆和待办任务。"
+            "用户问'X还有几天过期''家里有什么''记过什么''我有哪些提醒'时用这个，"
+            "不要分别调用 item_search / memory_search / task_list。"
+            "keyword 留空则列出全部。"
+        ),
+        properties={
+            "keyword": {
+                "type": "string",
+                "description": "要查的关键词，如 '牛奶'；留空列出全部",
+            },
+        },
+        required=[],
+        execute=run,
+    )
+
+
 def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
                   tasks=None, facts=None):
     """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实）。"""
     tools = get_memory_tools(memory, proposals) + [get_current_date_tool()]
     if items is not None:
         tools += get_items_tools(items, proposals)
+        tools.append(get_family_search_tool(memory, items, tasks))
     if entities is not None:
         tools += get_entity_tools(entities)
     if tasks is not None:
