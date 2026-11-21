@@ -625,6 +625,146 @@ async def _fake_synthesize(reply):
     return ""
 
 
+# ---------- 设备网关接口（ASR / TTS / ask）----------
+
+class FakeSTT:
+    def __init__(self, text="你好小马"):
+        self.text = text
+        self.calls = 0
+
+    def transcribe(self, path):
+        self.calls += 1
+        return self.text
+
+
+class FakeTTSBytes:
+    async def synthesize_bytes(self, text):
+        return ("mp3:" + text).encode("utf-8")
+
+
+class _NullLock:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def test_asr_endpoint_returns_text(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    fake = FakeSTT("把牛奶记一下")
+    monkeypatch.setattr(server, "stt", fake)
+    monkeypatch.setattr(server, "stt_lock", _NullLock())
+    monkeypatch.setattr(server, "_tmp_dir", str(tmp_path))
+
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/asr",
+        headers={"Authorization": "Bearer secret"},
+        files={"file": ("a.wav", wav_bytes(1), "audio/wav")},
+    )
+    assert response.status_code == 200
+    assert response.json()["text"] == "把牛奶记一下"
+    assert fake.calls == 1
+
+
+def test_asr_endpoint_rejects_non_wav(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "stt", FakeSTT())
+    monkeypatch.setattr(server, "_tmp_dir", str(tmp_path))
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/asr",
+        headers={"Authorization": "Bearer secret"},
+        files={"file": ("a.mp3", b"xx", "audio/mpeg")},
+    )
+    assert response.status_code == 400
+
+
+def test_asr_endpoint_requires_token(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/asr", files={"file": ("a.wav", wav_bytes(1), "audio/wav")}
+    )
+    assert response.status_code == 401
+
+
+def test_tts_endpoint_returns_audio(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "tts", FakeTTSBytes())
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/tts",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "好的"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.content == "mp3:好的".encode("utf-8")
+
+
+def test_tts_endpoint_handles_failure(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "tts", FailingTTS())
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/tts",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "好的"},
+    )
+    assert response.status_code == 502
+
+
+def test_ask_endpoint_returns_reply(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    monkeypatch.setattr(server, "tts", FakeTTSBytes())
+    client = TestClient(server.app)
+    body = client.post(
+        "/api/ask",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "今天有什么安排"},
+    ).json()
+    assert body["ok"] is True
+    assert body["reply"] == "今天有什么安排"
+    assert "audio" not in body
+
+
+def test_ask_endpoint_can_return_audio(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    monkeypatch.setattr(server, "tts", FakeTTSBytes())
+    client = TestClient(server.app)
+    body = client.post(
+        "/api/ask",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "你好", "want_audio": True},
+    ).json()
+    import base64
+
+    assert base64.b64decode(body["audio"]) == "mp3:你好".encode("utf-8")
+
+
+def test_ask_endpoint_uses_default_client_id(monkeypatch):
+    seen = {}
+
+    class RecordingAssistant(FakeAssistant):
+        def process_text(self, text, client_id):
+            seen["client_id"] = client_id
+            return super().process_text(text, client_id)
+
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", RecordingAssistant())
+    client = TestClient(server.app)
+    client.post(
+        "/api/ask",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "你好"},
+    )
+    assert seen["client_id"] == "xiaozhi"
+
+
 def test_config_endpoint_does_not_expose_vapid_private_key(monkeypatch, tmp_path):
     make_push_env(monkeypatch, tmp_path, FakePushSender())
     monkeypatch.setattr(server.config, "VAPID_PRIVATE_KEY", "super-secret-pem")

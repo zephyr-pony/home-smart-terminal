@@ -24,7 +24,7 @@ from typing import Optional
 
 import config
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -487,6 +487,16 @@ class PushEndpointRequest(BaseModel):
     endpoint: str = Field(min_length=10, max_length=2000)
 
 
+class AskRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+    client_id: str = Field(default="", max_length=MAX_CLIENT_ID_CHARS)
+    want_audio: bool = False
+
+
+class TtsRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+
+
 # ---------- 核心处理 ----------
 
 def _slim_memories(memories):
@@ -860,6 +870,85 @@ async def api_push_test(_auth=Depends(require_api_token)):
         "subscriptions": total,
         "detail": detail,
     }
+
+
+@app.post("/api/asr")
+async def api_asr(file: UploadFile = File(...), _auth=Depends(require_api_token)):
+    """语音转文字（设备网关用）：只识别，不进 agent。"""
+    if stt is None:
+        raise HTTPException(status_code=503, detail="语音识别未就绪")
+    if not file.filename or not file.filename.lower().endswith(".wav"):
+        raise HTTPException(status_code=400, detail="仅支持 WAV 音频")
+
+    tmp_path = None
+    try:
+        tmp_path = await _save_upload(file, ".wav")
+        async with stt_lock:
+            text = await asyncio.to_thread(stt.transcribe, tmp_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"识别失败: {exc}")
+    finally:
+        await file.close()
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    return {"ok": True, "text": str(text or "").strip()}
+
+
+@app.post("/api/tts")
+async def api_tts(req: TtsRequest, _auth=Depends(require_api_token)):
+    """文字转语音（设备网关用）：返回 mp3 字节，交给调用方转 Opus。
+
+    Edge TTS 偶发 NoAudioReceived（对端直接断流），重试一次再报错；
+    设备端等不起长尾失败，宁可多一次请求。
+    """
+    if tts is None:
+        raise HTTPException(status_code=503, detail="语音合成未就绪")
+    data = b""
+    for _attempt in range(2):
+        try:
+            data = await tts.synthesize_bytes(req.text)
+        except Exception:
+            traceback.print_exc()
+            data = b""
+        if data:
+            break
+    if not data:
+        raise HTTPException(status_code=502, detail="语音合成失败")
+    return Response(content=data, media_type="audio/mpeg")
+
+
+@app.post("/api/ask")
+async def api_ask(req: AskRequest, _auth=Depends(require_api_token)):
+    """整句交给 Agent（设备端 ask_xiaoma 工具的后端）。
+
+    client_id 决定多轮上下文与待澄清动作的归属，设备应传稳定的设备 ID。
+    """
+    if assistant is None:
+        raise HTTPException(status_code=503, detail="服务尚未就绪")
+    client_id = req.client_id or "xiaozhi"
+    try:
+        result = await asyncio.to_thread(assistant.process_text, req.text, client_id)
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"处理失败: {exc}")
+
+    payload = {
+        "ok": True,
+        "type": result.get("type", "chat"),
+        "reply": result.get("reply", ""),
+        "summary": result.get("summary", ""),
+        "used_tools": result.get("used_tools", []),
+        "domain": result.get("domain", "chat"),
+        "action": result.get("action", "chat"),
+        "pending_action": result.get("pending_action"),
+    }
+    if req.want_audio:
+        payload["audio"] = await _synthesize(result.get("reply", ""))
+    return payload
 
 
 @app.get("/api/events")

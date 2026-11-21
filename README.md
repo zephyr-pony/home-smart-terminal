@@ -126,11 +126,41 @@ start.bat wake       # 或 python main.py wake
 | `/api/push/test` | POST | 给已订阅设备发一条测试通知 |
 | `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64 |
 | `/api/voice` | POST | WAV 语音交互（multipart: file + client_id） |
+| `/api/asr` | POST | 设备网关：WAV → 文本（只识别，不进 Agent） |
+| `/api/tts` | POST | 设备网关：`{text}` → mp3 字节 |
+| `/api/ask` | POST | 设备网关：`{text, client_id, want_audio}` → Agent 回复（ask_xiaoma 的后端） |
 | `/api/events` | GET | SSE 事件流，主动推送到期提醒（`{"type":"reminder", ...}`） |
 
 配置 `API_TOKEN` 后，所有 API 都需要请求头 `Authorization: Bearer <API_TOKEN>`。当前服务端限制文本 2000 字符、音频 10MB/30 秒；Web 页面会保存并自动发送 Token。
 
 > `/api/events` 返回 `text/event-stream`；因浏览器 `EventSource` 无法携带请求头，Web 客户端改用 `fetch` 流式读取以便统一鉴权。
+
+### 设备网关接口（小智 / ESP32）
+
+给语音终端用的三个内部接口，都要 `Authorization: Bearer <API_TOKEN>`：
+
+```bash
+# 1. 识别（WAV → 文本）
+curl -X POST http://127.0.0.1:8200/api/asr \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@utterance.wav;type=audio/wav"
+
+# 2. 合成（文本 → mp3 字节）
+curl -X POST http://127.0.0.1:8200/api/tts \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"好的，已记下"}' --output reply.mp3
+
+# 3. 把整句交给 Agent（ask_xiaoma 的后端）
+curl -X POST http://127.0.0.1:8200/api/ask \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"明天提醒我交电费","client_id":"xiaozhi-001"}'
+```
+
+- `/api/ask` 的 `client_id` 决定多轮上下文与待澄清动作归属，设备应传稳定的设备 ID
+- `want_audio: true` 会让 `/api/ask` 额外返回 base64 mp3
+- `/api/asr` 只识别，不触发 Agent；`/api/tts` 失败会自动重试一次
 
 ## 到期提醒
 
