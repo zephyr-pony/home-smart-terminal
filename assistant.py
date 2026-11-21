@@ -17,6 +17,7 @@ from config import (
 from agent.clarify import Clarifier
 from agent.confirm import ConfirmationManager, ConfirmationRequired
 from agent.entities import EntityService
+from agent.guard import correction_note, guard_write_args
 from agent.propose import ProposalService
 from domain.facts import Facts
 from domain.tasks import Tasks
@@ -267,13 +268,23 @@ class Assistant:
                 for tc in message["tool_calls"]:
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
-                    if name not in used_tool_names:
-                        used_tools.append(name)
-                        used_tool_names.add(name)
                     try:
                         args = json.loads(fn.get("arguments") or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    # 写操作先过参数护栏：小模型会凭空补日期、把查询当成写操作
+                    args_raw = args
+                    args, blocked = guard_write_args(name, args, user_text)
+                    if blocked:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": blocked,
+                        })
+                        continue
+                    if name not in used_tool_names:
+                        used_tools.append(name)
+                        used_tool_names.add(name)
                     if name in ("memory_delete", "item_delete"):
                         question = self._confirmation_question(name, args)
                         conversation_id = (client_id or "cli").strip()
@@ -304,6 +315,9 @@ class Assistant:
                             result = execute(**args)
                         except Exception as e:
                             result = f"工具执行出错: {e}"
+                        note = correction_note(name, args_raw, args)
+                        if note:
+                            result = "%s\n%s" % (result, note)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", ""),
