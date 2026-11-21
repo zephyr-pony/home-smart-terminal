@@ -42,6 +42,9 @@ LLM_API_KEY = _get("LLM_API_KEY", "")
 LLM_MODEL = _get("LLM_MODEL", "")
 # 思考模式：none 关闭（首字快很多），low/medium/high 按档位开；off 表示不传该参数
 LLM_REASONING_EFFORT = _get("LLM_REASONING_EFFORT", "none")
+# 部分后端（llama.cpp / vLLM）用 chat_template_kwargs 关思考，值是 JSON，如
+# LLM_CHAT_TEMPLATE_KWARGS={"enable_thinking": false}
+LLM_CHAT_TEMPLATE_KWARGS = _get("LLM_CHAT_TEMPLATE_KWARGS", "")
 
 # ---- TTS 语音合成 ----
 TTS_VOICE = _get("TTS_VOICE", "zh-CN-XiaoxiaoNeural")

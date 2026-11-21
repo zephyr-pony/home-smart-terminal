@@ -145,3 +145,26 @@ python scripts/xiaozhi_probe.py "明天提醒我交电费"
   `SESSION_CONTEXT_TURNS` 从 5 降到 3 大概省 0.3-0.6 秒，不是主要矛盾
 - 官方 `deepseek-flash` 的 TTFT（0.6-1.0 s）比 aisp 转售（1.5-3.6 s）稳定更快，
   同一条查询端到端 5.5 s vs 8.6 s
+
+### 本地模型（2026-11-21 实测）
+
+这台机器上 llama.cpp（`127.0.0.1:8081`）跑 `Qwen3.5-9B-abliterated Q4_K_M`，
+硬件是 AMD 780M 核显（无独显），所以基本是 CPU 推理：
+
+| 配置 | 查询端到端 | 闲聊 |
+|---|---|---|
+| 默认（思考开） | 35 s+ / 首轮 34.9 s | 8.4 s |
+| 关思考（`chat_template_kwargs.enable_thinking=false`） | 10.3 s（工具 8.0 + 回答 2.3） | 7.5 s |
+
+吞吐约 9 字/秒，TTFT 4.8-8 s。回答质量和工具调用都正常（会用 `family_search`），
+但**不适合语音**：比 aisp 还慢一档。
+
+`llm.py` 已支持 `LLM_CHAT_TEMPLATE_KWARGS`（JSON），llama.cpp / vLLM 可用它关思考：
+
+```
+LLM_BASE_URL=http://127.0.0.1:8081/v1
+LLM_API_KEY=none
+LLM_MODEL=Qwen3.5-9B-abliterated-Q4_K_M_2.gguf
+LLM_REASONING_EFFORT=off
+LLM_CHAT_TEMPLATE_KWARGS={"enable_thinking": false}
+```

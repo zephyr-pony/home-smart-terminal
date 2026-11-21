@@ -56,6 +56,17 @@ def test_reasoning_effort_custom_level(monkeypatch):
     assert captured["body"]["reasoning_effort"] == "low"
 
 
+def test_chat_template_kwargs_sent(monkeypatch):
+    """llama.cpp / vLLM 用模板参数关思考。"""
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "off")
+    monkeypatch.setattr(llm, "CHAT_TEMPLATE_KWARGS", {"enable_thinking": False})
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in captured["body"]
+
+
 class FakeStreamResponse:
     def __init__(self, lines):
         self._lines = lines

@@ -1,4 +1,4 @@
-# 家庭智能终端
+﻿# 家庭智能终端
 
 以**记忆**为核心的家庭 AI 助手。通过语音记录家庭琐事（"酸奶 8 月 5 号过期"、"明天交电费"），之后随时语音提问（"酸奶还有几天过期？"），系统自动检索并回答。
 
@@ -191,6 +191,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `LLM_API_KEY` | （必填） | API 密钥 |
 | `LLM_MODEL` | （可选） | 模型名 |
 | `LLM_REASONING_EFFORT` | `none` | 思考模式：`none` 关闭（语音场景更快），`low`/`medium`/`high` 按档位，`off` 不传该参数 |
+| `LLM_CHAT_TEMPLATE_KWARGS` | 空 | 本地 llama.cpp/vLLM 关思考用，JSON，如 `{"enable_thinking": false}` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 语音角色（女声）；男声用 `zh-CN-YunxiNeural` |
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |
 | `STT_LANGUAGE` | `zh` | 识别语言 |

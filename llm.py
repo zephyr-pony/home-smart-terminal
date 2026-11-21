@@ -8,15 +8,37 @@ import time
 
 import requests
 
-from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_REASONING_EFFORT
+from config import (
+    LLM_BASE_URL,
+    LLM_API_KEY,
+    LLM_MODEL,
+    LLM_REASONING_EFFORT,
+    LLM_CHAT_TEMPLATE_KWARGS,
+)
 
 BASE_URL = LLM_BASE_URL
 API_KEY = LLM_API_KEY
 MODEL_NAME = LLM_MODEL
 # 语音场景对首字延迟敏感：默认关掉思考模式（实测 5s → 2s）
 REASONING_EFFORT = LLM_REASONING_EFFORT
+
+# 本地 llama.cpp / vLLM 用模板参数关思考；解析失败就当没配
+try:
+    CHAT_TEMPLATE_KWARGS = json.loads(LLM_CHAT_TEMPLATE_KWARGS) if LLM_CHAT_TEMPLATE_KWARGS else {}
+except ValueError:
+    CHAT_TEMPLATE_KWARGS = {}
 TIMEOUT = 120
 RETRIES = 2
+
+
+def _apply_reasoning(body):
+    """把「关思考」的相关参数塞进请求体，两个后端参数名不同，都支持。"""
+    effort = str(REASONING_EFFORT or "").strip().lower()
+    if effort and effort != "off":
+        body["reasoning_effort"] = effort
+    if CHAT_TEMPLATE_KWARGS:
+        body["chat_template_kwargs"] = CHAT_TEMPLATE_KWARGS
+    return body
 
 
 class LLM:
@@ -64,9 +86,7 @@ class LLM:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         # 网关支持 reasoning_effort：none 即关闭思考，能省掉几秒
-        effort = str(REASONING_EFFORT or "").strip().lower()
-        if effort and effort != "off":
-            body["reasoning_effort"] = effort
+        _apply_reasoning(body)
 
         last_error = None
         for attempt in range(retries + 1):
@@ -119,9 +139,7 @@ class LLM:
                 body["tool_choice"] = tool_choice
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
-        effort = str(REASONING_EFFORT or "").strip().lower()
-        if effort and effort != "off":
-            body["reasoning_effort"] = effort
+        _apply_reasoning(body)
 
         try:
             resp = requests.post(
