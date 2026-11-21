@@ -765,6 +765,66 @@ def test_ask_endpoint_uses_default_client_id(monkeypatch):
     assert seen["client_id"] == "xiaozhi"
 
 
+# ---------- OpenAI 兼容入口（xiaozhi-server 用）----------
+
+def test_chat_completions_non_stream(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    client = TestClient(server.app)
+    body = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "model": "xiaoma",
+            "messages": [
+                {"role": "system", "content": "你是小马"},
+                {"role": "user", "content": "今天有什么事"},
+            ],
+        },
+    ).json()
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["content"] == "今天有什么事"
+    assert body["choices"][0]["finish_reason"] == "stop"
+
+
+def test_chat_completions_stream(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    client = TestClient(server.app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={"messages": [{"role": "user", "content": "你好"}], "stream": True},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "[DONE]" in response.text
+    assert "你好" in response.text
+    assert '"finish_reason": "stop"' in response.text
+
+
+def test_chat_completions_rejects_missing_user_text(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    client = TestClient(server.app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={"messages": [{"role": "system", "content": "hi"}]},
+    )
+    assert response.status_code == 400
+
+
+def test_last_user_text_handles_parts():
+    messages = [
+        {"role": "user", "content": "旧的"},
+        {"role": "assistant", "content": "回答"},
+        {"role": "user", "content": [{"type": "text", "text": "新的"},
+                                     {"type": "text", "text": "问题"}]},
+    ]
+    assert server._last_user_text(messages) == "新的问题"
+
+
 def test_config_endpoint_does_not_expose_vapid_private_key(monkeypatch, tmp_path):
     make_push_env(monkeypatch, tmp_path, FakePushSender())
     monkeypatch.setattr(server.config, "VAPID_PRIVATE_KEY", "super-secret-pem")

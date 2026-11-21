@@ -17,6 +17,7 @@ import secrets
 import shutil
 import tempfile
 import threading
+import time
 import traceback
 import wave
 from contextlib import asynccontextmanager
@@ -497,6 +498,14 @@ class TtsRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
 
 
+class ChatCompletionRequest(BaseModel):
+    """只取需要的字段：xiaozhi-server 会带一堆 OpenAI 参数，多余的忽略。"""
+
+    model: str = ""
+    messages: list = Field(default_factory=list)
+    stream: bool = False
+
+
 # ---------- 核心处理 ----------
 
 def _slim_memories(memories):
@@ -512,6 +521,28 @@ def _handle_voice_sync(audio_path: str, client_id: str) -> dict:
     """同步处理语音文件（在 to_thread 里跑：STT 识别 + 编排）。"""
     result = assistant.process_voice(stt, audio_path, client_id)
     return result
+
+
+def _last_user_text(messages):
+    """OpenAI messages → 最后一条用户文本。
+
+    content 可能是字符串，也可能是多段 parts（语音终端偶尔这么传），都拼起来。
+    """
+    for message in reversed(messages or []):
+        if (message or {}).get("role") != "user":
+            continue
+        content = (message or {}).get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in (None, "text"):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts).strip()
+    return ""
 
 
 async def _synthesize(reply: str) -> str:
@@ -949,6 +980,77 @@ async def api_ask(req: AskRequest, _auth=Depends(require_api_token)):
     if req.want_audio:
         payload["audio"] = await _synthesize(result.get("reply", ""))
     return payload
+
+
+@app.post("/v1/chat/completions")
+async def api_chat_completions(req: ChatCompletionRequest,
+                               _auth=Depends(require_api_token)):
+    """OpenAI 兼容入口：让 xiaozhi-server 把整轮对话直接交给家里的 Agent。
+
+    语音终端那边只做 VAD/ASR/TTS，理解和工具调用全在这里，避免两套 agent。
+    """
+    if assistant is None:
+        raise HTTPException(status_code=503, detail="服务尚未就绪")
+
+    text = _last_user_text(req.messages)
+    if not text:
+        raise HTTPException(status_code=400, detail="messages 里没有用户文本")
+
+    try:
+        result = await asyncio.to_thread(assistant.process_text, text, "xiaozhi")
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"处理失败: {exc}")
+
+    reply = result.get("reply", "") or ""
+    created = int(time.time())
+    completion_id = "chatcmpl-" + secrets.token_hex(8)
+
+    if req.stream:
+        async def event_stream():
+            head = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": req.model or "xiaoma",
+                "choices": [{"index": 0, "delta": {"role": "assistant"},
+                             "finish_reason": None}],
+            }
+            yield "data: " + json.dumps(head, ensure_ascii=False) + "\n\n"
+            chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": req.model or "xiaoma",
+                "choices": [{"index": 0, "delta": {"content": reply},
+                             "finish_reason": None}],
+            }
+            yield "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
+            tail = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": req.model or "xiaoma",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            yield "data: " + json.dumps(tail, ensure_ascii=False) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    return {
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": req.model or "xiaoma",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": reply},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": len(text), "completion_tokens": len(reply),
+                  "total_tokens": len(text) + len(reply)},
+    }
 
 
 @app.get("/api/events")
