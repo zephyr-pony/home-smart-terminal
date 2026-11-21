@@ -190,6 +190,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `LLM_BASE_URL` | （必填） | LLM 服务地址，如 `http://127.0.0.1:8081/v1` |
 | `LLM_API_KEY` | （必填） | API 密钥 |
 | `LLM_MODEL` | （可选） | 模型名 |
+| `LLM_REASONING_EFFORT` | `none` | 思考模式：`none` 关闭（语音场景更快），`low`/`medium`/`high` 按档位，`off` 不传该参数 |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 语音角色（女声）；男声用 `zh-CN-YunxiNeural` |
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |
 | `STT_LANGUAGE` | `zh` | 识别语言 |

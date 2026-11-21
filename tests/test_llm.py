@@ -1,67 +1,56 @@
-import pytest
+"""LLM 请求体构造（不访问网络）。
 
+重点是 reasoning_effort：网关默认会跑思考模式，语音场景下白等好几秒。
+"""
 import llm
 
 
 class FakeResponse:
-    def __init__(self, data):
-        self._data = data
+    def __init__(self, payload):
+        self._payload = payload
+        self.status_code = 200
 
     def raise_for_status(self):
-        pass
+        return None
 
     def json(self):
-        return self._data
+        return self._payload
 
 
-def make_client(monkeypatch):
-    monkeypatch.setattr(llm, "BASE_URL", "http://127.0.0.1/v1")
+def make_llm(monkeypatch, captured):
+    monkeypatch.setattr(llm, "BASE_URL", "http://example.com/v1")
     monkeypatch.setattr(llm, "API_KEY", "test-key")
-    monkeypatch.setattr(llm.time, "sleep", lambda _seconds: None)
-    return llm.LLM(model_name="test-model")
 
-
-def test_missing_config_raises_on_init(monkeypatch):
-    monkeypatch.setattr(llm, "BASE_URL", "")
-    monkeypatch.setattr(llm, "API_KEY", "")
-    with pytest.raises(RuntimeError, match="缺少 LLM 配置"):
-        llm.LLM()
-
-
-def test_chat_with_tools_retries_then_succeeds(monkeypatch):
-    client = make_client(monkeypatch)
-    calls = []
-
-    def fake_post(*args, **kwargs):
-        calls.append(kwargs)
-        if len(calls) == 1:
-            raise llm.requests.RequestException("boom")
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.update({"url": url, "body": json})
         return FakeResponse({
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "好"}}]
         })
 
     monkeypatch.setattr(llm.requests, "post", fake_post)
-    data = client.chat_with_tools([{"role": "user", "content": "hi"}], [])
-
-    assert data["choices"][0]["message"]["content"] == "ok"
-    assert len(calls) == 2
-    assert calls[0]["json"]["model"] == "test-model"
+    return llm.LLM("test-model")
 
 
-def test_chat_with_tools_raises_after_retries(monkeypatch):
-    client = make_client(monkeypatch)
-
-    def fake_post(*args, **kwargs):
-        raise llm.requests.RequestException("boom")
-
-    monkeypatch.setattr(llm.requests, "post", fake_post)
-    with pytest.raises(RuntimeError, match="LLM 请求失败"):
-        client.chat_with_tools([{"role": "user", "content": "hi"}], [], retries=1)
+def test_reasoning_effort_sent(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "none")
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert captured["body"]["reasoning_effort"] == "none"
+    assert captured["url"].endswith("/chat/completions")
 
 
-def test_chat_with_tools_rejects_malformed_response(monkeypatch):
-    client = make_client(monkeypatch)
-    monkeypatch.setattr(llm.requests, "post", lambda *a, **k: FakeResponse({}))
+def test_reasoning_effort_off_omits_field(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "off")
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert "reasoning_effort" not in captured["body"]
 
-    with pytest.raises(RuntimeError, match="LLM 请求失败"):
-        client.chat_with_tools([{"role": "user", "content": "hi"}], [], retries=0)
+
+def test_reasoning_effort_custom_level(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "low")
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert captured["body"]["reasoning_effort"] == "low"

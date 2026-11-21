@@ -7,11 +7,13 @@ import time
 
 import requests
 
-from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
+from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_REASONING_EFFORT
 
 BASE_URL = LLM_BASE_URL
 API_KEY = LLM_API_KEY
 MODEL_NAME = LLM_MODEL
+# 语音场景对首字延迟敏感：默认关掉思考模式（实测 5s → 2s）
+REASONING_EFFORT = LLM_REASONING_EFFORT
 TIMEOUT = 120
 RETRIES = 2
 
@@ -57,6 +59,10 @@ class LLM:
             body["tool_choice"] = tool_choice
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        # 网关支持 reasoning_effort：none 即关闭思考，能省掉几秒
+        effort = str(REASONING_EFFORT or "").strip().lower()
+        if effort and effort != "off":
+            body["reasoning_effort"] = effort
 
         last_error = None
         for attempt in range(retries + 1):
