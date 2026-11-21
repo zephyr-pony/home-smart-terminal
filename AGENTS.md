@@ -171,6 +171,7 @@ pytest tests -q
 - 404/410 视为订阅作废，立即删除；其它失败累加 `fail_count`，到 `PUSH_MAX_FAILURES` 停用但保留记录。
 - `VAPID_PRIVATE_KEY` 只在 `.env`，不进 `CONFIG_FIELDS`、不进 `/api/config` 响应。
 - 推送正文只发文字，不合成语音；点击通知打开首页。
+- `pushsubscriptionchange` 由 SW 自己处理：需要公钥和 Token，页面在开启通知时写进 IndexedDB（库名 `xiaoma-push`），关闭通知时删除。改存储结构要同时改 `static/index.html` 和 `static/sw.js` 两处。
 
 ### Web 控制台
 

@@ -756,9 +756,9 @@ App 不在前台、甚至完全关闭时，也能收到「牛奶还有 2 天过�
 - `.env` 已生成 VAPID 密钥；`scripts/gen_vapid.py` 可重新生成（会让旧订阅失效）。
 - 推送前强制 IPv4：本机到 `web.push.apple.com` 的 IPv6 路由是黑洞，`getaddrinfo` 先给 IPv6 会卡满超时才回退，表现就是「点了半天才到」。`push_sender._prefer_ipv4()` 覆盖 urllib3 的地址族选择。
 - 设置页新增「提醒通知」卡片：开启 / 关闭 / 发测试通知，并区分未安装到主屏、权限被拒、服务端未配置。
+- `pushsubscriptionchange` 自愈：开启通知时把「公钥 + Token」写进 IndexedDB，SW 在订阅被系统轮换时自行重订阅、上报新 endpoint 并清理旧的；页面关着也有效。
 - 测试：`tests/test_push.py` 8 条 + `tests/test_server.py` 推送接口 7 条，共 132 passed。
 
 待做：
 
-- `pushsubscriptionchange`：iOS 静默轮换订阅时自动回传。当前只能靠用户重新开关一次。
 - 真机验收：关闭 App 后等一条真实到期提醒（需先造一条明天到期的物品）。

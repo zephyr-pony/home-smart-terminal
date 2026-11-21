@@ -501,6 +501,7 @@ html, body {
      localStorage.setItem(TOKEN_KEY, apiToken);
      pollStatus();
      connectEvents();
+     refreshPushUi();
    });
 
    function authHeaders(extra) {
@@ -918,6 +919,35 @@ html, body {
     return '';
   }
 
+  // 把公钥和 Token 写进 IndexedDB：SW 处理 pushsubscriptionchange 时需要，
+  // 那时页面通常没开着。关掉通知时清掉。
+  function pushIdbOpen() {
+    return new Promise(function(resolve, reject) {
+      var req = indexedDB.open('xiaoma-push', 1);
+      req.onupgradeneeded = function() {
+        var db = req.result;
+        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      };
+      req.onsuccess = function() { resolve(req.result); };
+      req.onerror = function() { reject(req.error); };
+    });
+  }
+
+  function storePushConfig(publicKey) {
+    if (!publicKey || !apiToken) return;
+    pushIdbOpen().then(function(db) {
+      var tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put({ publicKey: publicKey, token: apiToken }, 'config');
+    }).catch(function() { /* 存不了只是失去自动重订阅，不影响当前订阅 */ });
+  }
+
+  function clearPushConfig() {
+    pushIdbOpen().then(function(db) {
+      var tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').delete('config');
+    }).catch(function() {});
+  }
+
   function showPushButtons(canEnable, subscribed) {
     pushEnable.classList.toggle('hidden', !canEnable);
     pushDisable.classList.toggle('hidden', !subscribed);
@@ -942,6 +972,7 @@ html, body {
         .then(function(reg) { return reg.pushManager.getSubscription(); })
         .then(function(sub) {
           if (sub) {
+            storePushConfig(key.publicKey);
             pushStatus.textContent = '通知已开启：App 关着也能收到到期提醒。';
             showPushButtons(false, true);
           } else {
@@ -982,6 +1013,7 @@ html, body {
         })
       });
     }).then(function() {
+      storePushConfig(subKey);
       refreshPushUi();
     }).catch(function(err) {
       pushStatus.textContent = '开启失败：' +
@@ -1007,6 +1039,7 @@ html, body {
         });
       })
       .then(function() {
+        clearPushConfig();
         refreshPushUi();
       })
       .catch(function(err) {

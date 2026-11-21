@@ -75,6 +75,101 @@ self.addEventListener('fetch', function(event) {
 
 // ---- Web Push（后续接入：服务端推送提醒）----
 
+// 订阅可能被系统静默轮换（pushsubscriptionchange）。轮换发生时页面不一定开着，
+// 所以开启通知时页面会把「公钥 + API Token」写进 IndexedDB，由 SW 自己重订阅并上报。
+// 代价是同源 IndexedDB 里多存一份 Token，和 localStorage 处于同一信任级别。
+var PUSH_DB = 'xiaoma-push';
+var PUSH_STORE = 'kv';
+var PUSH_CONFIG_KEY = 'config';
+
+function pushDb() {
+  return new Promise(function(resolve, reject) {
+    var req = indexedDB.open(PUSH_DB, 1);
+    req.onupgradeneeded = function() {
+      var db = req.result;
+      if (!db.objectStoreNames.contains(PUSH_STORE)) db.createObjectStore(PUSH_STORE);
+    };
+    req.onsuccess = function() { resolve(req.result); };
+    req.onerror = function() { reject(req.error); };
+  });
+}
+
+function pushDbGet(key) {
+  return pushDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction(PUSH_STORE, 'readonly');
+      var req = tx.objectStore(PUSH_STORE).get(key);
+      req.onsuccess = function() { resolve(req.result); };
+      req.onerror = function() { reject(req.error); };
+    });
+  });
+}
+
+function pushDbDelete(key) {
+  return pushDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction(PUSH_STORE, 'readwrite');
+      tx.objectStore(PUSH_STORE).delete(key);
+      tx.oncomplete = function() { resolve(true); };
+      tx.onerror = function() { reject(tx.error); };
+    });
+  });
+}
+
+function base64ToUint8Array(base64String) {
+  var padding = '='.repeat((4 - base64String.length % 4) % 4);
+  var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  var raw = atob(base64);
+  var bytes = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+function postSubscription(config, subscription, oldEndpoint) {
+  var headers = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + config.token
+  };
+  var json = subscription.toJSON();
+  return fetch('/api/push/subscribe', {
+    method: 'POST',
+    headers: headers,
+    body: JSON.stringify({
+      endpoint: json.endpoint,
+      keys: json.keys,
+      user_agent: 'service-worker'
+    })
+  }).then(function() {
+    // 新订阅生效后再删旧的，避免中间空窗
+    if (!oldEndpoint || oldEndpoint === json.endpoint) return null;
+    return fetch('/api/push/unsubscribe', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({ endpoint: oldEndpoint })
+    }).catch(function() { /* 旧订阅清不掉不影响新订阅 */ });
+  });
+}
+
+self.addEventListener('pushsubscriptionchange', function(event) {
+  event.waitUntil(
+    pushDbGet(PUSH_CONFIG_KEY).then(function(config) {
+      if (!config || !config.publicKey || !config.token) return null;
+      var oldEndpoint = event.oldSubscription
+        ? event.oldSubscription.endpoint
+        : null;
+      var next = event.newSubscription
+        ? Promise.resolve(event.newSubscription)
+        : self.registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: base64ToUint8Array(config.publicKey)
+          });
+      return next.then(function(subscription) {
+        return postSubscription(config, subscription, oldEndpoint);
+      });
+    }).catch(function() { /* 没有配置或权限被撤，交给用户重新开启 */ })
+  );
+});
+
 self.addEventListener('push', function(event) {
   var payload = {};
   try { payload = event.data ? event.data.json() : {}; } catch (e) {}
