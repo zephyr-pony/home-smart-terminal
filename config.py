@@ -30,6 +30,12 @@ def _get_int(key, default):
         return default
 
 
+def _get_bool(key, default):
+    """1/true/yes/on 都算开；其余按关处理。"""
+    val = str(_get(key, "1" if default else "0")).strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 # ---- LLM（远端 OpenAI 兼容网关）----
 LLM_BASE_URL = _get("LLM_BASE_URL", "")
 LLM_API_KEY = _get("LLM_API_KEY", "")
@@ -86,3 +92,13 @@ SESSION_CONTEXT_MAX_CHARS = _get_int("SESSION_CONTEXT_MAX_CHARS", 300)
 REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"
 REMINDER_INTERVAL_SECONDS = _get_int("REMINDER_INTERVAL_SECONDS", 60)  # 后台扫描间隔
 REMINDER_COOLDOWN_HOURS = _get_int("REMINDER_COOLDOWN_HOURS", 24)      # 同一物品再次提醒的间隔（0=只提醒一次）
+
+# ---- Web Push（页面关闭时的到期提醒）----
+# 私钥用 base64(PEM) 单行存放，.env 里不能有多行值；用 scripts/gen_vapid.py 生成。
+PUSH_ENABLED = _get_bool("PUSH_ENABLED", False)
+PUSH_DB_PATH = _get("PUSH_DB_PATH", "./data/push.db")
+VAPID_PUBLIC_KEY = _get("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = _get("VAPID_PRIVATE_KEY", "")
+VAPID_SUBJECT = _get("VAPID_SUBJECT", "mailto:noreply@example.com")
+PUSH_TTL_SECONDS = _get_int("PUSH_TTL_SECONDS", 12 * 60 * 60)   # 推送在推送服务里的存活时间
+PUSH_MAX_FAILURES = _get_int("PUSH_MAX_FAILURES", 5)            # 连续失败几次后标记停用

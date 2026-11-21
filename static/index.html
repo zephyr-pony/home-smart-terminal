@@ -363,6 +363,16 @@ html, body {
         <form id="settings-form"></form>
         <button id="settings-save" class="primary-btn" type="button">保存配置</button>
         <div id="settings-msg" class="muted"></div>
+
+        <div class="section-title">提醒通知</div>
+        <div class="card">
+          <div id="push-status" class="muted">正在检查…</div>
+          <div class="row-actions">
+            <button id="push-enable" class="small-btn hidden" type="button">开启通知</button>
+            <button id="push-disable" class="small-btn hidden" type="button">关闭通知</button>
+            <button id="push-test" class="small-btn hidden" type="button">发测试通知</button>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -846,6 +856,8 @@ html, body {
         '模型：' + esc(llm.model || '未配置') +
         '（' + (llm.configured ? '已配置' : '未配置') + '）<br>' +
         'API Token：' + (d.api_token_enabled ? '已启用' : '未启用') + '<br>' +
+        '推送通知：' + ((d.push && d.push.enabled) ? '已配置' : '未配置') +
+        '（订阅 ' + ((d.push && d.push.subscriptions) || 0) + ' 台）<br>' +
         '数据库：' + esc(JSON.stringify(d.db_paths || {}));
       var values = d.values || {};
       settingsForm.innerHTML = CONFIG_FIELDS.map(function(field) {
@@ -854,6 +866,7 @@ html, body {
           '" value="' + esc(values[field[0]]) + '"></div>';
       }).join('');
       settingsMsg.textContent = '配置保存到本地 .env，重启服务端后生效。';
+      refreshPushUi();
     }).catch(function(err) {
       settingsSummary.textContent = '加载失败：' + requestErrorText(err);
     });
@@ -875,6 +888,148 @@ html, body {
       settingsMsg.textContent = '保存失败：' + requestErrorText(err);
     });
   }
+
+  // ---- Web Push 提醒通知 ----
+  var pushStatus = document.getElementById('push-status');
+  var pushEnable = document.getElementById('push-enable');
+  var pushDisable = document.getElementById('push-disable');
+  var pushTest = document.getElementById('push-test');
+
+  function pushSupported() {
+    return ('serviceWorker' in navigator) && ('PushManager' in window) &&
+      ('Notification' in window);
+  }
+
+  function urlBase64ToUint8Array(base64String) {
+    var padding = '='.repeat((4 - base64String.length % 4) % 4);
+    var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    var raw = atob(base64);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  function pushHint() {
+    if (!pushSupported()) return '这个浏览器不支持推送通知。';
+    if (!isStandalone) return 'iPhone 上要先「添加到主屏幕」，从图标打开后才能开通知。';
+    if (Notification.permission === 'denied') {
+      return '通知权限被拒绝：请到 设置 → 通知 → 小马 里重新允许。';
+    }
+    return '';
+  }
+
+  function showPushButtons(canEnable, subscribed) {
+    pushEnable.classList.toggle('hidden', !canEnable);
+    pushDisable.classList.toggle('hidden', !subscribed);
+    pushTest.classList.toggle('hidden', !subscribed);
+  }
+
+  function refreshPushUi() {
+    if (!pushSupported()) {
+      pushStatus.textContent = pushHint();
+      showPushButtons(false, false);
+      return;
+    }
+    apiFetch('/api/push/key').then(function(key) {
+      if (!key.enabled) {
+        pushStatus.textContent =
+          '服务端未配置推送密钥（.env 的 PUSH_ENABLED / VAPID_*），' +
+          '提醒仍只会在页面打开时出现。';
+        showPushButtons(false, false);
+        return null;
+      }
+      return navigator.serviceWorker.ready
+        .then(function(reg) { return reg.pushManager.getSubscription(); })
+        .then(function(sub) {
+          if (sub) {
+            pushStatus.textContent = '通知已开启：App 关着也能收到到期提醒。';
+            showPushButtons(false, true);
+          } else {
+            pushStatus.textContent = pushHint() ||
+              '通知未开启。开启后即使 App 关着也能收到到期提醒。';
+            showPushButtons(true, false);
+          }
+        });
+    }).catch(function(err) {
+      pushStatus.textContent = '检查推送状态失败：' + requestErrorText(err);
+    });
+  }
+
+  pushEnable.addEventListener('click', function() {
+    pushEnable.disabled = true;
+    var subKey = null;
+    apiFetch('/api/push/key').then(function(key) {
+      if (!key.enabled || !key.publicKey) throw new Error('服务端未配置推送密钥');
+      subKey = key.publicKey;
+      return Notification.requestPermission();
+    }).then(function(permission) {
+      if (permission !== 'granted') throw new Error('通知权限未授予');
+      return navigator.serviceWorker.ready;
+    }).then(function(reg) {
+      return reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(subKey)
+      });
+    }).then(function(sub) {
+      var json = sub.toJSON();
+      return apiFetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          endpoint: json.endpoint,
+          keys: json.keys,
+          user_agent: navigator.userAgent
+        })
+      });
+    }).then(function() {
+      refreshPushUi();
+    }).catch(function(err) {
+      pushStatus.textContent = '开启失败：' +
+        (err && err.message ? err.message : requestErrorText(err));
+    }).then(function() {
+      pushEnable.disabled = false;
+    });
+  });
+
+  pushDisable.addEventListener('click', function() {
+    pushDisable.disabled = true;
+    navigator.serviceWorker.ready
+      .then(function(reg) { return reg.pushManager.getSubscription(); })
+      .then(function(sub) {
+        if (!sub) return null;
+        var endpoint = sub.endpoint;
+        return sub.unsubscribe().then(function() {
+          return apiFetch('/api/push/unsubscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ endpoint: endpoint })
+          });
+        });
+      })
+      .then(function() {
+        refreshPushUi();
+      })
+      .catch(function(err) {
+        pushStatus.textContent = '关闭失败：' + requestErrorText(err);
+      })
+      .then(function() {
+        pushDisable.disabled = false;
+      });
+  });
+
+  pushTest.addEventListener('click', function() {
+    pushTest.disabled = true;
+    pushStatus.textContent = '正在发送…';
+    apiFetch('/api/push/test', { method: 'POST' }).then(function(result) {
+      pushStatus.textContent = result.sent
+        ? '测试通知已发送（' + result.sent + ' 台设备）。'
+        : (result.detail || '没有可用的订阅，请先开启通知。');
+    }).catch(function(err) {
+      pushStatus.textContent = '发送失败：' + requestErrorText(err);
+    }).then(function() {
+      pushTest.disabled = false;
+    });
+  });
 
   tabs.forEach(function(btn) {
     btn.addEventListener('click', function() {

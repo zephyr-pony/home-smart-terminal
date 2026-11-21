@@ -627,3 +627,138 @@ POST /v1/actions/act-1/confirm
 - 网上同类反馈指向 iOS 26.1 的回归：竖屏 standalone 无法全屏绘制，横屏仍正常。
 
 当前处理：接受该黑带，不再投入时间。诊断面板（连点三下标题）保留 `修复视口` 按钮，等 iOS 修复后可直接验证。若后续要处理，优先级最低的备选是改用「不透明状态栏 + 页面下移」，用顶部黑带换掉底部黑带，观感未必更好。
+
+## 15. 计划：Web Push 到期提醒（下一阶段）
+
+### 目标
+
+App 不在前台、甚至完全关闭时，也能收到「牛奶还有 2 天过期」「明天要交电费」。当前提醒只走 SSE，必须开着页面才收得到——这是移动端体验最大的缺口。
+
+### 可行性前置（已满足）
+
+- iOS 16.4+ 允许「添加到主屏幕」的 PWA 使用 Web Push（必须是从主屏图标打开，Safari 标签页里不行）。
+- 已有 HTTPS 入口（Tailscale Serve `https://win-od68q9v0uct.tail8025f9.ts.net`），Web Push 强制要求安全上下文。
+- 已有 `sw.js` 的 `push` / `notificationclick` 入口，等后端接上即可。
+- 已登录 `win-od68q9v0uct`（Windows），本机可生成 VAPID 密钥。
+
+### 总体设计
+
+```
+到期扫描（既有 reminder_loop）
+      ├─ SSE 在线 → 现有广播（不变）
+      └─ push 订阅 → pywebpush 逐条推送到 APNs / FCM
+                        └─ 404/410 → 删除订阅；其它失败 → fail_count++
+```
+
+原则：**同一轮提醒只走一条路也够，不做双通道刷屏**。SSE 送达时不再推 push；反之亦然。
+
+### 新增配置（`.env` / `config.py` / `.env.example` / README 四处同步）
+
+| 键 | 说明 |
+|---|---|
+| `VAPID_PUBLIC_KEY` | 应用服务器公钥（base64url），可下发前端 |
+| `VAPID_PRIVATE_KEY` | 私钥，**绝不返回前端**，不写进 `CONFIG_FIELDS` |
+| `VAPID_SUBJECT` | `mailto:xxx@example.com`，部分推送服务会校验 |
+| `PUSH_ENABLED` | 总开关，默认 `false`；密钥缺失时自动降级为纯 SSE |
+
+密钥生成：`python -m py_vapid --applicationServerKey`（或一次性脚本），生成后写进 `.env`。
+
+### 依赖
+
+`pywebpush`（含 `py-vapid`、`http-ecom` 生态），版本固定写进 `requirements.txt`。
+
+### 存储：`push_subscriptions`
+
+放 `domain/push.py`（新建），沿用现有 `RLock` + `check_same_thread=False` 约定：
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 自增主键 |
+| `endpoint` | 唯一索引，天然幂等（重复订阅只更新时间） |
+| `p256dh` / `auth` | 推送加密密钥 |
+| `user_agent` | 便于区分设备（iPhone / Android） |
+| `space_id` | 预留多家庭隔离，当前恒为 `default` |
+| `created_at` / `last_ok_at` / `fail_count` | 运维与清理依据 |
+
+### 接口（全部要求 Bearer Token）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/push/key` | 返回 `{enabled, publicKey}`；未配置时 `enabled=false` |
+| POST | `/api/push/subscribe` | 入参 `{endpoint, keys:{p256dh, auth}}`，按 `endpoint` upsert |
+| POST | `/api/push/unsubscribe` | 按 `endpoint` 删除，前端关开关时调用 |
+| POST | `/api/push/test` | 发一条测试通知，用于排障 |
+
+### 前端（设置页）
+
+- 新增「提醒通知」开关：
+  - `Notification.requestPermission()` → 必须用户点击触发，不能自动弹
+  - `registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })`
+  - 订阅成功后 `POST /api/push/subscribe`
+  - 关闭开关 → `subscription.unsubscribe()` + `POST /api/push/unsubscribe`
+- 状态提示区分：未安装到主屏 / iOS 版本过低 / 浏览器不支持 / 通知权限被拒 / 密钥未配置
+- 订阅可能被系统静默轮换（`pushsubscriptionchange`）：`sw.js` 里监听该事件并回传新订阅，避免失效后用户无感知
+
+### 提醒循环改造
+
+- `claim_due_reminders` 的触发条件由 `if _subscribers` 改为 `if _subscribers or push.has_subscriptions()`——否则没有在线页面时永远不领取，push 也就发不出去。
+- 已领取的提醒：SSE 广播 + push 同时发（用户可能开着页面又在后台）。
+- push 正文只发文字（`title` = 「小马提醒」，`body` = 提醒文案），不做 TTS；点通知打开 `/`。
+- 发送用 `asyncio.to_thread` + `gather`，单条 10s 超时；不能阻塞提醒循环。
+- 失败处理：
+  - `404 / 410` → 立即删除该订阅（设备已卸载或权限被撤）
+  - 其它错误 → `fail_count += 1`，连续 5 次标记停用，但保留记录
+  - 任一步异常都只记日志，不能打断 SSE
+
+### 测试计划（`tests/test_push.py`）
+
+- `push_subscriptions` upsert：同一 endpoint 重复订阅不产生新行
+- `unsubscribe` 幂等
+- 注入 `FakePushSender`，验证：无订阅时不 claim；有订阅时推送一次
+- 410 订阅被清理，其它错误累加 `fail_count`
+- SSE 与 push 同时在线时，同一提醒只推一次（靠 `reminded_at`）
+- `/api/push/key` 在 `PUSH_ENABLED=false` 时返回 `{enabled: false}` 且不泄露私钥
+
+### 已知限制（写进 README）
+
+- iOS 必须「添加到主屏幕」并从图标打开才能授权通知；Safari 标签页里不行。
+- 通知送达依赖 Apple 推送服务，网络不好时会延迟，不能当闹钟用。
+- 卸载 PWA 会静默失效订阅，需要重新打开设置页授权。
+- 与 §14 的底部黑带无关，互不影响。
+
+### 待决策
+
+| 编号 | 问题 | 倾向 |
+|---|---|---|
+| D13 | 通知里是否带「完成 / 稍后提醒」动作按钮 | 先不做，点通知只打开页面；动作按钮要额外的 `notificationclick` 分支和接口 |
+| D14 | 多设备时是否按设备静音某类提醒 | 暂不做，先保证一条通道能通 |
+| D15 | 是否把 push 订阅也纳入备份/迁移 | 不迁移：订阅与设备绑定，换设备需重新授权 |
+
+### 实施顺序
+
+1. `domain/push.py` + 表结构 + 单测（不涉及网络，先跑通存储）
+2. `/api/push/*` 三个接口 + 鉴权 + 单测
+3. 生成 VAPID 密钥写入 `.env`，接 `pywebpush`，`/api/push/test` 打通真机
+4. 改造 `reminder_loop`，加入 push 分支与失败清理
+5. 设置页开关 + `pushsubscriptionchange` 处理
+6. README 安装/授权说明，`.env.example` 补配置
+7. 真机验收：关掉 App 等一条真提醒
+
+### 实施状态（2026-11-21）
+
+已完成 1–4、6 与 5 的前半：
+
+- `domain/push.py`：`push_subscriptions` 表，endpoint 唯一，upsert、失败计数、停用与复活。
+- `push_sender.py`：`WebPushSender` 包装 `pywebpush`，异常统一转 `PushResult`，只暴露 `ok / gone / status_code`。
+- `server.py`：`/api/push/key`、`subscribe`、`unsubscribe`、`test`；`/api/status` 与 `/api/config` 增加推送状态（不含私钥）。
+- 提醒循环：**有页面在线走 SSE，没有页面在线才走 push**，避免同一提醒既弹窗又弹系统通知。领取条件改为「有 SSE 订阅者或有未停用 push 订阅」。
+- 推送 404/410 直接删订阅，其它错误累加 `fail_count`，达 `PUSH_MAX_FAILURES` 停用；单条超时 15s，失败只记日志。
+- `.env` 已生成 VAPID 密钥；`scripts/gen_vapid.py` 可重新生成（会让旧订阅失效）。
+- 推送前强制 IPv4：本机到 `web.push.apple.com` 的 IPv6 路由是黑洞，`getaddrinfo` 先给 IPv6 会卡满超时才回退，表现就是「点了半天才到」。`push_sender._prefer_ipv4()` 覆盖 urllib3 的地址族选择。
+- 设置页新增「提醒通知」卡片：开启 / 关闭 / 发测试通知，并区分未安装到主屏、权限被拒、服务端未配置。
+- 测试：`tests/test_push.py` 8 条 + `tests/test_server.py` 推送接口 7 条，共 132 passed。
+
+待做：
+
+- `pushsubscriptionchange`：iOS 静默轮换订阅时自动回传。当前只能靠用户重新开关一次。
+- 真机验收：关闭 App 后等一条真实到期提醒（需先造一条明天到期的物品）。

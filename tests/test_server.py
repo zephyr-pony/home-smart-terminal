@@ -400,3 +400,159 @@ def test_status_exposes_drop_counter(monkeypatch):
     assert body["due_items"] == []
     assert body["due_tasks"] == []
     assert body["task_count"] == 0
+
+
+# ---------- Web Push ----------
+
+class FakePushSender:
+    def __init__(self, ok=True, gone=False, status_code=201):
+        self.available = True
+        self.sent = []
+        self._ok = ok
+        self._gone = gone
+        self._status = status_code
+
+    def send(self, subscription, payload):
+        from push_sender import PushResult
+
+        self.sent.append((subscription.get("endpoint"), payload))
+        return PushResult(self._ok, self._status, gone=self._gone)
+
+
+def make_push_env(monkeypatch, tmp_path, sender=None):
+    from domain.push import PushStore
+
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    store = PushStore(str(tmp_path / "push.db"))
+    monkeypatch.setattr(server, "push_store", store)
+    monkeypatch.setattr(server, "push_sender", sender)
+    return store
+
+
+def test_push_key_disabled_without_config(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "PUSH_ENABLED", False)
+    monkeypatch.setattr(server, "VAPID_PUBLIC_KEY", "")
+    client = TestClient(server.app)
+    body = client.get(
+        "/api/push/key", headers={"Authorization": "Bearer secret"}
+    ).json()
+    assert body["enabled"] is False
+    assert body["publicKey"] == ""
+
+
+def test_push_key_requires_token(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    client = TestClient(server.app)
+    assert client.get("/api/push/key").status_code == 401
+
+
+def test_push_subscribe_and_unsubscribe(monkeypatch, tmp_path):
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    monkeypatch.setattr(server, "PUSH_ENABLED", True)
+    monkeypatch.setattr(server, "VAPID_PUBLIC_KEY", "pub-key")
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer secret"}
+
+    payload = {
+        "endpoint": "https://push.example.com/abc",
+        "keys": {"p256dh": "k1", "auth": "a1"},
+        "user_agent": "iPhone",
+    }
+    first = client.post("/api/push/subscribe", headers=headers, json=payload)
+    assert first.status_code == 200
+    assert first.json()["subscriptions"] == 1
+
+    # 同一 endpoint 重复订阅不增加
+    again = client.post("/api/push/subscribe", headers=headers, json=payload)
+    assert again.json()["subscriptions"] == 1
+
+    removed = client.post(
+        "/api/push/unsubscribe",
+        headers=headers,
+        json={"endpoint": "https://push.example.com/abc"},
+    )
+    assert removed.json()["removed"] is True
+    assert store.count_active() == 0
+
+
+def test_push_subscribe_rejects_insecure_endpoint(monkeypatch, tmp_path):
+    make_push_env(monkeypatch, tmp_path, FakePushSender())
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/push/subscribe",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "endpoint": "http://insecure.example.com/abc",
+            "keys": {"p256dh": "k", "auth": "a"},
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_push_test_endpoint_disabled(monkeypatch, tmp_path):
+    make_push_env(monkeypatch, tmp_path, None)
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/push/test", headers={"Authorization": "Bearer secret"}
+    )
+    assert response.status_code == 503
+
+
+def test_push_test_endpoint_sends(monkeypatch, tmp_path):
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    client = TestClient(server.app)
+    body = client.post(
+        "/api/push/test", headers={"Authorization": "Bearer secret"}
+    ).json()
+    assert body["ok"] is True
+    assert body["sent"] == 1
+    assert sender.sent[0][0] == "https://push.example.com/a"
+    assert "推送测试" in sender.sent[0][1]["body"]
+
+
+def test_push_removes_gone_subscription(monkeypatch, tmp_path):
+    """410 的订阅在推送后被删除。"""
+    import asyncio
+
+    sender = FakePushSender(ok=False, gone=True, status_code=410)
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/gone", "k", "a")
+
+    sent, removed, failed = asyncio.run(
+        server._send_push("提醒", {"type": "reminder", "tag": "t"})
+    )
+    assert (sent, removed, failed) == (0, 1, 0)
+    assert store.count_active() == 0
+
+
+def test_push_failure_counting(monkeypatch, tmp_path):
+    import asyncio
+
+    sender = FakePushSender(ok=False, gone=False, status_code=500)
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    monkeypatch.setattr(server, "PUSH_MAX_FAILURES", 2)
+
+    asyncio.run(server._send_push("提醒", {"type": "reminder"}))
+    assert store.count_active() == 1
+    asyncio.run(server._send_push("提醒", {"type": "reminder"}))
+    assert store.count_active() == 0
+
+
+def test_config_endpoint_does_not_expose_vapid_private_key(monkeypatch, tmp_path):
+    make_push_env(monkeypatch, tmp_path, FakePushSender())
+    monkeypatch.setattr(server.config, "VAPID_PRIVATE_KEY", "super-secret-pem")
+    monkeypatch.setattr(server.config, "PUSH_ENABLED", True)
+
+    client = TestClient(server.app)
+    response = client.get(
+        "/api/config", headers={"Authorization": "Bearer secret"}
+    )
+    assert response.status_code == 200
+    assert "super-secret-pem" not in response.text
+    assert "VAPID_PRIVATE_KEY" not in response.text
+    assert response.json()["push"]["enabled"] is True

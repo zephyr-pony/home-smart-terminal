@@ -120,6 +120,10 @@ start.bat wake       # 或 python main.py wake
 | `/api/tasks/{id}` | PATCH | 编辑任务标题 / 时间 / 类型 |
 | `/api/{memories\|items\|facts\|tasks}/{id}?confirm=true` | DELETE | 删除记录，必须显式确认 |
 | `/api/config` | GET / PATCH | 读取脱敏配置 / 更新白名单字段 |
+| `/api/push/key` | GET | 推送公钥与启用状态（私钥永不下发） |
+| `/api/push/subscribe` | POST | 保存设备推送订阅 `{endpoint, keys}` |
+| `/api/push/unsubscribe` | POST | 删除设备推送订阅 |
+| `/api/push/test` | POST | 给已订阅设备发一条测试通知 |
 | `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64 |
 | `/api/voice` | POST | WAV 语音交互（multipart: file + client_id） |
 | `/api/events` | GET | SSE 事件流，主动推送到期提醒（`{"type":"reminder", ...}`） |
@@ -130,10 +134,22 @@ start.bat wake       # 或 python main.py wake
 
 ## 到期提醒
 
-- 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的物品会**主动推送**给已打开的网页：弹出提醒并语音播报。
+- 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品和任务，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的会**主动推送**：有网页在线时走 SSE，弹出提醒并语音播报；没有网页在线时走 Web Push，发系统通知。
 - 同一物品在 `REMINDER_COOLDOWN_HOURS`（默认 24h）内不重复提醒；设为 `0` 表示只提醒一次。
-- 提醒状态落库（`reminded_at`），重启服务也不会重复打扰；只有在线的网页才会收到推送。
+- 提醒状态落库（`reminded_at`），重启服务也不会重复打扰。
 - 网页状态栏同时常驻显示当前到期物品（`/api/status` 的 `due_items`）。
+
+### 手机系统通知（Web Push）
+
+页面关掉也能收到提醒，需要一次性配置：
+
+1. 用 `python scripts/gen_vapid.py` 生成密钥，把输出的四行贴到 `.env`。
+2. 重启服务端，日志出现 `📬 Web Push 已启用`。
+3. 手机上从主屏图标打开小马 → 设置 → 「开启通知」→ 允许通知。
+4. 点「发测试通知」确认能收到。
+
+iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的图标打开时才能授权；Safari 标签页里不支持。通知送达依赖 Apple 推送服务，网络差时会延迟。
+
 
 ## 配置说明（.env）
 
@@ -174,6 +190,13 @@ start.bat wake       # 或 python main.py wake
 | `REMINDER_DAYS` | `3` | 未来几天内算"即将到期" |
 | `REMINDER_INTERVAL_SECONDS` | `60` | 后台到期扫描间隔（秒） |
 | `REMINDER_COOLDOWN_HOURS` | `24` | 同一物品再次提醒的冷却（小时，0 = 只提醒一次） |
+| `PUSH_ENABLED` | `0` | 是否启用 Web Push 系统通知（页面关闭时也能收到） |
+| `PUSH_DB_PATH` | `./data/push.db` | 推送订阅库位置 |
+| `VAPID_PUBLIC_KEY` | 空 | 推送公钥（`scripts/gen_vapid.py` 生成） |
+| `VAPID_PRIVATE_KEY` | 空 | 推送私钥，base64(PEM) 单行；绝不返回前端 |
+| `VAPID_SUBJECT` | `mailto:noreply@example.com` | VAPID 联系地址 |
+| `PUSH_TTL_SECONDS` | `43200` | 推送在推送服务里的存活时间（秒） |
+| `PUSH_MAX_FAILURES` | `5` | 连续推送失败几次后停用该订阅 |
 
 ## 使用方式
 

@@ -17,6 +17,8 @@
 | `domain/store.py` | 实体 + 待澄清动作 + 提案（SQLite，`data/agent.db`） |
 | `domain/tasks.py` | 通用任务/提醒：账单、日程、自定义（SQLite，`data/tasks.db`） |
 | `domain/facts.py` | 结构化事实：户号、地址、品牌、型号（SQLite，`data/facts.db`） |
+| `domain/push.py` | Web Push 订阅：endpoint、密钥、失败计数（SQLite，`data/push.db`） |
+| `push_sender.py` | Web Push 发送适配器：`pywebpush` 封装，异常统一转结果 |
 | `agent/clarify.py` | 澄清引擎：识别歧义、生成问题、合并回答 |
 | `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
 | `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
@@ -157,10 +159,18 @@ pytest tests -q
 ### 提醒与 SSE
 
 - 提醒循环同时扫描 `items`（物品到期）和 `tasks`（账单/日程/自定义）。
-- 只有存在在线 SSE 订阅者时才 `claim_due_reminders`，避免没送达却消耗提醒额度。
+- 只有存在「在线 SSE 订阅者或未停用的 push 订阅」时才 `claim_due_reminders`，避免没送达却消耗提醒额度。
 - 提醒状态落库（`reminded_at`），冷却由 `REMINDER_COOLDOWN_HOURS` 控制。
 - SSE 事件格式：`data: {json}\n\n`，心跳为注释行；队列满时丢最旧并累加 `dropped_events`，不要静默丢。
 - 前端用 `fetch` 流式读取而非 `EventSource`（需要携带 `Authorization`）。
+
+### Web Push
+
+- 有页面在线走 SSE，没有页面在线才发 push：同一提醒不走两条通道，避免弹两次。
+- `push_sender.py` 是唯一 import `pywebpush` 的地方；其它模块只处理 `PushResult`。
+- 404/410 视为订阅作废，立即删除；其它失败累加 `fail_count`，到 `PUSH_MAX_FAILURES` 停用但保留记录。
+- `VAPID_PRIVATE_KEY` 只在 `.env`，不进 `CONFIG_FIELDS`、不进 `/api/config` 响应。
+- 推送正文只发文字，不合成语音；点击通知打开首页。
 
 ### Web 控制台
 

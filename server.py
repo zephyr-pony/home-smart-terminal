@@ -34,13 +34,21 @@ from config import (
     MAX_CLIENT_ID_CHARS,
     MAX_TEXT_CHARS,
     MAX_UPLOAD_BYTES,
+    PUSH_ENABLED,
+    PUSH_MAX_FAILURES,
+    PUSH_TTL_SECONDS,
     REMINDER_COOLDOWN_HOURS,
     REMINDER_DAYS,
     REMINDER_INTERVAL_SECONDS,
     SERVER_HOST,
     SERVER_PORT,
+    VAPID_PRIVATE_KEY,
+    VAPID_PUBLIC_KEY,
+    VAPID_SUBJECT,
 )
 from assistant import Assistant
+from domain.push import PushStore
+from push_sender import WebPushSender
 from stt import STT
 from llm import LLM
 from memory import Memory
@@ -52,6 +60,10 @@ from tts import TTS
 stt: STT = None
 tts: TTS = None
 assistant: Assistant = None
+
+# Web Push：push_store 存订阅，push_sender 负责真正发推（lifespan 里建）
+push_store: PushStore = None
+push_sender: WebPushSender = None
 
 # 到期提醒缓存（提醒循环按 REMINDER_INTERVAL_SECONDS 刷新）
 due_items = []
@@ -151,6 +163,10 @@ def _safe_config():
             "configured": bool(config.LLM_BASE_URL and config.LLM_API_KEY),
         },
         "api_token_enabled": bool(config.API_TOKEN),
+        "push": {
+            "enabled": bool(config.PUSH_ENABLED and config.VAPID_PRIVATE_KEY),
+            "subscriptions": push_store.count_active() if push_store else 0,
+        },
         "values": {
             key: getattr(config, key) for key in CONFIG_FIELDS
         },
@@ -259,10 +275,76 @@ async def _broadcast(event):
                 traceback.print_exc()
 
 
-async def reminder_loop():
-    """后台提醒循环：扫描到期物品，落库去重后向在线客户端主动推送提醒。
+async def _send_push(text, event):
+    """把一条提醒推给所有有效订阅；失败按 404/410 或失败次数清理。
 
-    只有存在在线订阅者时才"领取"提醒——否则没通知到人，不应消耗去重额度。
+    返回 (sent, removed, failed)，failed 只用于 /api/push/test 的排障提示。
+    """
+    if push_sender is None or push_store is None or not push_sender.available:
+        return 0, 0, 0
+
+    subscriptions = await asyncio.to_thread(push_store.list_active)
+    if not subscriptions:
+        return 0, 0, 0
+
+    payload = {
+        "title": "小马提醒",
+        "body": text,
+        "url": "/",
+        "tag": event.get("tag") or "xiaoma-reminder",
+    }
+
+    async def deliver(subscription):
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(push_sender.send, subscription, payload),
+                timeout=15,
+            )
+        except asyncio.TimeoutError:
+            print("⚠️ 推送超时：%s" % subscription.get("endpoint", "")[:60])
+            return None
+
+    results = await asyncio.gather(
+        *[deliver(sub) for sub in subscriptions], return_exceptions=True
+    )
+
+    sent, removed, failed = 0, 0, 0
+    for subscription, result in zip(subscriptions, results):
+        endpoint = subscription.get("endpoint")
+        if isinstance(result, Exception):
+            print("⚠️ 推送异常：%s" % result)
+            failed += 1
+            await asyncio.to_thread(push_store.mark_failure, endpoint, PUSH_MAX_FAILURES)
+        elif result is None:
+            failed += 1
+            await asyncio.to_thread(push_store.mark_failure, endpoint, PUSH_MAX_FAILURES)
+        elif result.ok:
+            sent += 1
+            await asyncio.to_thread(push_store.mark_success, endpoint)
+        elif result.gone:
+            # 设备已卸载或权限被撤，订阅作废，直接删掉
+            removed += 1
+            await asyncio.to_thread(push_store.remove, endpoint)
+        else:
+            failed += 1
+            print("⚠️ 推送失败（%s）：%s" % (result.status_code, result.error))
+            await asyncio.to_thread(push_store.mark_failure, endpoint, PUSH_MAX_FAILURES)
+    return sent, removed, failed
+
+
+async def _notify(text, event):
+    """有页面在线就走 SSE（省一条系统通知），否则走 Web Push。"""
+    if _subscribers:
+        await _broadcast(dict(event, reply=text, audio=await _synthesize(text)))
+        return
+    await _send_push(text, event)
+
+
+async def reminder_loop():
+    """后台提醒循环：扫描到期物品与任务，领取后推给在线页面或 push 订阅。
+
+    只有存在「在线页面或 push 订阅」时才领取——否则没通知到人，
+    不应消耗 reminded_at 的去重额度。
     """
     global due_items, due_tasks
     while True:
@@ -273,7 +355,10 @@ async def reminder_loop():
             due_tasks = await asyncio.to_thread(
                 assistant.tasks.get_due, days=REMINDER_DAYS
             )
-            if _subscribers:
+            push_count = 0
+            if push_store is not None:
+                push_count = await asyncio.to_thread(push_store.count_active)
+            if _subscribers or push_count:
                 fresh_items = await asyncio.to_thread(
                     assistant.items.claim_due_reminders,
                     REMINDER_DAYS,
@@ -286,19 +371,17 @@ async def reminder_loop():
                 )
                 for item in fresh_items:
                     text = _reminder_text(item)
-                    await _broadcast({
+                    await _notify(text, {
                         "type": "reminder",
                         "item": item,
-                        "reply": text,
-                        "audio": await _synthesize(text),
+                        "tag": "item-%s" % item.get("id", ""),
                     })
                 for task in fresh_tasks:
                     text = _task_reminder_text(task)
-                    await _broadcast({
+                    await _notify(text, {
                         "type": "reminder",
                         "task": task,
-                        "reply": text,
-                        "audio": await _synthesize(text),
+                        "tag": "task-%s" % task.get("id", ""),
                     })
         except Exception:
             traceback.print_exc()
@@ -307,12 +390,26 @@ async def reminder_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global stt, tts, assistant, _tmp_dir
+    global stt, tts, assistant, _tmp_dir, push_store, push_sender
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
     tts = TTS()
     assistant = Assistant(memory=Memory(), llm=LLM(), items=Items())
     stt = STT()  # 预热 FunASR
+    # Web Push：没有密钥就整体降级为纯 SSE，不影响其他功能
+    push_store = PushStore()
+    push_sender = None
+    if PUSH_ENABLED and VAPID_PRIVATE_KEY:
+        try:
+            push_sender = WebPushSender(
+                VAPID_PRIVATE_KEY, VAPID_SUBJECT, ttl=PUSH_TTL_SECONDS
+            )
+            print(f"📬 Web Push 已启用，订阅 {push_store.count_active()} 台设备")
+        except Exception:
+            traceback.print_exc()
+            print("⚠️ Web Push 初始化失败，降级为仅 SSE 提醒")
+    else:
+        print("📭 Web Push 未启用（PUSH_ENABLED/VAPID 密钥缺失）")
     # 启动到期提醒后台任务
     reminder_task = asyncio.create_task(reminder_loop())
     print(f"✅ 系统就绪。记忆库 {assistant.memory.count()} 条 | 物品 {assistant.items.count()} 件 | 网页: http://{SERVER_HOST}:{SERVER_PORT}")
@@ -326,12 +423,16 @@ async def lifespan(app: FastAPI):
             pass
         if assistant is not None:
             assistant.close()
+        if push_store is not None:
+            push_store.close()
         if _tmp_dir:
             shutil.rmtree(_tmp_dir, ignore_errors=True)
         _subscribers.clear()
         stt = None
         tts = None
         assistant = None
+        push_store = None
+        push_sender = None
         _tmp_dir = None
         print("🛑 服务关闭")
 
@@ -361,6 +462,21 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     due_at: Optional[str] = None
     type: Optional[str] = None
+
+
+class PushKeys(BaseModel):
+    p256dh: str = Field(min_length=1, max_length=500)
+    auth: str = Field(min_length=1, max_length=500)
+
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str = Field(min_length=10, max_length=2000)
+    keys: PushKeys
+    user_agent: str = Field(default="", max_length=300)
+
+
+class PushEndpointRequest(BaseModel):
+    endpoint: str = Field(min_length=10, max_length=2000)
 
 
 # ---------- 核心处理 ----------
@@ -442,6 +558,7 @@ async def api_status(_auth=Depends(require_api_token)):
             assistant.tasks.count(),
         )
     )
+    push_count = await asyncio.to_thread(push_store.count_active) if push_store else 0
     return {
         "ok": True,
         "stt_ready": stt is not None,
@@ -451,6 +568,8 @@ async def api_status(_auth=Depends(require_api_token)):
         "due_items": due_items,  # 到期物品提醒（提醒循环刷新）
         "due_tasks": due_tasks,  # 到期任务提醒（提醒循环刷新）
         "dropped_events": dropped_events,  # SSE 队列满导致丢弃的事件数
+        "push_enabled": bool(push_sender is not None and push_sender.available),
+        "push_subscriptions": push_count,
         "sessions": len(assistant.sessions),
     }
 
@@ -660,6 +779,78 @@ async def api_config_update(req: ConfigUpdate, _auth=Depends(require_api_token))
         "ok": True,
         "restart_required": True,
         "updated": sorted(updates),
+    }
+
+
+@app.get("/api/push/key")
+async def api_push_key(_auth=Depends(require_api_token)):
+    """下发前端订阅用的公钥；私钥永不出现在响应里。"""
+    enabled = bool(
+        PUSH_ENABLED and VAPID_PUBLIC_KEY and push_sender is not None
+        and push_sender.available
+    )
+    return {
+        "ok": True,
+        "enabled": enabled,
+        "publicKey": VAPID_PUBLIC_KEY if enabled else "",
+    }
+
+
+@app.post("/api/push/subscribe")
+async def api_push_subscribe(req: PushSubscribeRequest, _auth=Depends(require_api_token)):
+    if push_store is None:
+        raise HTTPException(status_code=503, detail="推送存储未初始化")
+    if not req.endpoint.startswith("https://"):
+        raise HTTPException(status_code=400, detail="endpoint 必须是 https 地址")
+    try:
+        await asyncio.to_thread(
+            push_store.save,
+            req.endpoint,
+            req.keys.p256dh,
+            req.keys.auth,
+            req.user_agent,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    total = await asyncio.to_thread(push_store.count_active)
+    return {"ok": True, "subscriptions": total}
+
+
+@app.post("/api/push/unsubscribe")
+async def api_push_unsubscribe(req: PushEndpointRequest, _auth=Depends(require_api_token)):
+    if push_store is None:
+        raise HTTPException(status_code=503, detail="推送存储未初始化")
+    removed = await asyncio.to_thread(push_store.remove, req.endpoint)
+    total = await asyncio.to_thread(push_store.count_active)
+    return {"ok": True, "removed": removed, "subscriptions": total}
+
+
+@app.post("/api/push/test")
+async def api_push_test(_auth=Depends(require_api_token)):
+    if push_sender is None or not push_sender.available:
+        raise HTTPException(status_code=503, detail="服务端未配置推送密钥")
+    sent, removed, failed = await _send_push("推送测试：这是一条来自小马的提醒", {
+        "type": "reminder",
+        "tag": "push-test",
+    })
+    total = await asyncio.to_thread(push_store.count_active)
+    if sent:
+        detail = "已发送 %d 台" % sent
+    elif failed:
+        detail = "有 %d 台推送失败：服务端连不上推送服务或密钥不对" % failed
+    elif removed:
+        detail = "订阅已失效并清理，请重新开启通知"
+    elif not total:
+        detail = "没有可用的订阅，请先开启通知"
+    else:
+        detail = "没有可用的订阅"
+    return {
+        "ok": sent > 0,
+        "sent": sent,
+        "removed": removed,
+        "failed": failed,
+        "subscriptions": total,
+        "detail": detail,
     }
 
 
