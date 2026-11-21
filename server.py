@@ -340,49 +340,57 @@ async def _notify(text, event):
     await _send_push(text, event)
 
 
+async def _scan_once():
+    """跑一轮到期扫描：刷新缓存，必要时领取并投递。
+
+    单独抽出来是为了可测试——提醒循环只负责节奏和异常兜底。
+    """
+    global due_items, due_tasks
+    due_items = await asyncio.to_thread(assistant.items.get_due, days=REMINDER_DAYS)
+    due_tasks = await asyncio.to_thread(assistant.tasks.get_due, days=REMINDER_DAYS)
+    push_count = 0
+    if push_store is not None:
+        push_count = await asyncio.to_thread(push_store.count_active)
+    if not (_subscribers or push_count):
+        return 0
+
+    fresh_items = await asyncio.to_thread(
+        assistant.items.claim_due_reminders,
+        REMINDER_DAYS,
+        REMINDER_COOLDOWN_HOURS,
+    )
+    fresh_tasks = await asyncio.to_thread(
+        assistant.tasks.claim_due_reminders,
+        REMINDER_DAYS,
+        REMINDER_COOLDOWN_HOURS,
+    )
+    delivered = 0
+    for item in fresh_items:
+        await _notify(_reminder_text(item), {
+            "type": "reminder",
+            "item": item,
+            "tag": "item-%s" % item.get("id", ""),
+        })
+        delivered += 1
+    for task in fresh_tasks:
+        await _notify(_task_reminder_text(task), {
+            "type": "reminder",
+            "task": task,
+            "tag": "task-%s" % task.get("id", ""),
+        })
+        delivered += 1
+    return delivered
+
+
 async def reminder_loop():
     """后台提醒循环：扫描到期物品与任务，领取后推给在线页面或 push 订阅。
 
     只有存在「在线页面或 push 订阅」时才领取——否则没通知到人，
     不应消耗 reminded_at 的去重额度。
     """
-    global due_items, due_tasks
     while True:
         try:
-            due_items = await asyncio.to_thread(
-                assistant.items.get_due, days=REMINDER_DAYS
-            )
-            due_tasks = await asyncio.to_thread(
-                assistant.tasks.get_due, days=REMINDER_DAYS
-            )
-            push_count = 0
-            if push_store is not None:
-                push_count = await asyncio.to_thread(push_store.count_active)
-            if _subscribers or push_count:
-                fresh_items = await asyncio.to_thread(
-                    assistant.items.claim_due_reminders,
-                    REMINDER_DAYS,
-                    REMINDER_COOLDOWN_HOURS,
-                )
-                fresh_tasks = await asyncio.to_thread(
-                    assistant.tasks.claim_due_reminders,
-                    REMINDER_DAYS,
-                    REMINDER_COOLDOWN_HOURS,
-                )
-                for item in fresh_items:
-                    text = _reminder_text(item)
-                    await _notify(text, {
-                        "type": "reminder",
-                        "item": item,
-                        "tag": "item-%s" % item.get("id", ""),
-                    })
-                for task in fresh_tasks:
-                    text = _task_reminder_text(task)
-                    await _notify(text, {
-                        "type": "reminder",
-                        "task": task,
-                        "tag": "task-%s" % task.get("id", ""),
-                    })
+            await _scan_once()
         except Exception:
             traceback.print_exc()
         await asyncio.sleep(REMINDER_INTERVAL_SECONDS)

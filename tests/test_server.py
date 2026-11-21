@@ -543,6 +543,88 @@ def test_push_failure_counting(monkeypatch, tmp_path):
     assert store.count_active() == 0
 
 
+class FakeDueStore:
+    """到期来源：记录 claim 是否被调用。"""
+
+    def __init__(self, fresh=None):
+        self.fresh = fresh or []
+        self.claimed = 0
+
+    def get_due(self, days=0):
+        return list(self.fresh)
+
+    def claim_due_reminders(self, days=0, cooldown=0):
+        self.claimed += 1
+        return list(self.fresh)
+
+
+class FakeDueAssistant:
+    def __init__(self, items=None, tasks=None):
+        self.items = items or FakeDueStore()
+        self.tasks = tasks or FakeDueStore()
+
+
+def test_scan_skips_claim_without_any_channel(monkeypatch, tmp_path):
+    import asyncio
+
+    assistant = FakeDueAssistant()
+    monkeypatch.setattr(server, "assistant", assistant)
+    make_push_env(monkeypatch, tmp_path, FakePushSender())
+    monkeypatch.setattr(server, "_subscribers", set())
+
+    delivered = asyncio.run(server._scan_once())
+    assert delivered == 0
+    assert assistant.items.claimed == 0
+    assert assistant.tasks.claimed == 0
+
+
+def test_scan_pushes_when_only_push_subscribers(monkeypatch, tmp_path):
+    import asyncio
+
+    item = {"id": 1, "name": "牛奶", "days_left": 2}
+    assistant = FakeDueAssistant(items=FakeDueStore([item]))
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    monkeypatch.setattr(server, "assistant", assistant)
+    monkeypatch.setattr(server, "_subscribers", set())
+
+    delivered = asyncio.run(server._scan_once())
+    assert delivered == 1
+    assert assistant.items.claimed == 1
+    assert sender.sent[0][1]["body"].startswith("提醒：牛奶")
+
+
+def test_scan_prefers_sse_over_push(monkeypatch, tmp_path):
+    """有页面在线时只走 SSE，不再发系统通知。"""
+    import asyncio
+
+    task = {"id": 2, "title": "交电费", "days_left": 0}
+    assistant = FakeDueAssistant(tasks=FakeDueStore([task]))
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    monkeypatch.setattr(server, "assistant", assistant)
+    monkeypatch.setattr(server, "_synthesize", _fake_synthesize)
+
+    async def run_once():
+        queue = asyncio.Queue(maxsize=5)   # 必须在当前事件循环里建
+        monkeypatch.setattr(server, "_subscribers", {queue})
+        delivered = await server._scan_once()
+        return delivered, queue
+
+    delivered, queue = asyncio.run(run_once())
+    assert delivered == 1
+    assert sender.sent == []
+    assert queue.qsize() == 1
+    payload = queue.get_nowait()
+    assert "交电费" in payload
+
+
+async def _fake_synthesize(reply):
+    return ""
+
+
 def test_config_endpoint_does_not_expose_vapid_private_key(monkeypatch, tmp_path):
     make_push_env(monkeypatch, tmp_path, FakePushSender())
     monkeypatch.setattr(server.config, "VAPID_PRIVATE_KEY", "super-secret-pem")
