@@ -112,7 +112,7 @@ class Assistant:
 
     # ---------- 对外接口 ----------
 
-    def process_text(self, text, client_id=None):
+    def process_text(self, text, client_id=None, on_delta=None):
         """处理用户文本输入，返回结构化结果 dict。
 
         Returns:
@@ -192,7 +192,7 @@ class Assistant:
 
         # 3) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
         try:
-            rtype, answer, extras = self._agent_loop(text, client_id)
+            rtype, answer, extras = self._agent_loop(text, client_id, on_delta)
         except ConfirmationRequired as exc:
             self._record_turn(client_id, text, exc.reply)
             return self._result(
@@ -221,7 +221,7 @@ class Assistant:
 
     # ---------- agent loop ----------
 
-    def _agent_loop(self, user_text, client_id=None):
+    def _agent_loop(self, user_text, client_id=None, on_delta=None):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
 
         client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
@@ -245,7 +245,12 @@ class Assistant:
 
         for _turn in range(self.max_agent_loops):
             try:
-                data = self.llm.chat_with_tools(messages, schemas)
+                if on_delta is not None and hasattr(self.llm, "chat_with_tools_stream"):
+                    data = self.llm.chat_with_tools_stream(
+                        messages, schemas, on_delta=on_delta
+                    )
+                else:
+                    data = self.llm.chat_with_tools(messages, schemas)
             except Exception as exc:
                 print(f"⚠️ LLM 调用失败：{exc}")
                 return "chat", "抱歉，我现在连不上大脑，请稍后再试。", {

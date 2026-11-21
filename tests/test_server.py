@@ -54,7 +54,9 @@ class FakeAssistant:
         self.tasks = FakeTasks()
         self.sessions = {}
 
-    def process_text(self, text, client_id):
+    def process_text(self, text, client_id, on_delta=None):
+        if on_delta is not None:
+            on_delta(text)
         return {
             "type": "chat", "reply": text, "memories": [],
             "used_tools": [], "domain": "chat", "action": "chat",
@@ -823,6 +825,53 @@ def test_last_user_text_handles_parts():
                                      {"type": "text", "text": "问题"}]},
     ]
     assert server._last_user_text(messages) == "新的问题"
+
+
+class StreamingAssistant(FakeAssistant):
+    """模拟 agent 分两段吐出内容。"""
+
+    def process_text(self, text, client_id, on_delta=None):
+        if on_delta is not None:
+            on_delta("第一句。")
+            on_delta("第二句。")
+        return {
+            "type": "chat", "reply": "第一句。第二句。", "memories": [],
+            "used_tools": [], "domain": "chat", "action": "chat",
+        }
+
+
+def test_chat_completions_stream_emits_multiple_chunks(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", StreamingAssistant())
+    client = TestClient(server.app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={"messages": [{"role": "user", "content": "说说"}], "stream": True},
+    )
+    assert response.status_code == 200
+    assert response.text.count("data: ") >= 4
+    assert "第一句。" in response.text
+    assert "第二句。" in response.text
+    assert response.text.rstrip().endswith("[DONE]")
+
+
+def test_chat_completions_stream_survives_agent_error(monkeypatch):
+    class BrokenAssistant(FakeAssistant):
+        def process_text(self, text, client_id, on_delta=None):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", BrokenAssistant())
+    client = TestClient(server.app)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={"messages": [{"role": "user", "content": "说说"}], "stream": True},
+    )
+    assert response.status_code == 200
+    assert "出错" in response.text
+    assert "[DONE]" in response.text
 
 
 def test_config_endpoint_does_not_expose_vapid_private_key(monkeypatch, tmp_path):

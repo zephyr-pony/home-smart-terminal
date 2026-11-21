@@ -523,6 +523,75 @@ def _handle_voice_sync(audio_path: str, client_id: str) -> dict:
     return result
 
 
+def _sse_chunk(completion_id, created, model, delta, finish_reason=None):
+    payload = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+async def _chat_completion_stream(text, completion_id, created, model):
+    """把 agent loop 的流式输出转成 OpenAI SSE。
+
+    agent 在 to_thread 里跑（同步阻塞），通过 queue 把 delta 交回事件循环；
+    已经发出去的片段会在结束时对齐，避免重复。
+    """
+    loop = asyncio.get_running_loop()
+    queue = asyncio.Queue()
+
+    def on_delta(piece):
+        loop.call_soon_threadsafe(queue.put_nowait, ("delta", piece))
+
+    def work():
+        try:
+            result = assistant.process_text(text, "xiaozhi", on_delta=on_delta)
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", result))
+        except Exception as exc:
+            traceback.print_exc()
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+
+    worker = asyncio.create_task(asyncio.to_thread(work))
+
+    emitted = ""
+    try:
+        yield _sse_chunk(completion_id, created, model, {"role": "assistant"})
+        while True:
+            kind, payload = await queue.get()
+            if kind == "delta":
+                emitted += payload
+                yield _sse_chunk(completion_id, created, model, {"content": payload})
+                continue
+
+            if kind == "done":
+                full = (payload.get("reply") or "").strip()
+                if not emitted:
+                    rest = full
+                elif full.startswith(emitted):
+                    rest = full[len(emitted):]
+                else:
+                    rest = ""   # 已经播出去的内容不重复
+                if rest:
+                    yield _sse_chunk(completion_id, created, model, {"content": rest})
+                break
+
+            # 出错也按正常收尾，避免语音端一直等
+            if not emitted:
+                yield _sse_chunk(
+                    completion_id, created, model,
+                    {"content": "抱歉，我这边出错了，请再说一次。"},
+                )
+            break
+
+        yield _sse_chunk(completion_id, created, model, {}, "stop")
+        yield "data: [DONE]\n\n"
+    finally:
+        await worker
+
+
 def _last_user_text(messages):
     """OpenAI messages → 最后一条用户文本。
 
@@ -996,6 +1065,17 @@ async def api_chat_completions(req: ChatCompletionRequest,
     if not text:
         raise HTTPException(status_code=400, detail="messages 里没有用户文本")
 
+    created = int(time.time())
+    completion_id = "chatcmpl-" + secrets.token_hex(8)
+
+    if req.stream:
+        # 先把 head 发出去，再在后台线程跑 agent loop，按 delta 实时下发，
+        # 让语音端第一句就能开始合成。
+        return StreamingResponse(
+            _chat_completion_stream(text, completion_id, created, req.model or "xiaoma"),
+            media_type="text/event-stream",
+        )
+
     try:
         result = await asyncio.to_thread(assistant.process_text, text, "xiaozhi")
     except Exception as exc:
@@ -1003,40 +1083,6 @@ async def api_chat_completions(req: ChatCompletionRequest,
         raise HTTPException(status_code=500, detail=f"处理失败: {exc}")
 
     reply = result.get("reply", "") or ""
-    created = int(time.time())
-    completion_id = "chatcmpl-" + secrets.token_hex(8)
-
-    if req.stream:
-        async def event_stream():
-            head = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": req.model or "xiaoma",
-                "choices": [{"index": 0, "delta": {"role": "assistant"},
-                             "finish_reason": None}],
-            }
-            yield "data: " + json.dumps(head, ensure_ascii=False) + "\n\n"
-            chunk = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": req.model or "xiaoma",
-                "choices": [{"index": 0, "delta": {"content": reply},
-                             "finish_reason": None}],
-            }
-            yield "data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
-            tail = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": req.model or "xiaoma",
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            }
-            yield "data: " + json.dumps(tail, ensure_ascii=False) + "\n\n"
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     return {
         "id": completion_id,
