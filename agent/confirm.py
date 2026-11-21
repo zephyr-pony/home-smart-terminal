@@ -5,6 +5,15 @@ from domain.store import normalize_text
 YES_WORDS = ("确认", "确定", "是的", "是", "好的", "好", "可以", "删除", "删掉", "执行", "嗯", "行")
 NO_WORDS = ("取消", "不要", "不用", "别", "算了", "先不", "停止", "不")
 
+# 弱模型模式下需要先确认的写操作（都是会落库、可能触发提醒的动作）
+WRITE_ACTIONS = ("memory_store", "item_add", "task_add", "fact_store")
+_WRITE_DOMAINS = {
+    "memory_store": "memory",
+    "item_add": "items",
+    "task_add": "tasks",
+    "fact_store": "facts",
+}
+
 
 class ConfirmationRequired(Exception):
     """Agent loop 遇到高风险工具时抛出，由 Assistant 转成确认问题。"""
@@ -16,11 +25,14 @@ class ConfirmationRequired(Exception):
 
 
 class ConfirmationManager:
-    def __init__(self, store, memory, items, ttl_seconds=PENDING_ACTION_TTL_SECONDS):
+    def __init__(self, store, memory, items, ttl_seconds=PENDING_ACTION_TTL_SECONDS,
+                 tool_runner=None):
         self.store = store
         self.memory = memory
         self.items = items
         self.ttl_seconds = ttl_seconds
+        # 写操作确认需要回放工具调用；由 Assistant 注入，避免 agent 层依赖 tools
+        self.tool_runner = tool_runner
 
     def get_pending(self, conversation_id):
         pending = self.store.get_pending(conversation_id)
@@ -79,6 +91,26 @@ class ConfirmationManager:
     def _execute(self, pending):
         action_type = pending.get("action_type")
         payload = pending.get("payload") or {}
+
+        if action_type in WRITE_ACTIONS and self.tool_runner is not None:
+            try:
+                result = str(self.tool_runner(action_type, payload))
+            except Exception as exc:  # 写库失败也要给出可读回复，不向 API 抛错
+                return {
+                    "kind": "done",
+                    "type": "chat",
+                    "domain": _WRITE_DOMAINS.get(action_type, "confirm"),
+                    "action": "error",
+                    "reply": f"操作失败：{exc}",
+                }
+            self.store.record_proposal(action_type, payload, "committed", result)
+            return {
+                "kind": "done",
+                "type": "record",
+                "domain": _WRITE_DOMAINS.get(action_type, "confirm"),
+                "action": "create",
+                "reply": result,
+            }
 
         if action_type == "memory_delete":
             keywords = str(payload.get("keywords") or "")

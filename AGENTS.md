@@ -143,6 +143,7 @@ pytest tests -q
 - 删除类动作（`memory_delete` / `item_delete`）不直接执行，先经 `ConfirmationManager` 请求确认。
 - 写工具参数在 agent loop 里先过 `agent/guard.py`：日期一律以 `agent/dates.py` 从用户原话解析的结果为准，句子里没有日期线索就把日期留空；`task_add` 的标题在原话里找不到依据时整次调用不执行。
 - 护栏只负责落库正确，模型仍可能口播旧值；`correction_note` 会把校正结果附在工具返回里让它改口。
+- 本地小模型开 `CONFIRM_WRITE_ACTIONS=1`（弱模型模式）：四个写工具执行前先复述参数等用户确认，确认后才真正落库；同时拦下「没调工具却回已记好」的假确认。代价是每次写多一句话。
 - 待确认动作存在 `pending_actions`（`missing_slot=confirm`），用户回复确认/取消后才执行。
 - 付款、通知他人等未来高风险动作也走同一入口。
 

@@ -61,6 +61,8 @@ ITEMS_DB_PATH = _get("ITEMS_DB_PATH", "./data/items.db")
 AGENT_DB_PATH = _get("AGENT_DB_PATH", "./data/agent.db")
 PENDING_ACTION_TTL_SECONDS = _get_int("PENDING_ACTION_TTL_SECONDS", 30 * 60)
 PROPOSAL_DEDUPE_SECONDS = _get_int("PROPOSAL_DEDUPE_SECONDS", 5 * 60)
+# 弱模型模式：所有写操作先复述参数并等用户确认（小模型容易记错日期、凭空建任务）
+CONFIRM_WRITE_ACTIONS = _get_bool("CONFIRM_WRITE_ACTIONS", False)
 
 # ---- 通用任务与结构化事实 ----
 TASKS_DB_PATH = _get("TASKS_DB_PATH", "./data/tasks.db")

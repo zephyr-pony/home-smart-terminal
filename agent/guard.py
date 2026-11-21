@@ -14,6 +14,9 @@ import re
 
 from agent.dates import has_date_hint, resolve_due
 
+# 会落库的写工具；用来判断「用户要写，但没有真的写」
+WRITE_TOOLS = ("memory_store", "item_add", "task_add", "fact_store")
+
 # 中英文混排时，中文按二元组、英文数字按整词比较
 _TOKEN_SPLIT_RE = re.compile(r"[^\u4e00-\u9fa50-9a-zA-Z]+")
 
@@ -114,3 +117,37 @@ def correction_note(name, before, after):
             return "（提醒时间已按用户原话校正为 %s，回答时以此为准）" % new
         return "（用户没有提到时间，已留空；回答时不要编造时间）"
     return ""
+
+
+# 疑问句：模型在回答而不是在记录，不参与「假确认」判定
+_QUESTION_RE = re.compile(
+    r"吗|呢|吧|多少|哪些|几号|几天|几时|什么时候|有没有|是不是|是什么|在哪|怎么|啥时候"
+)
+# 模型「已经做完」的口头表述
+_CLAIM_RE = re.compile(
+    r"已记|记好了|记下了|记下来|已经记|已添加|已保存|已设置|已经设置"
+    r"|已加|已存|记好啦|搞定"
+)
+
+
+def guard_false_claim(user_text, used_tools, reply):
+    """小模型没调写工具却宣称「已经记好了」。
+
+    实测 Spark-X2.6：同一句「冰箱里还有三个鸡蛋」约有三分之一概率直接回
+    「已经记在清单里了」，实际一条都没写。用户看不出区别，回头查才发现丢了。
+    这里只做保守判断：不是疑问句、本轮没有任何写工具执行、回复又声称已完成。
+
+    Returns:
+        (reply, replaced)：replaced 为 True 表示原回复不可信，已换成诚实的说法。
+    """
+    text = str(user_text or "").strip()
+    reply = str(reply or "")
+    if len(text) < 4 or not reply:
+        return reply, False
+    if _QUESTION_RE.search(text):
+        return reply, False
+    if any(name in WRITE_TOOLS for name in (used_tools or [])):
+        return reply, False
+    if not _CLAIM_RE.search(reply):
+        return reply, False
+    return "抱歉，我这次没写进清单，刚才那句不算。能再说一遍吗？", True

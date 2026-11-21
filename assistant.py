@@ -9,15 +9,20 @@ import time
 from datetime import datetime
 
 from config import (
+    CONFIRM_WRITE_ACTIONS,
     MAX_SESSIONS,
     SESSION_CONTEXT_MAX_CHARS,
     SESSION_CONTEXT_TURNS,
     SESSION_TTL_SECONDS,
 )
 from agent.clarify import Clarifier
-from agent.confirm import ConfirmationManager, ConfirmationRequired
+from agent.confirm import (
+    WRITE_ACTIONS as CONFIRMABLE_WRITES,
+    ConfirmationManager,
+    ConfirmationRequired,
+)
 from agent.entities import EntityService
-from agent.guard import correction_note, guard_write_args
+from agent.guard import correction_note, guard_false_claim, guard_write_args
 from agent.propose import ProposalService
 from domain.facts import Facts
 from domain.tasks import Tasks
@@ -89,6 +94,8 @@ class Assistant:
         self.confirmations = ConfirmationManager(
             self.clarifier.store, self.memory, self.items
         )
+        # 弱模型模式：写操作也要先复述参数再执行（小模型会记错日期、凭空建任务）
+        self.confirm_write_actions = CONFIRM_WRITE_ACTIONS
         # 实体管理：新增/改名/别名/列表
         self.entities = EntityService(self.clarifier.store)
         # 工具注册表（memory + 日期 + items + 实体）
@@ -100,6 +107,11 @@ class Assistant:
             tasks=self.tasks,
             facts=self.facts,
         )
+        self._tools_by_name = {
+            t["schema"]["function"]["name"]: t["execute"] for t in self.tools
+        }
+        # 确认通过后回放原来的工具调用
+        self.confirmations.tool_runner = self._run_tool_by_name
         self.max_agent_loops = 5
         # 轻量会话上下文：client_id -> [(user_text, reply), ...]（阶段 3 多轮对话的底子）
         self.sessions = {}
@@ -200,6 +212,14 @@ class Assistant:
                 "confirm", exc.reply, "confirm", "ask",
                 pending_action=exc.pending_action,
             )
+        # 小模型常见的「假确认」：明明没调写工具，却回「已经记好了」
+        if self.confirm_write_actions:
+            answer, replaced = guard_false_claim(
+                text, extras.get("used_tools") or [], answer
+            )
+            if replaced:
+                rtype = "chat"
+                extras.pop("summary", None)
         reply = {"type": rtype, "reply": answer}
         reply.update(extras)
 
@@ -237,7 +257,7 @@ class Assistant:
         messages.extend(self._context_messages(client_id))
         messages.append({"role": "user", "content": user_text})
         schemas = [t["schema"] for t in self.tools]
-        tools_by_name = {t["schema"]["function"]["name"]: t["execute"] for t in self.tools}
+        tools_by_name = self._tools_by_name
         used_tools = []
         used_tool_names = set()
         summary = None
@@ -285,6 +305,13 @@ class Assistant:
                     if name not in used_tool_names:
                         used_tools.append(name)
                         used_tool_names.add(name)
+                    if self.confirm_write_actions and name in CONFIRMABLE_WRITES:
+                        question = self._write_confirmation_question(name, args)
+                        conversation_id = (client_id or "cli").strip()
+                        pending = self.confirmations.request(
+                            conversation_id, name, args, question, user_text
+                        )
+                        raise ConfirmationRequired(question, pending)
                     if name in ("memory_delete", "item_delete"):
                         question = self._confirmation_question(name, args)
                         conversation_id = (client_id or "cli").strip()
@@ -361,6 +388,38 @@ class Assistant:
             return f"确认删除关于「{target}」的记忆吗？回复「确认」或「取消」。"
         target = str(args.get("name") or "").strip() or "这个物品"
         return f"确认删除物品「{target}」吗？回复「确认」或「取消」。"
+
+    @staticmethod
+    def _write_confirmation_question(tool_name, args):
+        """复述一遍将要写进去的内容，让用户当场发现参数错了。"""
+        args = args or {}
+        suffix = "回复「确认」或「取消」。"
+        if tool_name == "item_add":
+            name = str(args.get("name") or "").strip() or "这个物品"
+            expiry = str(args.get("expiry_date") or "").strip()
+            if expiry:
+                return f"要记成：物品「{name}」，到期日 {expiry}。{suffix}"
+            return f"要记成：物品「{name}」，没有到期日。{suffix}"
+        if tool_name == "task_add":
+            title = str(args.get("title") or "").strip() or "这件事"
+            due = str(args.get("due_at") or "").strip().replace("T", " ")
+            if due:
+                return f"要记成：提醒「{title}」，时间 {due}。{suffix}"
+            return f"要记成：提醒「{title}」，没有时间。{suffix}"
+        if tool_name == "fact_store":
+            subject = str(args.get("subject") or "").strip()
+            predicate = str(args.get("predicate") or "").strip()
+            value = str(args.get("value") or "").strip()
+            head = " · ".join(p for p in (subject, predicate) if p) or "这条事实"
+            return f"要记成：{head} = {value}。{suffix}"
+        text = str(args.get("text") or "").strip()
+        return f"要记成：「{text}」。{suffix}"
+
+    def _run_tool_by_name(self, name, args):
+        execute = self._tools_by_name.get(name)
+        if execute is None:
+            return f"错误：未知工具 {name}"
+        return execute(**(args or {}))
 
     @staticmethod
     def _tool_metadata(used_tools):
