@@ -378,6 +378,14 @@ html, body {
             <button id="push-test" class="small-btn hidden" type="button">发测试通知</button>
           </div>
         </div>
+
+        <div class="section-title">聊天记录</div>
+        <div class="card">
+          <div class="muted">只保存在这台设备上，最多保留最近 120 条；语音回复的播放按钮不会保留。</div>
+          <div class="row-actions">
+            <button id="clear-history" class="small-btn danger" type="button">清空聊天记录</button>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -584,10 +592,39 @@ html, body {
     return html.replace(/(<br>)+$/, '');
   }
 
-  function addMsg(text, type, audio) {
+  // ---- 聊天记录（只存在本机，最多 120 条）----
+  var CHAT_HISTORY_KEY = 'hst_chat_history';
+  var CHAT_HISTORY_LIMIT = 120;
+  var WELCOME_TEXT = '你好，我是小马，家里的记忆助手。按住说话，或者打字跟我聊。先试试这样用我：告诉我"酸奶8月5号过期"，我会记住；之后你随时问我"酸奶还有几天过期"，我就能答上来啦。';
+  var chatHistory = loadChatHistory();
+
+  function loadChatHistory() {
+    try {
+      var raw = localStorage.getItem(CHAT_HISTORY_KEY);
+      var list = raw ? JSON.parse(raw) : [];
+      return Object.prototype.toString.call(list) === '[object Array]' ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveChatHistory() {
+    try {
+      localStorage.setItem(
+        CHAT_HISTORY_KEY,
+        JSON.stringify(chatHistory.slice(-CHAT_HISTORY_LIMIT))
+      );
+    } catch (e) {
+      // 存储满或被禁用：聊天照常，只是不保留
+    }
+  }
+
+  function addMsg(text, type, audio, opts) {
     // type: 'user' | 'bot' | 'error'
+    // opts: { persist: false } 临时消息不入库；{ reminder: true } 标记为通知原文
+    opts = opts || {};
     var row = document.createElement('div');
-    row.className = 'msg-row ' + type;
+    row.className = 'msg-row ' + type + (opts.reminder ? ' reminder' : '');
 
     var bubble = document.createElement('div');
     bubble.className = 'bubble';
@@ -609,6 +646,24 @@ html, body {
     row.appendChild(bubble);
     msgBox.appendChild(row);
     scrollBottom();
+
+    // 报错是临时提示（麦克风授权失败等），不入库
+    if (type !== 'error' && opts.persist !== false) {
+      chatHistory.push({
+        text: text,
+        type: type,
+        reminder: !!opts.reminder,
+        at: Date.now()
+      });
+      if (chatHistory.length > CHAT_HISTORY_LIMIT) {
+        chatHistory = chatHistory.slice(-CHAT_HISTORY_LIMIT);
+      }
+      saveChatHistory();
+    }
+  }
+
+  function renderWelcome() {
+    addMsg(WELCOME_TEXT, 'bot', null, { persist: false });
   }
 
   function addTyping() {
@@ -969,9 +1024,7 @@ html, body {
       if (!force && payload.at && payload.at === lastReminderAt) return;
       lastReminderAt = payload.at || Date.now();
       switchTab('chat');
-      addMsg(payload.body, 'bot');
-      var row = msgBox.lastElementChild;
-      if (row) row.classList.add('reminder');
+      addMsg(payload.body, 'bot', null, { reminder: true });
     }).catch(function() { /* 没有存过通知就什么都不做 */ });
   }
 
@@ -1089,6 +1142,15 @@ html, body {
     }).then(function() {
       pushTest.disabled = false;
     });
+  });
+
+  var clearHistoryBtn = document.getElementById('clear-history');
+  clearHistoryBtn.addEventListener('click', function() {
+    if (!confirm('清空后无法恢复，确定吗？')) return;
+    chatHistory = [];
+    try { localStorage.removeItem(CHAT_HISTORY_KEY); } catch (e) { /* 忽略 */ }
+    msgBox.innerHTML = '';
+    renderWelcome();
   });
 
   tabs.forEach(function(btn) {
@@ -1381,8 +1443,17 @@ html, body {
     });
   })();
 
-  // ---- welcome message ----
-  addMsg('你好，我是小马，家里的记忆助手。按住说话，或者打字跟我聊。先试试这样用我：告诉我"酸奶8月5号过期"，我会记住；之后你随时问我"酸奶还有几天过期"，我就能答上来啦。', 'bot');
+  // ---- 历史记录 / 欢迎语 ----
+  if (chatHistory.length) {
+    chatHistory.forEach(function(message) {
+      addMsg(message.text, message.type || 'bot', null, {
+        persist: false,
+        reminder: !!message.reminder
+      });
+    });
+  } else {
+    renderWelcome();
+  }
 
   // ---- 通知点进来：显示通知原文 ----
   if (/[?&]reminder=1(&|$)/.test(window.location.search)) {
