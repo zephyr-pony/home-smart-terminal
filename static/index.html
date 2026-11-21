@@ -111,6 +111,11 @@ html, body {
   background: rgba(232,93,93,.15); color: var(--danger);
   font-size: 14px; max-width: 90%; text-align: center;
 }
+/* 从系统通知点进来时的那条提醒，和普通对话区分开 */
+.msg-row.reminder .bubble {
+  border: 1px solid var(--accent);
+  background: rgba(91,156,245,.12);
+}
 
 /* 轻量 Markdown 渲染后的元素 */
 .bubble ul { margin: 4px 0; padding-left: 18px; }
@@ -948,6 +953,28 @@ html, body {
     }).catch(function() {});
   }
 
+  // ---- 点系统通知进来：把通知原文显示在聊天里 ----
+  var lastReminderAt = 0;
+
+  function showLastReminder(force) {
+    return pushIdbOpen().then(function(db) {
+      return new Promise(function(resolve, reject) {
+        var tx = db.transaction('kv', 'readonly');
+        var req = tx.objectStore('kv').get('last');
+        req.onsuccess = function() { resolve(req.result); };
+        req.onerror = function() { reject(req.error); };
+      });
+    }).then(function(payload) {
+      if (!payload || !payload.body) return;
+      if (!force && payload.at && payload.at === lastReminderAt) return;
+      lastReminderAt = payload.at || Date.now();
+      switchTab('chat');
+      addMsg(payload.body, 'bot');
+      var row = msgBox.lastElementChild;
+      if (row) row.classList.add('reminder');
+    }).catch(function() { /* 没有存过通知就什么都不做 */ });
+  }
+
   function showPushButtons(canEnable, subscribed) {
     pushEnable.classList.toggle('hidden', !canEnable);
     pushDisable.classList.toggle('hidden', !subscribed);
@@ -1356,6 +1383,21 @@ html, body {
 
   // ---- welcome message ----
   addMsg('你好，我是小马，家里的记忆助手。按住说话，或者打字跟我聊。先试试这样用我：告诉我"酸奶8月5号过期"，我会记住；之后你随时问我"酸奶还有几天过期"，我就能答上来啦。', 'bot');
+
+  // ---- 通知点进来：显示通知原文 ----
+  if (/[?&]reminder=1(&|$)/.test(window.location.search)) {
+    showLastReminder(true).then(function() {
+      if (window.history && history.replaceState) {
+        history.replaceState(null, '', window.location.pathname);
+      }
+    });
+  }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'open-reminder') showLastReminder(true);
+    });
+  }
 
   // ---- text send ----
   var busy = false;

@@ -170,7 +170,8 @@ pytest tests -q
 - `push_sender.py` 是唯一 import `pywebpush` 的地方；其它模块只处理 `PushResult`。
 - 404/410 视为订阅作废，立即删除；其它失败累加 `fail_count`，到 `PUSH_MAX_FAILURES` 停用但保留记录。
 - `VAPID_PRIVATE_KEY` 只在 `.env`，不进 `CONFIG_FIELDS`、不进 `/api/config` 响应。
-- 推送正文只发文字，不合成语音；点击通知打开首页。
+- 推送正文只发文字，不合成语音；点通知打开应用并**在聊天里显示这条提醒原文**（不是只停主页）：
+  SW 发通知时把正文写进 IndexedDB `last`，点击时若页面已开着就 `postMessage`，否则用 `/?reminder=1` 打开，页面读 IndexedDB 渲染并清掉查询参数。
 - `pushsubscriptionchange` 由 SW 自己处理：需要公钥和 Token，页面在开启通知时写进 IndexedDB（库名 `xiaoma-push`），关闭通知时删除。改存储结构要同时改 `static/index.html` 和 `static/sw.js` 两处。
 
 ### Web 控制台

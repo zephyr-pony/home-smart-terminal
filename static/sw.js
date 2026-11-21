@@ -105,6 +105,17 @@ function pushDbGet(key) {
   });
 }
 
+function pushDbSet(key, value) {
+  return pushDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      var tx = db.transaction(PUSH_STORE, 'readwrite');
+      tx.objectStore(PUSH_STORE).put(value, key);
+      tx.oncomplete = function() { resolve(true); };
+      tx.onerror = function() { reject(tx.error); };
+    });
+  });
+}
+
 function pushDbDelete(key) {
   return pushDb().then(function(db) {
     return new Promise(function(resolve, reject) {
@@ -183,7 +194,16 @@ self.addEventListener('push', function(event) {
     tag: payload.tag || 'xiaoma-reminder',
     renotify: true
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  // 正文存一份到 IndexedDB：点通知时页面靠它还原提醒内容
+  event.waitUntil(Promise.all([
+    pushDbSet('last', {
+      title: title,
+      body: options.body,
+      tag: options.tag,
+      at: Date.now()
+    }).catch(function() { /* 存不了也能弹通知，只是点开看不到原文 */ }),
+    self.registration.showNotification(title, options)
+  ]));
 });
 
 self.addEventListener('notificationclick', function(event) {
@@ -192,9 +212,14 @@ self.addEventListener('notificationclick', function(event) {
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(list) {
       for (var i = 0; i < list.length; i++) {
-        if (list[i].url.indexOf(self.location.origin) === 0) return list[i].focus();
+        if (list[i].url.indexOf(self.location.origin) === 0) {
+          // 页面已经开着：直接把提醒内容交给它渲染，不再新开窗口
+          list[i].postMessage({ type: 'open-reminder' });
+          return list[i].focus();
+        }
       }
-      return self.clients.openWindow(target);
+      var sep = target.indexOf('?') === -1 ? '?' : '&';
+      return self.clients.openWindow(target + sep + 'reminder=1');
     })
   );
 });
