@@ -166,10 +166,12 @@ html, body {
 #views { flex: 1; min-height: 0; display: flex; }
 .view { display: none; flex: 1; min-height: 0; }
 .view.active { display: flex; flex-direction: column; }
-.view-inner { flex: 1; overflow-y: auto; padding: 16px; }
+.view-inner { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px; }
 .view-title { font-size: 18px; margin-bottom: 14px; }
 .section-title { font-size: 14px; color: var(--text-secondary); margin: 18px 0 8px; }
 .muted { color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+/* 绝对路径、模型名这类长串没有空格，必须允许任意位置断行，否则整页横向滚动 */
+.muted, .field label { overflow-wrap: anywhere; }
 .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .card {
   background: var(--surface); border: 1px solid var(--border);
@@ -212,16 +214,22 @@ html, body {
   cursor: pointer; margin-top: 4px;
 }
 .hidden { display: none !important; }
-.data-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+.data-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .data-toolbar input {
-  flex: 1; min-width: 0; height: 34px; padding: 0 10px;
+  flex: 1 1 160px; min-width: 0; height: 34px; padding: 0 10px;
   background: var(--input-bg); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .data-toolbar select {
-  height: 34px; padding: 0 8px;
+  flex: 0 1 auto; min-width: 0; max-width: 130px; height: 34px; padding: 0 8px;
   background: var(--input-bg); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.data-toolbar .small-btn { flex: 0 0 auto; height: 34px; }
+/* 窄屏：搜索框单独占一行，筛选控件平分下一行，避免溢出屏幕 */
+@media (max-width: 560px) {
+  .data-toolbar input { flex: 1 1 100%; }
+  .data-toolbar select { flex: 1 1 0; max-width: none; }
 }
 .pager {
   display: flex; align-items: center; justify-content: space-between;
@@ -819,7 +827,7 @@ html, body {
 
   var DATA_SORT_OPTIONS = {
     memories: [['newest', '最新优先'], ['oldest', '最早优先']],
-    tasks: [['due', '按到期时间'], ['created', '按创建时间'], ['title', '按标题']]
+    tasks: [['due', '到期时间'], ['created', '创建时间'], ['title', '标题']]
   };
 
   var EMPTY_HINTS = {
@@ -1025,13 +1033,21 @@ html, body {
   function loadConfig() {
     apiFetch('/api/config').then(function(d) {
       var llm = d.llm || {};
+      var dbPaths = d.db_paths || {};
+      var dbLines = Object.keys(dbPaths).map(function(key) {
+        var full = String(dbPaths[key]);
+        // 完整路径太长，只留最后两段（如 …\data\memory.db），完整值放 title
+        var parts = full.split(/[\\/]/).filter(Boolean);
+        var shown = parts.length > 2 ? '…\\' + parts.slice(-2).join('\\') : full;
+        return '<span title="' + esc(full) + '">' + esc(key) + '：' + esc(shown) + '</span>';
+      }).join('<br>');
       settingsSummary.innerHTML =
         '模型：' + esc(llm.model || '未配置') +
         '（' + (llm.configured ? '已配置' : '未配置') + '）<br>' +
         'API Token：' + (d.api_token_enabled ? '已启用' : '未启用') + '<br>' +
         '推送通知：' + ((d.push && d.push.enabled) ? '已配置' : '未配置') +
-        '（订阅 ' + ((d.push && d.push.subscriptions) || 0) + ' 台）<br>' +
-        '数据库：' + esc(JSON.stringify(d.db_paths || {}));
+        '（订阅 ' + ((d.push && d.push.subscriptions) || 0) + ' 台）' +
+        (dbLines ? '<br>数据库：<br>' + dbLines : '');
       var values = d.values || {};
       settingsForm.innerHTML = CONFIG_FIELDS.map(function(field) {
         return '<div class="field"><label>' + esc(field[1]) + '（' + esc(field[0]) +
