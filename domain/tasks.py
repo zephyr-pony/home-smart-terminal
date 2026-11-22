@@ -145,20 +145,29 @@ class Tasks:
             self.conn.commit()
             return cur.rowcount > 0
 
-    def postpone(self, task_id, days=1, now=None):
-        """把任务顺延几天，返回更新后的任务；任务不存在或已结束返回 None。
+    def postpone(self, task_id, days=1, due_at=None, now=None):
+        """把任务顺延或改到指定时间，返回更新后的任务。
 
-        延期后必须能重新提醒：不清 reminded_at 会被冷却窗口挡掉，
-        status 也要退回 pending（reminded 只是「提醒过一次」的标记）。
+        两种语义要分开：
+        - 给了 due_at 就按绝对时间改（用户说「明天再说」「下周一」）
+        - 没给才按「当前到期日 + days」顺延（用户说「再往后推三天」）
+
+        两种情况都要清 reminded_at 并把状态退回 pending，否则会被冷却窗口挡住。
         """
-        if days is None:
-            days = 1
-        try:
-            days = int(days)
-        except (TypeError, ValueError):
-            raise ValueError("顺延天数必须是整数")
-        if days <= 0:
-            raise ValueError("顺延天数必须是正整数")
+        new_due = None
+        if due_at:
+            new_due = _parse_due(due_at)
+            if new_due is None:
+                raise ValueError("时间格式无效")
+        else:
+            if days is None:
+                days = 1
+            try:
+                days = int(days)
+            except (TypeError, ValueError):
+                raise ValueError("顺延天数必须是整数")
+            if days <= 0:
+                raise ValueError("顺延天数必须是正整数")
 
         now = now or datetime.now()
         with self._lock:
@@ -172,11 +181,12 @@ class Tasks:
                 return None
             if row[4] in ("done", "cancelled"):
                 return None
-            try:
-                base = datetime.fromisoformat(row[3]) if row[3] else now
-            except (TypeError, ValueError):
-                base = now
-            new_due = base + timedelta(days=days)
+            if new_due is None:
+                try:
+                    base = datetime.fromisoformat(row[3]) if row[3] else now
+                except (TypeError, ValueError):
+                    base = now
+                new_due = base + timedelta(days=days)
             self.conn.execute(
                 "UPDATE tasks SET due_at=?, reminded_at=NULL, status='pending' "
                 "WHERE id=?",

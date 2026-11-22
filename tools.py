@@ -342,6 +342,22 @@ def get_task_tools(tasks, proposals=None):
             return f"任务 #{task_id} 已取消"
         return f"没有找到可取消的任务 #{task_id}"
 
+    def postpone_task(task_id, days=None, due_at=None):
+        task_id = _clamp_int(task_id, 0, 0, 10 ** 9)
+        if not task_id:
+            return "任务 ID 无效"
+        try:
+            if due_at:
+                task = tasks.postpone(task_id, due_at=due_at)
+            else:
+                days = _clamp_int(1 if days is None else days, 1, 1, 180)
+                task = tasks.postpone(task_id, days=days)
+        except ValueError as exc:
+            return f"无法延期：{exc}"
+        if task is None:
+            return f"没有找到可延期的任务 #{task_id}"
+        return "任务 #%d 已改到 %s" % (task_id, task.get("due_at") or "未定")
+
     return [
         _build(
             name="task_add",
@@ -418,6 +434,27 @@ def get_task_tools(tasks, proposals=None):
             },
             required=["task_id"],
             execute=cancel_task,
+        ),
+        _build(
+            name="task_postpone",
+            description=(
+                "把任务往后顺延。用户说'这个提醒明天再说''三天后再提醒我'"
+                "'下周一再提醒'时调用，先用 task_list 拿到 task_id。"
+                "days 可以省略：系统会按用户原话换算成天数。"
+            ),
+            properties={
+                "task_id": {"type": "integer", "description": "任务 ID"},
+                "due_at": {
+                    "type": "string",
+                    "description": "改到哪一天，YYYY-MM-DD（可省略，系统按原话换算）",
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "没有具体日期时顺延几天（可省略，默认 1）",
+                },
+            },
+            required=["task_id"],
+            execute=postpone_task,
         ),
     ]
 

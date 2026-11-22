@@ -38,10 +38,7 @@ class Items:
     # ---------- 写操作 ----------
 
     @staticmethod
-    def _validate(name, expiry_date):
-        name = str(name or "").strip()
-        if not name:
-            raise ValueError("物品名称不能为空")
+    def _validate_expiry(expiry_date):
         if expiry_date == "":
             expiry_date = None
         if expiry_date is not None:
@@ -50,7 +47,14 @@ class Items:
             except (TypeError, ValueError):
                 raise ValueError("到期日必须是 YYYY-MM-DD 格式的有效日期")
             expiry_date = str(expiry_date)
-        return name, expiry_date
+        return expiry_date
+
+    @classmethod
+    def _validate(cls, name, expiry_date):
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("物品名称不能为空")
+        return name, cls._validate_expiry(expiry_date)
 
     def add(self, name, expiry_date=None):
         """添加一个物品。expiry_date: 'YYYY-MM-DD' 或 None。"""
@@ -64,6 +68,39 @@ class Items:
             self.conn.commit()
             rid = cur.lastrowid
         return {"id": rid, "name": name, "expiry_date": expiry_date, "status": "active"}
+
+    def find_active_by_name(self, name):
+        """精确查同名且未结束的物品，用于同名合并（避免清单里出现两条牛奶）。"""
+        name = str(name or "").strip()
+        if not name:
+            return None
+        with self._lock:
+            self._sync_expired_status_locked()
+            row = self.conn.execute(
+                "SELECT id, name, expiry_date, status, created_at FROM items "
+                "WHERE name=? AND status IN ('active', 'reminded') "
+                "ORDER BY id DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def update_expiry(self, item_id, expiry_date):
+        """改到期日；清掉提醒计时并把状态退回 active，让新日期能再次提醒。"""
+        expiry_date = self._validate_expiry(expiry_date)
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE items SET expiry_date=?, status='active', reminded_at=NULL "
+                "WHERE id=?",
+                (expiry_date, item_id),
+            )
+            self.conn.commit()
+            if cur.rowcount <= 0:
+                return None
+            row = self.conn.execute(
+                "SELECT id, name, expiry_date, status, created_at FROM items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+        return self._row_to_dict(row)
 
     def delete(self, name):
         """按名称模糊匹配并删除全部命中物品。"""

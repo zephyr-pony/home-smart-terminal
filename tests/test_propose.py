@@ -93,3 +93,65 @@ def test_assistant_memory_tool_uses_proposal_service():
     assert tool["execute"]("明天交电费", "11月6日交电费") == "已存储"
     assert tool["execute"]("明天交电费", "11月6日交电费") == "已存在相同记忆，未重复写入"
     assert assistant.memory.count() == 1
+
+
+def test_item_add_merges_same_name_with_new_expiry():
+    """同名物品再报一次日期应该更新，而不是多出一条。"""
+    service, _ = make_service()
+    service.add_item("牛奶", "2026-11-25")
+    message = service.add_item("牛奶", "2026-11-28")
+
+    rows = service.items.list_all()
+    assert len(rows) == 1
+    assert rows[0]["expiry_date"] == "2026-11-28"
+    assert "已更新" in message
+
+
+def test_item_add_same_name_without_date_keeps_old():
+    service, _ = make_service()
+    service.add_item("牛奶", "2026-11-25")
+    message = service.add_item("牛奶")
+
+    rows = service.items.list_all()
+    assert len(rows) == 1
+    assert rows[0]["expiry_date"] == "2026-11-25"
+    assert "未重复添加" in message
+
+
+def test_item_add_same_name_same_date_is_noop():
+    service, _ = make_service()
+    service.add_item("牛奶", "2026-11-25")
+    message = service.add_item("牛奶", "2026-11-25")
+
+    assert len(service.items.list_all()) == 1
+    assert "未重复添加" in message
+
+
+def test_item_add_different_names_stay_separate():
+    service, _ = make_service()
+    service.add_item("牛奶", "2026-11-25")
+    service.add_item("酸奶", "2026-11-25")
+
+    assert len(service.items.list_all()) == 2
+
+
+def test_item_add_after_expired_creates_new_row():
+    """已经过期的旧记录不该被新买的同名物品改掉，保留历史。"""
+    service, _ = make_service()
+    service.items.add("牛奶", "2026-01-01")   # 早已过期
+    service.add_item("牛奶", "2026-12-01")
+
+    rows = service.items.list_all()
+    assert len(rows) == 2
+    active = [r for r in rows if r["status"] != "expired"]
+    assert len(active) == 1
+    assert active[0]["expiry_date"] == "2026-12-01"
+
+
+def test_item_merge_records_audit_status():
+    service, store = make_service()
+    service.add_item("牛奶", "2026-11-25")
+    service.add_item("牛奶", "2026-11-28")
+
+    statuses = [p.get("status") for p in store.list_proposals()]
+    assert "merged" in statuses

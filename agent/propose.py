@@ -37,6 +37,14 @@ class ProposalService:
         if not name:
             return "无法添加物品：物品名称不能为空"
 
+        # 同名物品合并：不然一周里说两次「牛奶下周三过期」就会变成两条、提醒两次
+        existing = None
+        find_active = getattr(self.items, "find_active_by_name", None)
+        if find_active is not None:
+            existing = find_active(name)
+        if existing is not None:
+            return self._merge_item(existing, expiry_date)
+
         payload = {"name": name, "expiry_date": expiry_date or None}
         key = self._key("item_add", payload)
         duplicate = self._recent_duplicate(key)
@@ -56,6 +64,39 @@ class ProposalService:
             f"到期日 {item['expiry_date'] or '未知'}"
         )
         self._record("item_add", payload, "committed", message, key)
+        return message
+
+    def _merge_item(self, existing, expiry_date):
+        """同名物品已存在：只在有新日期时更新，避免清单里出现重复条目。"""
+        name = existing.get("name", "")
+        old_expiry = existing.get("expiry_date")
+        if expiry_date in (None, ""):
+            return "已存在物品：%s，到期日 %s，未重复添加" % (name, old_expiry or "未知")
+
+        try:
+            item = self.items.update_expiry(existing["id"], expiry_date)
+        except ValueError as exc:
+            self._record(
+                "item_add",
+                {"name": name, "expiry_date": expiry_date},
+                "rejected",
+                str(exc),
+            )
+            return f"无法更新物品：{exc}"
+        if item is None:
+            return f"没有找到物品：{name}"
+
+        if old_expiry == item["expiry_date"]:
+            return "已存在物品：%s，到期日 %s，未重复添加" % (name, item["expiry_date"])
+        message = "已更新物品：%s，到期日 %s → %s" % (
+            name, old_expiry or "未知", item["expiry_date"] or "未知",
+        )
+        self._record(
+            "item_add",
+            {"name": name, "expiry_date": item["expiry_date"]},
+            "merged",
+            message,
+        )
         return message
 
     def add_task(self, title, due_at=None, type="custom"):

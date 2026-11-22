@@ -11,13 +11,14 @@
 贸然丢掉会把正常需求也拦掉。
 """
 import re
+from datetime import date, datetime
 
-from agent.dates import has_date_hint, resolve_due
+from agent.dates import has_date_hint, parse_date_text, resolve_due
 
 # 会落库的写工具；用来判断「用户要写，但没有真的写」
 WRITE_TOOLS = (
     "memory_store", "item_add", "task_add", "fact_store",
-    "task_update", "task_cancel", "task_complete",
+    "task_update", "task_cancel", "task_complete", "task_postpone",
 )
 
 # 中英文混排时，中文按二元组、英文数字按整词比较
@@ -105,6 +106,24 @@ def guard_write_args(name, args, user_text, today=None):
             cleaned["due_at"] = ground_due(cleaned.get("due_at"), text, today)
         return cleaned, None
 
+    if name == "task_postpone":
+        # 有具体说法就按绝对日期改（「明天」「下周一」是目标日，不是「在到期日上加几天」）
+        today_date = today or date.today()
+        if isinstance(today_date, datetime):
+            today_date = today_date.date()
+        parsed = parse_date_text(text, today_date)
+        if parsed:
+            due = parsed["date"]
+            if parsed.get("time"):
+                due = "%sT%s" % (due, parsed["time"])
+            cleaned["due_at"] = due
+            cleaned.pop("days", None)
+        elif cleaned.get("due_at"):
+            cleaned.pop("due_at", None)
+        elif cleaned.get("days") is None:
+            cleaned["days"] = 1
+        return cleaned, None
+
     return cleaned, None
 
 
@@ -142,7 +161,7 @@ _QUESTION_RE = re.compile(
 # 模型「已经做完」的口头表述
 _CLAIM_RE = re.compile(
     r"已记|记好了|记下了|记下来|已经记|已添加|已保存|已设置|已经设置"
-    r"|已加|已存|记好啦|搞定|已改|改好了|已更新|已取消|已经取消"
+    r"|已加|已存|记好啦|搞定|已改|改好了|已更新|已取消|已经取消|已延期|延后了"
 )
 
 

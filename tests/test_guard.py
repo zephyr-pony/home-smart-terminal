@@ -1,6 +1,6 @@
 """写工具参数护栏测试：凭空补日期、凭空建任务都要被挡住。"""
 import json
-from datetime import date
+from datetime import date, timedelta
 
 from agent.clarify import Clarifier
 from agent.guard import guard_write_args, is_grounded
@@ -170,3 +170,57 @@ def test_task_update_without_due_keeps_other_fields():
     )
     assert blocked is None
     assert "due_at" not in args
+
+def test_postpone_target_date_from_phrase():
+    """「明天」「三天后」「下周一」是目标日期，不是「在到期日上加几天」。"""
+    args, blocked = guard_write_args(
+        "task_postpone", {"task_id": 1}, "这个提醒明天再说", TODAY
+    )
+    assert blocked is None
+    assert args["due_at"] == "2026-11-22"
+
+    args, _ = guard_write_args(
+        "task_postpone", {"task_id": 1}, "三天后再提醒我", TODAY
+    )
+    assert args["due_at"] == "2026-11-24"
+
+    # 2026-11-21 是周六，下周一 = 11-23
+    args, _ = guard_write_args(
+        "task_postpone", {"task_id": 1}, "下周一再提醒我", TODAY
+    )
+    assert args["due_at"] == "2026-11-23"
+
+
+def test_postpone_without_phrase_defaults_to_one():
+    args, blocked = guard_write_args(
+        "task_postpone", {"task_id": 1}, "这个先往后放放", TODAY
+    )
+    assert blocked is None
+    assert args["days"] == 1
+
+
+def test_postpone_ignores_model_days_when_phrase_present():
+    """模型自己算的天数不如原话可靠，有原话时以原话为准。"""
+    args, _ = guard_write_args(
+        "task_postpone", {"task_id": 1, "days": 30}, "明天再说", TODAY
+    )
+    assert args["due_at"] == "2026-11-22"
+    assert "days" not in args
+
+def test_agent_postpone_uses_phrase_not_model_days():
+    """模型传了 days=30，但用户说的是「明天再说」，实际应只顺延一天。"""
+    llm = _scripted([
+        _tool_call("task_list", {}),
+        _tool_call("task_postpone", {"task_id": 1, "days": 30}),
+        _stop("好的，明天再说"),
+    ])
+    assistant = _assistant(llm)
+    assistant.tasks.add("交电费", (date.today() + timedelta(days=1)).isoformat(), "bill")
+
+    assistant.process_text("这个提醒明天再说", client_id="c1")
+
+    task = assistant.tasks.list_all()[0]
+    # 用户说的是「明天」，就该改成明天，而不是「原到期日再 +1」
+    expected = (date.today() + timedelta(days=1)).isoformat()
+    assert task["due_at"].startswith(expected)
+    assert task["status"] == "pending"

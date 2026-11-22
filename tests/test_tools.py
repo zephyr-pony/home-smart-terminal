@@ -92,3 +92,39 @@ def test_task_tools_registered():
     names = [t["schema"]["function"]["name"] for t in get_task_tools(Tasks(":memory:"))]
     assert "task_update" in names
     assert "task_cancel" in names
+
+def test_task_postpone_tool():
+    tasks = Tasks(":memory:")
+    task = tasks.add("交电费", "2026-11-22", "bill")
+    tool = _task_tool(tasks, "task_postpone")
+
+    output = tool["execute"](task_id=task["id"], days=3)
+
+    updated = tasks.list_all()[0]
+    assert updated["due_at"].startswith("2026-11-25")
+    assert updated["status"] == "pending"
+    assert "已改到" in output
+
+
+def test_task_postpone_defaults_to_one_day():
+    tasks = Tasks(":memory:")
+    task = tasks.add("交电费", "2026-11-22", "bill")
+    tool = _task_tool(tasks, "task_postpone")
+
+    output = tool["execute"](task_id=task["id"])
+
+    assert tasks.list_all()[0]["due_at"].startswith("2026-11-23")
+    assert "已改到" in output
+
+
+def test_task_postpone_missing_task():
+    tasks = Tasks(":memory:")
+    tool = _task_tool(tasks, "task_postpone")
+    assert "没有找到" in tool["execute"](task_id=999, days=1)
+
+
+def test_task_postpone_registered():
+    from tools import get_task_tools
+
+    names = [t["schema"]["function"]["name"] for t in get_task_tools(Tasks(":memory:"))]
+    assert "task_postpone" in names

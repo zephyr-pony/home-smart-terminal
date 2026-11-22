@@ -140,8 +140,10 @@ pytest tests -q
 - `memory_store` / `item_add` / `task_add` / `fact_store` 不直接写库，统一走 `ProposalService`。
 - 提案记录在 `proposals` 表，带 `idempotency_key`；`PROPOSAL_DEDUPE_SECONDS` 内相同内容自动去重。
 - 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
+- 同名物品在 `ProposalService.add_item` 里合并：带新日期就更新到期日（清 `reminded_at`、状态退回 `active`），不带日期就保留原值，避免清单出现两条同名物品、提醒两次。
 - 删除类动作（`memory_delete` / `item_delete`）不直接执行，先经 `ConfirmationManager` 请求确认。
 - 写工具参数在 agent loop 里先过 `agent/guard.py`：日期一律以 `agent/dates.py` 从用户原话解析的结果为准，句子里没有日期线索就把日期留空；`task_add` 的标题在原话里找不到依据时整次调用不执行。
+- `task_postpone` 的日期也由护栏换算：用户说「明天」「下周一」是**目标日期**（绝对改期），只有说不出具体日期才退化成「原到期日 + N 天」。
 - 护栏只负责落库正确，模型仍可能口播旧值；`correction_note` 会把校正结果附在工具返回里让它改口。
 - 本地小模型开 `CONFIRM_WRITE_ACTIONS=1`（弱模型模式）：四个写工具执行前先复述参数等用户确认，确认后才真正落库；同时拦下「没调工具却回已记好」的假确认。代价是每次写多一句话。
 - 待确认动作存在 `pending_actions`（`missing_slot=confirm`），用户回复确认/取消后才执行。

@@ -58,7 +58,7 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 - 家庭日常事实/闲聊记录（如"今天买了个新鼠标""冰箱里还有三个鸡蛋"）→ memory_store（summary 用绝对日期）
 - 账单/日程/提醒（如"明天交电费""下周三开会""提醒我周五取快递"）→ task_add（type=bill/schedule/custom，due_at 转 YYYY-MM-DD）
 - 结构化属性（户号、地址、品牌、型号、偏好）→ fact_store；查询用 fact_search
-- 任务查询/完成/修改（"我有哪些提醒""电费交了""取快递改到明天""这个提醒不用了"）→ task_list / task_complete / task_update / task_cancel
+- 任务查询/完成/修改/延期（"我有哪些提醒""电费交了""取快递改到明天""这个提醒不用了""明天再说"）→ task_list / task_complete / task_update / task_cancel / task_postpone
 - 家庭事务查询（"酸奶还有几天过期""冰箱里有什么""我有哪些提醒"）→ family_search 一次查完物品/记忆/待办，不要分别调用 item_search / memory_search / task_list
 - 会过期的物品（"酸奶8月5号过期""鸡蛋还剩3个"）→ item_add 记到物品清单（expiry_date 转 YYYY-MM-DD）
 - 物品管理（"删掉酸奶""看看有哪些东西"）→ item_delete / item_list
@@ -363,7 +363,9 @@ class Assistant:
         # 类型映射：写入→record，查询→query，否则 chat
         if any(t in used_tools for t in ("memory_store", "task_add", "fact_store")):
             rtype = "record"
-        elif any(t in used_tools for t in ("task_complete", "task_update", "task_cancel")):
+        elif any(t in used_tools for t in (
+            "task_complete", "task_update", "task_cancel", "task_postpone"
+        )):
             rtype = "chat"
         elif any(t in used_tools for t in (
             "memory_search", "memory_list", "task_list", "fact_search", "fact_list"
@@ -439,6 +441,7 @@ class Assistant:
             "task_complete": ("tasks", "complete"),
             "task_update": ("tasks", "update"),
             "task_cancel": ("tasks", "cancel"),
+            "task_postpone": ("tasks", "postpone"),
             "fact_store": ("facts", "store"),
             "fact_search": ("facts", "search"),
             "fact_list": ("facts", "list"),
@@ -455,6 +458,8 @@ class Assistant:
             return domain, "update"
         if "task_cancel" in used_tools:
             return domain, "cancel"
+        if "task_postpone" in used_tools:
+            return domain, "postpone"
         return domain, business[0][1]
 
     def close(self):
