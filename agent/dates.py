@@ -44,7 +44,8 @@ _NEXT_MONTH_DAY_RE = re.compile(r"下\s*个?\s*月\s*([%s]{1,3})\s*[日号]" % _
 _DATE_HINT_RE = re.compile(
     r"\d{4}\s*年|\d{1,2}\s*月\s*\d{1,2}\s*[日号]|周[一二三四五六日天]|星期[一二三四五六日天]"
     r"|礼拜[一二三四五六日天]|今天|今日|明天|明日|后天|昨天|前天"
-    r"|[%s]{1,3}\s*天\s*(?:以后|之后|后)|下\s*个?\s*月|月[初中底]" % _NUM
+    r"|[%s]{1,3}\s*天\s*(?:以后|之后|后)|下\s*个?\s*月|月[初中底]"
+    r"|年底|年初|年末|年中|周末|下周|本周|这周|过几天|这两天|前几天|最近" % _NUM
 )
 
 
@@ -95,6 +96,14 @@ def _parse_absolute(text, today):
 
 
 def _parse_week(text, today):
+    # 「周末」按最近的周六算
+    if "周末" in text:
+        monday = today - timedelta(days=today.weekday())
+        target = monday + timedelta(days=5)
+        if target < today:
+            target += timedelta(days=7)
+        return target
+
     match = _WEEK_RE.search(text)
     if not match:
         return None

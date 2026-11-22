@@ -1,5 +1,6 @@
 """弱模型模式：写操作先复述参数、等确认后再落库。"""
 import json
+from datetime import date, timedelta
 
 from agent.clarify import Clarifier
 from assistant import Assistant
@@ -109,14 +110,15 @@ def test_task_add_confirmation_shows_time():
     ])
     assistant = make_assistant(llm)
     result = assistant.process_text("明天下午三点提醒我取快递", client_id="c1")
+    tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     assert result["type"] == "confirm"
     assert "取快递" in result["reply"]
-    assert "2026-11-22 15:00" in result["reply"]
+    assert "%s 15:00" % tomorrow in result["reply"]
 
     assistant.process_text("确认", client_id="c1")
     tasks = assistant.tasks.list_all()
     assert len(tasks) == 1
-    assert tasks[0]["due_at"].startswith("2026-11-22T15")
+    assert tasks[0]["due_at"].startswith("%sT15" % tomorrow)
 
 
 def test_switch_off_writes_directly():

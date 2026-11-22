@@ -73,3 +73,20 @@ def test_no_date_phrases():
 def test_date_hint_detects_unparsed_phrases():
     assert has_date_hint("牛奶下周三过期") is True
     assert has_date_hint("月底前交掉") is True
+
+
+def test_vague_phrases_are_not_wiped_by_guard():
+    """「年底」「过几天」解析不了，但必须被认成日期线索，别把模型给的日期抹掉。"""
+    from agent.guard import ground_expiry
+
+    for text in ("牛奶年底过期", "牛奶过几天过期", "牛奶下个月过期", "牛奶最近过期"):
+        assert has_date_hint(text) is True
+        assert ground_expiry("2026-12-31", text, TODAY) == "2026-12-31"
+    # 真没有任何日期线索时仍然留空
+    assert ground_expiry("2026-12-31", "冰箱里还有三个鸡蛋", TODAY) is None
+
+
+def test_weekend_phrase():
+    # 2026-11-21 是周六，「周末」就是当天；2026-11-22 是周日，顺延到下周六
+    assert _date("周末大扫除") == "2026-11-21"
+    assert _date("周末大扫除", date(2026, 11, 22)) == "2026-11-28"
