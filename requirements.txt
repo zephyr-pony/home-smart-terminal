@@ -15,5 +15,9 @@ fastapi==0.128.8
 uvicorn==0.39.0
 python-multipart==0.0.20
 
+# ---- 设备网关事件订阅（HA WebSocket）----
+# 之前是 funasr 带进来的间接依赖，现在 adapters/home_ws.py 直接 import，必须显式钉住
+aiohttp==3.13.5
+
 # ---- Web Push 提醒 ----
 pywebpush==2.1.2

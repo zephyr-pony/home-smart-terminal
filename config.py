@@ -98,6 +98,30 @@ WAKE_ACK_TEXT = _get("WAKE_ACK_TEXT", "我在")
 SESSION_CONTEXT_TURNS = _get_int("SESSION_CONTEXT_TURNS", 5)
 SESSION_CONTEXT_MAX_CHARS = _get_int("SESSION_CONTEXT_MAX_CHARS", 300)
 
+# ---- 智能家居（Home Assistant 当设备网关）----
+# HA 里装小米官方集成（Xiaomi Home），小马只跟 HA 的本地 REST 说话，
+# 不直接碰小米云，也不碰 miIO 协议。
+HOME_BASE_URL = _get("HOME_BASE_URL", "http://127.0.0.1:8123")
+# 长期访问令牌（HA 个人资料 → 安全 → 长期访问令牌）。留空则不注册设备工具。
+HOME_TOKEN = _get("HOME_TOKEN", "")
+HOME_TIMEOUT_SECONDS = _get_float("HOME_TIMEOUT_SECONDS", 5)
+# 小马认识哪些设备：逗号分隔，可写成 `entity_id=别名`。
+# MIoT 会把每个属性都变成一个实体（一台空调 60 多个），不做白名单根本没法读。
+# 留空则回退到自动过滤，效果很差，仅用于快速看一眼。
+HOME_DEVICES = _get("HOME_DEVICES", "")
+# 允许语音直接控制的设备：逗号分隔 entity_id，或 `light.` 这样的域前缀。
+# 留空 = 全部只读；门锁/燃气/热水器必须显式列出且每次确认。
+HOME_CONTROL_ALLOW = _get("HOME_CONTROL_ALLOW", "")
+# 设备主动提醒：滤芯余量跌破这个百分比就提醒；同一设备多久内不重复提醒
+HOME_FILTER_ALERT_PERCENT = _get_float("HOME_FILTER_ALERT_PERCENT", 10)
+HOME_ALERT_COOLDOWN_HOURS = _get_int("HOME_ALERT_COOLDOWN_HOURS", 24)
+# 盯哪些 event 实体（逗号分隔），如摄像头「有人出现了」。留空 = 不盯，
+# 因为移动侦测的触发频率按小时算，默认开会把客厅变成刷屏机器。
+HOME_WATCH_EVENTS = _get("HOME_WATCH_EVENTS", "")
+HOME_EVENT_COOLDOWN_SECONDS = _get_int("HOME_EVENT_COOLDOWN_SECONDS", 600)
+# 设备巡检间隔：门铃/有人停留这类事件等 60 秒就没意义了，单独跑短周期
+HOME_SCAN_SECONDS = _get_int("HOME_SCAN_SECONDS", 15)
+
 # ---- 到期提醒 ----
 REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"
 REMINDER_INTERVAL_SECONDS = _get_int("REMINDER_INTERVAL_SECONDS", 60)  # 后台扫描间隔

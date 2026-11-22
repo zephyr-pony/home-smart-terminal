@@ -75,6 +75,17 @@ class AgentStore:
             "CREATE INDEX IF NOT EXISTS idx_proposals_key "
             "ON proposals(idempotency_key, created_at)"
         )
+        # 设备提醒的去重状态：滤芯提醒过几次、摄像头事件看到过哪一条
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS home_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                last_value TEXT,
+                last_alert_at TEXT,
+                UNIQUE(kind, entity_id)
+            )
+        """)
 
     def _ensure_pending_columns(self):
         """兼容旧库：补上 action_type / payload 列。"""
@@ -320,6 +331,43 @@ class AgentStore:
             }
             for row in rows
         ]
+
+    # ---------- 设备提醒去重 ----------
+
+    def get_home_alert(self, kind, entity_id):
+        """取某条设备提醒的上次状态；没有返回 None。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT last_value, last_alert_at FROM home_alerts "
+                "WHERE kind=? AND entity_id=?",
+                (kind, entity_id),
+            ).fetchone()
+        if not row:
+            return None
+        return {"last_value": row[0], "last_alert_at": row[1]}
+
+    def record_home_alert(self, kind, entity_id, value, alerted_at=None):
+        """记下这次看到的值和提醒时间（upsert）。"""
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO home_alerts (kind, entity_id, last_value, last_alert_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(kind, entity_id) DO UPDATE SET "
+                "last_value=excluded.last_value, last_alert_at=excluded.last_alert_at",
+                (kind, entity_id, str(value), alerted_at),
+            )
+            self.conn.commit()
+
+    def touch_home_alert(self, kind, entity_id, value):
+        """只更新「看到的值」，不动提醒时间（用于新事件首次记录）。"""
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO home_alerts (kind, entity_id, last_value) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(kind, entity_id) DO UPDATE SET last_value=excluded.last_value",
+                (kind, entity_id, str(value)),
+            )
+            self.conn.commit()
 
     def close(self):
         with self._lock:

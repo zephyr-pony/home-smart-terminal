@@ -3,7 +3,7 @@ import json
 from datetime import date, timedelta
 
 from agent.clarify import Clarifier
-from agent.guard import guard_write_args, is_grounded
+from agent.guard import guard_false_claim, guard_write_args, is_grounded
 from assistant import Assistant
 from domain.facts import Facts
 from domain.store import AgentStore
@@ -224,3 +224,19 @@ def test_agent_postpone_uses_phrase_not_model_days():
     expected = (date.today() + timedelta(days=1)).isoformat()
     assert task["due_at"].startswith(expected)
     assert task["status"] == "pending"
+
+def test_guard_catches_fake_device_claim():
+    """没调 home_control 却回「已经把灯关了」：设备根本没动。"""
+    reply, replaced = guard_false_claim("把客厅灯关了", [], "已经把客厅灯关了")
+
+    assert replaced is True
+    assert "设备没动" in reply
+
+
+def test_guard_keeps_device_reply_when_tool_ran():
+    reply, replaced = guard_false_claim(
+        "把客厅灯关了", ["home_control"], "已经把客厅灯关了"
+    )
+
+    assert replaced is False
+    assert reply == "已经把客厅灯关了"

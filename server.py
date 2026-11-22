@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from config import (
     API_TOKEN,
+    HOME_SCAN_SECONDS,
     MAX_AUDIO_SECONDS,
     MAX_CLIENT_ID_CHARS,
     MAX_TEXT_CHARS,
@@ -49,6 +50,7 @@ from config import (
     VAPID_SUBJECT,
 )
 from assistant import Assistant
+from adapters.home_ws import run_event_stream
 from domain.push import PushStore
 from push_sender import WebPushSender
 from stt import STT
@@ -354,6 +356,7 @@ async def _send_push(text, event):
 
 async def _notify(text, event):
     """有页面在线就走 SSE（省一条系统通知），否则走 Web Push。"""
+    print("🔔 提醒：%s" % text, flush=True)
     if _subscribers:
         await _broadcast(dict(event, reply=text, audio=await _synthesize(text)))
         return
@@ -402,6 +405,77 @@ async def _scan_once():
     return delivered
 
 
+async def _has_receivers():
+    """有人在收吗：在线页面或未停用的 push 订阅。没有就别消耗提醒额度。"""
+    if _subscribers:
+        return True
+    if push_store is None:
+        return False
+    count = await asyncio.to_thread(push_store.count_active)
+    return bool(count)
+
+
+async def _scan_home():
+    """设备巡检：滤芯余量、故障码、盯住的事件。
+
+    和到期提醒共用「有人在收才发」的规矩：没有在线页面也没有 push 订阅时，
+    提醒没法送到人，就不消耗去重额度。
+    """
+    watcher = getattr(assistant, "home_watch", None)
+    if watcher is None:
+        return 0
+    if not await _has_receivers():
+        return 0
+    alerts = await asyncio.to_thread(watcher.check)
+    for alert in alerts:
+        await _notify(alert["text"], {
+            "type": "reminder",
+            "device": {"kind": alert["kind"], "entity_id": alert["entity_id"]},
+            "tag": alert["tag"],
+        })
+    return len(alerts)
+
+
+async def home_loop():
+    """设备巡检单独跑：门铃/有人停留这类事件等 60 秒就没意义了。
+
+    60 秒的循环留给物品和任务（天级的事情），设备看 HOME_SCAN_SECONDS。
+    """
+    while True:
+        try:
+            await _scan_home()
+        except Exception:
+            traceback.print_exc()
+        await asyncio.sleep(HOME_SCAN_SECONDS)
+
+
+async def _on_home_event(entity_id, new_state, attributes):
+    """WS 推来一条关注的事件：去重、冷却、投递都走和轮询同一套判定。
+
+    没有人在收（无在线页面也无 push 订阅）时直接返回，不写去重状态——
+    否则额度被消耗掉，而人根本没收到。丢了也不要紧：轮询那边还有 3 分钟
+    新鲜度窗口兜着。
+    """
+    watcher = getattr(assistant, "home_watch", None)
+    if watcher is None:
+        return
+    if not await _has_receivers():
+        return
+    alert = await asyncio.to_thread(
+        watcher.annotate_event,
+        entity_id,
+        new_state,
+        attributes.get("friendly_name") or entity_id,
+    )
+    if not alert:
+        return
+    await _notify(alert["text"], {
+        "type": "reminder",
+        "device": {"kind": alert["kind"], "entity_id": alert["entity_id"]},
+        "tag": alert["tag"],
+    })
+
+
 async def reminder_loop():
     """后台提醒循环：扫描到期物品与任务，领取后推给在线页面或 push 订阅。
 
@@ -440,6 +514,17 @@ async def lifespan(app: FastAPI):
         print("📭 Web Push 未启用（PUSH_ENABLED/VAPID 密钥缺失）")
     # 启动到期提醒后台任务
     reminder_task = asyncio.create_task(reminder_loop())
+    home_task = None
+    ws_task = None
+    watcher = getattr(assistant, "home_watch", None)
+    if watcher is not None:
+        home_task = asyncio.create_task(home_loop())
+        print(f"🏠 设备巡检已启用（每 {HOME_SCAN_SECONDS} 秒）", flush=True)
+        if watcher.event_ids:
+            ws_task = asyncio.create_task(
+                run_event_stream(assistant.home.client, watcher.event_ids, _on_home_event)
+            )
+            print(f"📡 事件订阅已启用（{len(watcher.event_ids)} 路，秒级推送）", flush=True)
     print(f"✅ 系统就绪。记忆库 {assistant.memory.count()} 条 | 物品 {assistant.items.count()} 件 | 网页: http://{SERVER_HOST}:{SERVER_PORT}")
     try:
         yield
@@ -449,6 +534,18 @@ async def lifespan(app: FastAPI):
             await reminder_task
         except asyncio.CancelledError:
             pass
+        if home_task is not None:
+            home_task.cancel()
+            try:
+                await home_task
+            except asyncio.CancelledError:
+                pass
+        if ws_task is not None:
+            ws_task.cancel()
+            try:
+                await ws_task
+            except asyncio.CancelledError:
+                pass
         if assistant is not None:
             assistant.close()
         if push_store is not None:

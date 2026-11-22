@@ -20,6 +20,8 @@ WRITE_TOOLS = (
     "memory_store", "item_add", "task_add", "fact_store",
     "task_update", "task_cancel", "task_complete", "task_postpone",
 )
+# 会动物理设备的工具：没调却回「已关灯」同样是在骗人，但说法不能套「清单」
+DEVICE_TOOLS = ("home_control",)
 
 # 中英文混排时，中文按二元组、英文数字按整词比较
 _TOKEN_SPLIT_RE = re.compile(r"[^\u4e00-\u9fa50-9a-zA-Z]+")
@@ -163,6 +165,10 @@ _CLAIM_RE = re.compile(
     r"已记|记好了|记下了|记下来|已经记|已添加|已保存|已设置|已经设置"
     r"|已加|已存|记好啦|搞定|已改|改好了|已更新|已取消|已经取消|已延期|延后了"
 )
+# 设备类「已经做完」的说法（措辞不同，替换语也不能说「清单」）
+_DEVICE_CLAIM_RE = re.compile(
+    r"已经.{0,10}(关|开|调|启动|停止)|已(关|开|调|设|启动|停止)"
+)
 
 
 def guard_false_claim(user_text, used_tools, reply):
@@ -183,6 +189,11 @@ def guard_false_claim(user_text, used_tools, reply):
         return reply, False
     if any(name in WRITE_TOOLS for name in (used_tools or [])):
         return reply, False
+    if any(name in DEVICE_TOOLS for name in (used_tools or [])):
+        # 指令真发下去了，读回结果已经在工具返回里，不用改
+        return reply, False
+    if _DEVICE_CLAIM_RE.search(reply) and not _CLAIM_RE.search(reply):
+        return "抱歉，我刚才没真的下发指令，设备没动。能再说一遍吗？", True
     if not _CLAIM_RE.search(reply):
         return reply, False
     return "抱歉，我这次没写进清单，刚才那句不算。能再说一遍吗？", True

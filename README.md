@@ -232,6 +232,16 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `VAPID_SUBJECT` | `mailto:noreply@example.com` | VAPID 联系地址 |
 | `PUSH_TTL_SECONDS` | `43200` | 推送在推送服务里的存活时间（秒） |
 | `PUSH_MAX_FAILURES` | `5` | 连续推送失败几次后停用该订阅 |
+| `HOME_BASE_URL` | `http://127.0.0.1:8123` | Home Assistant 地址（小米设备的网关） |
+| `HOME_TOKEN` | 空 | HA 长期访问令牌；留空则不注册设备工具 |
+| `HOME_TIMEOUT_SECONDS` | `5` | 调 HA 的超时（秒） |
+| `HOME_DEVICES` | 空 | 小马认识的设备，`entity_id=别名` 逗号分隔 |
+| `HOME_CONTROL_ALLOW` | 空 | 允许语音控制的设备（entity_id 或 `light.` 前缀）；空 = 全部只读 |
+| `HOME_FILTER_ALERT_PERCENT` | `10` | 滤芯余量低于此百分比就主动提醒 |
+| `HOME_ALERT_COOLDOWN_HOURS` | `24` | 同一设备多久内不重复提醒 |
+| `HOME_WATCH_EVENTS` | 空 | 盯哪些 `event` 实体（摄像头移动侦测等），空 = 不盯 |
+| `HOME_EVENT_COOLDOWN_SECONDS` | `600` | 同一路事件多久内不重复提醒 |
+| `HOME_SCAN_SECONDS` | `15` | 设备巡检间隔（秒）；物品/任务仍是 60 秒 |
 
 ## 使用方式
 

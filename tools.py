@@ -580,9 +580,71 @@ def get_family_search_tool(memory, items, tasks=None):
     )
 
 
+def get_home_tools(home):
+    """智能设备查询（Home Assistant / 米家）。
+
+    一次调用就同时给「有没有这台设备」和「它现在什么状态」——语音链路里每次
+    多一个工具调用就多跑一轮 LLM（约 2 秒），拆成 search + status 会翻倍。
+    """
+
+    def query(keyword=""):
+        return home.query(keyword)
+
+    tools = [
+        _build(
+            name="home_query",
+            description=(
+                "查家里的智能设备状态（灯、空调、净水器滤芯、摄像头……）。"
+                "用户问'客厅的灯开着吗''空调设的多少度''净水器滤芯还剩多少'时用。"
+                "keyword 用设备名或房间名，如'客厅灯''净水器'；留空列出全部设备。"
+                "这个工具只能查，不能操作设备。"
+            ),
+            properties={
+                "keyword": {
+                    "type": "string",
+                    "description": "设备名或房间名，如 '客厅灯'、'净水器'；留空列出全部",
+                },
+            },
+            required=[],
+            execute=query,
+        ),
+    ]
+
+    if getattr(home, "control_enabled", False):
+        def control(device, action, value=None):
+            return home.control(device, action, value)
+
+        tools.append(_build(
+            name="home_control",
+            description=(
+                "操作家里的智能设备（开/关灯、开关空调、调温度、开关窗帘、扫地机清扫或回充）。"
+                "device 用设备名或 entity_id，如'客厅灯'。"
+                "action 取值：on（开）/ off（关）/ set_temperature（调温度，配 value=摄氏度）/ "
+                "set_brightness（调亮度，配 value=百分比）/ open / close / start / stop / dock。"
+                "门锁、燃气、热水器这类**不支持**，要如实告诉用户去米家 App 操作。"
+                "同名设备有多个时工具会返回候选，需要反问用户要哪一个。"
+            ),
+            properties={
+                "device": {"type": "string", "description": "设备名或 entity_id，如 '客厅灯'"},
+                "action": {
+                    "type": "string",
+                    "description": "on / off / set_temperature / set_brightness / open / close / start / stop / dock",
+                },
+                "value": {
+                    "type": "number",
+                    "description": "set_temperature 是摄氏度，set_brightness 是百分比；其它动作可省略",
+                },
+            },
+            required=["device", "action"],
+            execute=control,
+        ))
+
+    return tools
+
+
 def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
-                  tasks=None, facts=None):
-    """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实）。"""
+                  tasks=None, facts=None, home=None):
+    """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备）。"""
     tools = get_memory_tools(memory, proposals) + [get_current_date_tool()]
     if items is not None:
         tools += get_items_tools(items, proposals)
@@ -593,4 +655,6 @@ def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
         tools += get_task_tools(tasks, proposals)
     if facts is not None:
         tools += get_fact_tools(facts, proposals)
+    if home is not None:
+        tools += get_home_tools(home)
     return tools

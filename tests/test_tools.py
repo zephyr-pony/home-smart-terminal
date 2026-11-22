@@ -128,3 +128,20 @@ def test_task_postpone_registered():
 
     names = [t["schema"]["function"]["name"] for t in get_task_tools(Tasks(":memory:"))]
     assert "task_postpone" in names
+
+def test_home_query_registered_only_when_gateway_configured():
+    from tools import get_all_tools
+
+    class _Home:
+        def query(self, keyword=""):
+            return "ok"
+
+    names = [
+        t["schema"]["function"]["name"]
+        for t in get_all_tools(Memory(":memory:"), home=_Home())
+    ]
+    assert "home_query" in names
+    assert "home_query" not in [
+        t["schema"]["function"]["name"]
+        for t in get_all_tools(Memory(":memory:"))
+    ]

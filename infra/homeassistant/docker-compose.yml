@@ -1,0 +1,27 @@
+# Home Assistant：小米设备的网关
+#
+# 小马不直接连小米云、也不说 miIO 协议，只跟这个 HA 的本地 REST / WebSocket 说话。
+# 装法见 README.md。
+#
+# 配置目录放在仓库的 data/ 下（已被 .gitignore 忽略），里面会有小米账号的
+# token 和证书，绝对不能入库。
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    # 用桥接 + 端口映射而不是 host 网络：Docker Desktop 的 host 模式落在
+    # docker-desktop 虚拟机的网段（192.168.65.x），拿不到局域网 IP。
+    ports:
+      - "8123:8123"
+    volumes:
+      - ../../data/homeassistant:/config
+    environment:
+      TZ: Asia/Shanghai
+    # HA 首次启动要拉依赖、建库，给足时间
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8123/manifest.json')"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 120s

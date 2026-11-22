@@ -24,7 +24,9 @@ from agent.confirm import (
 )
 from agent.entities import EntityService
 from agent.guard import correction_note, guard_false_claim, guard_write_args
+from agent.home_watch import build_home_watch
 from agent.propose import ProposalService
+from adapters.home import build_home
 from domain.facts import Facts
 from domain.tasks import Tasks
 from memory import Memory
@@ -70,17 +72,30 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 - 回答简洁口语化，像家人聊天，不超过 3 句话
 - 只有闲聊（打招呼/无关话题）才直接回答，不需要调用工具"""
 
+# 接了设备网关时才追加，避免模型对着不存在的工具瞎调
+HOME_PROMPT_LINE = """
+- 智能设备状态（"客厅的灯开着吗""空调设的多少度""净水器滤芯还剩多少"）→ home_query，keyword 用设备名或房间名
+- home_query 只能查不能操作：用户要求开关设备时，如实说现在只能查、还不能控制"""
+
+# 白名单非空时才有 home_control
+HOME_CONTROL_PROMPT_LINE = """
+- 开关设备（"把客厅灯关了""空调调到 26 度""扫地机回去充电"）→ home_control，device 用设备名
+- 门锁、燃气、热水器这类不允许语音操作，要如实说去米家 App 处理，不要假装能开
+- home_control 的返回里已经有「执行后读到的真实状态」，照它说，别自己编"已关闭\""""
+
 
 class Assistant:
     """家庭智能终端核心编排。"""
 
     def __init__(self, memory=None, llm=None, items=None, clarifier=None,
-                 tasks=None, facts=None):
+                 tasks=None, facts=None, home=None):
         self.memory = memory or Memory()
         self.llm = llm or LLM()
         self.items = items or Items()
         self.tasks = tasks or Tasks()
         self.facts = facts or Facts()
+        # 设备网关（Home Assistant）：没配 HOME_TOKEN 就是 None，工具不注册
+        self.home = home if home is not None else build_home()
         # 歧义澄清（实体 + 待澄清动作），写操作前先过一遍
         self.clarifier = clarifier or Clarifier(items=self.items)
         # 写操作统一走「提案 → 提交」，带幂等和审计
@@ -95,6 +110,8 @@ class Assistant:
         self.confirmations = ConfirmationManager(
             self.clarifier.store, self.memory, self.items
         )
+        # 设备主动提醒：滤芯余量、故障码、盯住的事件（去重状态存在 agent.db）
+        self.home_watch = build_home_watch(self.home, self.clarifier.store)
         # 弱模型模式：写操作也要先复述参数再执行（小模型会记错日期、凭空建任务）
         self.confirm_write_actions = parse_confirm_actions(CONFIRM_WRITE_ACTIONS)
         # 实体管理：新增/改名/别名/列表
@@ -107,6 +124,7 @@ class Assistant:
             entities=self.entities,
             tasks=self.tasks,
             facts=self.facts,
+            home=self.home,
         )
         self._tools_by_name = {
             t["schema"]["function"]["name"]: t["execute"] for t in self.tools
@@ -254,6 +272,10 @@ class Assistant:
         sys_prompt = AGENT_SYSTEM_PROMPT.replace(
             "{today}", datetime.now().strftime("%Y年%m月%d日")
         )
+        if self.home is not None:
+            sys_prompt += HOME_PROMPT_LINE
+            if getattr(self.home, "control_enabled", False):
+                sys_prompt += HOME_CONTROL_PROMPT_LINE
         messages = [{"role": "system", "content": sys_prompt}]
         messages.extend(self._context_messages(client_id))
         messages.append({"role": "user", "content": user_text})
