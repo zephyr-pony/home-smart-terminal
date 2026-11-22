@@ -13,6 +13,27 @@ _WRITE_DOMAINS = {
     "task_add": "tasks",
     "fact_store": "facts",
 }
+# 只确认任务时的子集：误提醒的代价最高，物品/记忆写错还能当场查出来
+_TASK_ONLY = ("task_add",)
+
+_OFF_VALUES = ("", "0", "off", "false", "no", "none", "关闭")
+_ALL_VALUES = ("1", "on", "true", "yes", "all", "全部")
+
+
+def parse_confirm_actions(value):
+    """把 CONFIRM_WRITE_ACTIONS 的配置值解析成需要确认的工具名集合。
+
+    支持 0/off、1/all、tasks，以及逗号分隔的显式列表（如 memory_store,item_add）。
+    """
+    raw = str(value or "").strip().lower()
+    if raw in _OFF_VALUES:
+        return frozenset()
+    if raw in _ALL_VALUES:
+        return frozenset(WRITE_ACTIONS)
+    if raw in ("task", "tasks", "任务"):
+        return frozenset(_TASK_ONLY)
+    wanted = [item.strip() for item in raw.split(",") if item.strip()]
+    return frozenset(name for name in wanted if name in WRITE_ACTIONS)
 
 
 class ConfirmationRequired(Exception):

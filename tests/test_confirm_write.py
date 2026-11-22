@@ -3,6 +3,7 @@ import json
 from datetime import date, timedelta
 
 from agent.clarify import Clarifier
+from agent.confirm import WRITE_ACTIONS, parse_confirm_actions
 from assistant import Assistant
 from domain.facts import Facts
 from domain.store import AgentStore
@@ -52,7 +53,7 @@ def make_assistant(llm, confirm_write_actions=True):
         tasks=Tasks(":memory:"),
         facts=Facts(":memory:"),
     )
-    assistant.confirm_write_actions = confirm_write_actions
+    assistant.confirm_write_actions = parse_confirm_actions(confirm_write_actions)
     return assistant
 
 
@@ -146,3 +147,35 @@ def test_false_claim_not_triggered_by_question():
     assistant = make_assistant(llm)
     result = assistant.process_text("我有哪些提醒", client_id="c1")
     assert "没写进清单" not in result["reply"]
+
+
+def test_parse_confirm_actions_values():
+    assert parse_confirm_actions("0") == frozenset()
+    assert parse_confirm_actions("off") == frozenset()
+    assert parse_confirm_actions("1") == frozenset(WRITE_ACTIONS)
+    assert parse_confirm_actions("all") == frozenset(WRITE_ACTIONS)
+    assert parse_confirm_actions("tasks") == frozenset({"task_add"})
+    assert parse_confirm_actions("task_add,item_add") == frozenset({"task_add", "item_add"})
+    # 不认识的工具名直接忽略，避免配错就全开
+    assert parse_confirm_actions("unknown") == frozenset()
+
+
+def test_tasks_only_confirms_tasks_not_items():
+    llm = ScriptedLLM([
+        _tool_call("item_add", {"name": "鸡蛋"}),
+        _stop("记好了"),
+    ])
+    assistant = make_assistant(llm, confirm_write_actions="tasks")
+    result = assistant.process_text("冰箱里还有三个鸡蛋", client_id="c1")
+    # 只确认任务：物品直接写
+    assert result["type"] != "confirm"
+    assert len(assistant.items.list_all()) == 1
+
+    llm2 = ScriptedLLM([
+        _tool_call("task_add", {"title": "取快递", "due_at": "2026-11-23"}),
+        _stop("好的"),
+    ])
+    assistant2 = make_assistant(llm2, confirm_write_actions="tasks")
+    result2 = assistant2.process_text("明天提醒我取快递", client_id="c1")
+    assert result2["type"] == "confirm"
+    assert assistant2.tasks.list_all() == []

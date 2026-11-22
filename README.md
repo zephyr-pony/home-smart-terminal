@@ -202,7 +202,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `FACTS_DB_PATH` | `./data/facts.db` | 结构化事实库位置 |
 | `PENDING_ACTION_TTL_SECONDS` | `1800` | 待澄清动作过期时间（秒） |
 | `PROPOSAL_DEDUPE_SECONDS` | `300` | 相同写提案的去重窗口（秒） |
-| `CONFIRM_WRITE_ACTIONS` | `0` | 弱模型模式：写操作先复述参数等确认，并拦下「没调工具却说已记好」 |
+| `CONFIRM_WRITE_ACTIONS` | `0` | 弱模型模式：`0` 关闭 / `1` 所有写操作先确认 / `tasks` 只确认任务。开启后同时拦下「没调工具却说已记好」 |
 | `SAMPLE_RATE` | `16000` | 录音采样率 |
 | `CHUNK_SIZE` | `1024` | 音频块大小 |
 | `MAX_RECORD_SECONDS` | `15` | CLI 最长录音时长（秒） |

@@ -20,6 +20,7 @@ from agent.confirm import (
     WRITE_ACTIONS as CONFIRMABLE_WRITES,
     ConfirmationManager,
     ConfirmationRequired,
+    parse_confirm_actions,
 )
 from agent.entities import EntityService
 from agent.guard import correction_note, guard_false_claim, guard_write_args
@@ -95,7 +96,7 @@ class Assistant:
             self.clarifier.store, self.memory, self.items
         )
         # 弱模型模式：写操作也要先复述参数再执行（小模型会记错日期、凭空建任务）
-        self.confirm_write_actions = CONFIRM_WRITE_ACTIONS
+        self.confirm_write_actions = parse_confirm_actions(CONFIRM_WRITE_ACTIONS)
         # 实体管理：新增/改名/别名/列表
         self.entities = EntityService(self.clarifier.store)
         # 工具注册表（memory + 日期 + items + 实体）
@@ -305,7 +306,8 @@ class Assistant:
                     if name not in used_tool_names:
                         used_tools.append(name)
                         used_tool_names.add(name)
-                    if self.confirm_write_actions and name in CONFIRMABLE_WRITES:
+                    if self.confirm_write_actions and name in CONFIRMABLE_WRITES \
+                            and name in self.confirm_write_actions:
                         question = self._write_confirmation_question(name, args)
                         conversation_id = (client_id or "cli").strip()
                         pending = self.confirmations.request(
