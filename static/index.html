@@ -117,6 +117,14 @@ html, body {
   background: rgba(91,156,245,.12);
 }
 
+/* 任务提醒卡片：提醒原文 + 完成/延期/取消 */
+.task-card .task-actions {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+}
+.task-card .task-status {
+  margin-top: 8px; font-size: 13px; color: var(--muted);
+}
+
 /* 轻量 Markdown 渲染后的元素 */
 .bubble ul { margin: 4px 0; padding-left: 18px; }
 .bubble li { margin: 2px 0; }
@@ -1344,7 +1352,12 @@ html, body {
   }
 
   function handleReminder(ev) {
-    addMsg(ev.reply || '有物品快到期了', 'bot', ev.audio || null);
+    // 任务是可操作的通知：渲染成带按钮的卡片（仅在页面在线时可用，历史记录里只存文字）
+    if (ev.task && ev.task.id) {
+      addTaskCard(ev.task, ev.reply || _taskReminderText(ev.task), ev.audio || null);
+    } else {
+      addMsg(ev.reply || '有物品快到期了', 'bot', ev.audio || null);
+    }
     if (ev.audio) {
       try { new Audio('data:audio/mp3;base64,' + ev.audio).play().catch(function() {}); } catch (e) {}
     }
@@ -1352,6 +1365,81 @@ html, body {
     if (document.getElementById('view-overview').classList.contains('active')) {
       loadOverview();
     }
+  }
+
+  function _taskReminderText(task) {
+    var title = (task && task.title) || '有件事';
+    var due = (task && task.due_at) || '';
+    return due ? ('提醒：' + title + '（' + due.slice(0, 10) + '）') : ('提醒：' + title);
+  }
+
+  function addTaskCard(task, text, audio) {
+    var row = document.createElement('div');
+    row.className = 'msg-row bot reminder';
+
+    var bubble = document.createElement('div');
+    bubble.className = 'bubble task-card';
+    bubble.innerHTML = renderMarkdown(text);
+
+    var actions = document.createElement('div');
+    actions.className = 'task-actions';
+
+    var buttons = [
+      { label: '完成', action: 'complete' },
+      { label: '延期一天', action: 'postpone' },
+      { label: '取消', action: 'cancel', danger: true }
+    ];
+
+    function finish(message) {
+      actions.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+      var tip = document.createElement('div');
+      tip.className = 'task-status';
+      tip.textContent = message;
+      bubble.appendChild(tip);
+      scrollBottom();
+    }
+
+    buttons.forEach(function(spec) {
+      var b = document.createElement('button');
+      b.className = 'small-btn' + (spec.danger ? ' danger' : '');
+      b.textContent = spec.label;
+      b.addEventListener('click', function() {
+        var url = '/api/tasks/' + encodeURIComponent(task.id) + '/' + spec.action;
+        var init = { method: 'POST' };
+        if (spec.action === 'postpone') {
+          init.headers = { 'Content-Type': 'application/json' };
+          init.body = JSON.stringify({ days: 1 });
+        }
+        b.disabled = true;
+        apiFetch(url, init).then(function(res) {
+          if (spec.action === 'postpone') {
+            var next = (res && res.task && res.task.due_at) ? res.task.due_at.slice(0, 10) : '';
+            finish(next ? ('已延期到 ' + next) : '已延期');
+          } else if (spec.action === 'complete') {
+            finish('已完成');
+          } else {
+            finish('已取消');
+          }
+          pollStatus();
+        }).catch(function(err) {
+          b.disabled = false;
+          finish('操作失败：' + (err && err.message ? err.message : '未知错误'));
+        });
+      });
+      actions.appendChild(b);
+    });
+
+    bubble.appendChild(actions);
+    row.appendChild(bubble);
+    msgBox.appendChild(row);
+    scrollBottom();
+
+    // 按钮不能持久化，历史里只保留文字
+    chatHistory.push({ text: text, type: 'bot', reminder: true, at: Date.now() });
+    if (chatHistory.length > CHAT_HISTORY_LIMIT) {
+      chatHistory = chatHistory.slice(-CHAT_HISTORY_LIMIT);
+    }
+    saveChatHistory();
   }
 
   connectEvents();

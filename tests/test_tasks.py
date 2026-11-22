@@ -98,3 +98,32 @@ def test_invalid_due_date_is_rejected():
 
     with pytest.raises(ValueError):
         tasks.add("交电费", "2026-02-30")
+
+
+def test_postpone_resets_reminder_state():
+    """延期后必须能重新提醒：reminded_at 清掉、状态退回 pending。"""
+    tasks = Tasks(":memory:")
+    task = tasks.add("交电费", "2026-11-10", "bill")
+    claimed = tasks.claim_due_reminders(
+        days=3, cooldown_hours=0, now=datetime(2026, 11, 9, 12, 0)
+    )
+    assert len(claimed) == 1
+    assert tasks.list_all()[0]["status"] == "reminded"
+
+    updated = tasks.postpone(task["id"], 1, now=datetime(2026, 11, 9, 12, 0))
+
+    assert updated["status"] == "pending"
+    assert updated["reminded_at"] is None
+    assert updated["due_at"].startswith("2026-11-11")
+    # 冷却窗口内也能再提醒（reminded_at 已清空）
+    again = tasks.claim_due_reminders(
+        days=3, cooldown_hours=24, now=datetime(2026, 11, 9, 12, 5)
+    )
+    assert [t["id"] for t in again] == [task["id"]]
+
+
+def test_postpone_rejects_finished_task():
+    tasks = Tasks(":memory:")
+    task = tasks.add("交电费", "2026-11-10", "bill")
+    tasks.complete(task["id"])
+    assert tasks.postpone(task["id"], 1) is None

@@ -473,6 +473,10 @@ class TaskUpdate(BaseModel):
     type: Optional[str] = None
 
 
+class TaskPostpone(BaseModel):
+    days: int = 1
+
+
 class PushKeys(BaseModel):
     p256dh: str = Field(min_length=1, max_length=500)
     auth: str = Field(min_length=1, max_length=500)
@@ -874,6 +878,18 @@ async def api_task_cancel(task_id: int, _auth=Depends(require_api_token)):
     if not ok:
         raise HTTPException(status_code=404, detail="任务不存在或已结束")
     return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/postpone")
+async def api_task_postpone(task_id: int, req: TaskPostpone,
+                            _auth=Depends(require_api_token)):
+    try:
+        task = await asyncio.to_thread(assistant.tasks.postpone, task_id, req.days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已结束")
+    return {"ok": True, "task": task}
 
 
 @app.get("/api/config")

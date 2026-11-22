@@ -887,3 +887,51 @@ def test_config_endpoint_does_not_expose_vapid_private_key(monkeypatch, tmp_path
     assert "super-secret-pem" not in response.text
     assert "VAPID_PRIVATE_KEY" not in response.text
     assert response.json()["push"]["enabled"] is True
+
+
+def test_task_postpone_endpoint(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    task = assistant.tasks.add("交电费", "2026-11-10", "bill")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    response = client.post(
+        f"/api/tasks/{task['id']}/postpone",
+        json={"days": 2},
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task"]["due_at"].startswith("2026-11-12")
+    assert body["task"]["status"] == "pending"
+
+
+def test_task_postpone_rejects_bad_days(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    task = assistant.tasks.add("交电费", "2026-11-10", "bill")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    response = client.post(
+        f"/api/tasks/{task['id']}/postpone",
+        json={"days": 0},
+        headers={"Authorization": "Bearer secret"},
+    )
+    assert response.status_code == 400
+
+
+def test_task_postpone_missing_task(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/tasks/9999/postpone",
+        json={"days": 1},
+        headers={"Authorization": "Bearer secret"},
+    )
+    assert response.status_code == 404

@@ -145,6 +145,52 @@ class Tasks:
             self.conn.commit()
             return cur.rowcount > 0
 
+    def postpone(self, task_id, days=1, now=None):
+        """把任务顺延几天，返回更新后的任务；任务不存在或已结束返回 None。
+
+        延期后必须能重新提醒：不清 reminded_at 会被冷却窗口挡掉，
+        status 也要退回 pending（reminded 只是「提醒过一次」的标记）。
+        """
+        if days is None:
+            days = 1
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise ValueError("顺延天数必须是整数")
+        if days <= 0:
+            raise ValueError("顺延天数必须是正整数")
+
+        now = now or datetime.now()
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id, type, title, due_at, status, entity_id, payload, "
+                "       created_at, reminded_at, completed_at "
+                "FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                return None
+            if row[4] in ("done", "cancelled"):
+                return None
+            try:
+                base = datetime.fromisoformat(row[3]) if row[3] else now
+            except (TypeError, ValueError):
+                base = now
+            new_due = base + timedelta(days=days)
+            self.conn.execute(
+                "UPDATE tasks SET due_at=?, reminded_at=NULL, status='pending' "
+                "WHERE id=?",
+                (new_due.isoformat(), task_id),
+            )
+            self.conn.commit()
+            updated = self.conn.execute(
+                "SELECT id, type, title, due_at, status, entity_id, payload, "
+                "       created_at, reminded_at, completed_at "
+                "FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        return self._row_to_dict(updated)
+
     def update(self, task_id, title=None, due_at=None, type=None):
         """更新任务字段；due_at 传空字符串表示清空时间。"""
         fields = []
