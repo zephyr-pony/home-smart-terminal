@@ -315,7 +315,7 @@ html, body {
   <div id="status-bar">
     <h1>家庭智能终端 · 小马</h1>
     <div class="sub" id="status-text">正在连接…</div>
-    <div id="token-row">
+    <div id="token-row" class="hidden">
       <input id="token-input" type="password" placeholder="API Token（如已配置）" autocomplete="off">
       <button id="token-save">保存 Token</button>
     </div>
@@ -385,6 +385,9 @@ html, body {
       <div class="view-inner">
         <h2 class="view-title">系统配置</h2>
         <div id="settings-summary" class="muted"></div>
+        <div class="row-actions">
+          <button id="token-change" class="small-btn" type="button">修改访问 Token</button>
+        </div>
         <form id="settings-form"></form>
         <button id="settings-save" class="primary-btn" type="button">保存配置</button>
         <div id="settings-msg" class="muted"></div>
@@ -448,7 +451,9 @@ html, body {
   var msgBox     = document.getElementById('messages');
   var statusEl   = document.getElementById('status-text');
   var tokenInput = document.getElementById('token-input');
+  var tokenRow   = document.getElementById('token-row');
   var tokenSave  = document.getElementById('token-save');
+  var tokenChange = document.getElementById('token-change');
   var recBtn     = document.getElementById('record-btn');
   var recLabel   = document.getElementById('record-label');
   var textInput  = document.getElementById('text-input');
@@ -532,12 +537,35 @@ html, body {
    var TOKEN_KEY = 'hst_api_token';
    var apiToken = localStorage.getItem(TOKEN_KEY) || '';
    tokenInput.value = apiToken;
+   // 已存过 token 就先收起，等 pollStatus 确认有效后才算数（失败会再展开）
+   if (apiToken) hideTokenRow(); else showTokenRow();
    tokenSave.addEventListener('click', function() {
      apiToken = tokenInput.value.trim();
      localStorage.setItem(TOKEN_KEY, apiToken);
      pollStatus();
      connectEvents();
      refreshPushUi();
+   });
+   tokenInput.addEventListener('keydown', function(e) {
+     if (e.key === 'Enter') {
+       e.preventDefault();
+       tokenSave.click();
+     }
+   });
+
+   function showTokenRow() {
+     tokenRow.classList.remove('hidden');
+   }
+
+   function hideTokenRow() {
+     tokenRow.classList.add('hidden');
+   }
+
+   tokenChange.addEventListener('click', function() {
+     showTokenRow();
+     tokenInput.focus();
+     tokenInput.select();
+     window.scrollTo({ top: 0, behavior: 'smooth' });
    });
 
    function authHeaders(extra) {
@@ -565,7 +593,11 @@ html, body {
     options = options || {};
     options.headers = authHeaders(options.headers || {});
     return fetch(path, options).then(function(r) {
-      if (!r.ok) throw new Error(String(r.status));
+      if (!r.ok) {
+        // 任何接口遇到 401 都把 token 输入区亮出来，否则用户不知道去哪儿改
+        if (r.status === 401) showTokenRow();
+        throw new Error(String(r.status));
+      }
       return r.json();
     });
   }
@@ -1397,12 +1429,21 @@ html, body {
           if (document.getElementById('view-overview').classList.contains('active')) {
             loadOverview();
           }
+          // 认证通过后把 token 输入区收起来，别一直占着顶部
+          if (apiToken) hideTokenRow();
         } else {
           statusEl.textContent = '🔴 服务异常';
         }
       })
       .catch(function(err) {
-        statusEl.textContent = err && err.message === '401' ? '🔒 请输入正确的 API Token' : '🔴 服务连接失败';
+        if (err && err.message === '401') {
+          statusEl.textContent = apiToken
+            ? '🔒 Token 已失效，请重新输入'
+            : '🔒 请输入 API Token';
+          showTokenRow();
+        } else {
+          statusEl.textContent = '🔴 服务连接失败';
+        }
       });
   }
   pollStatus();
