@@ -41,3 +41,54 @@ def test_family_search_registered_in_all_tools():
     items = Items(":memory:")
     names = [t["schema"]["function"]["name"] for t in get_all_tools(memory, items)]
     assert "family_search" in names
+
+def _task_tool(tasks, name):
+    from tools import get_task_tools
+
+    return [t for t in get_task_tools(tasks) if t["schema"]["function"]["name"] == name][0]
+
+
+def test_task_update_changes_fields():
+    tasks = Tasks(":memory:")
+    task = tasks.add("取快递", "2026-11-23", "custom")
+    tool = _task_tool(tasks, "task_update")
+
+    output = tool["execute"](task_id=task["id"], title="取快递（顺路买牛奶）",
+                             due_at="2026-11-24T15:00", type="schedule")
+
+    updated = tasks.list_all()[0]
+    assert updated["title"] == "取快递（顺路买牛奶）"
+    assert updated["due_at"].startswith("2026-11-24T15")
+    assert updated["type"] == "schedule"
+    assert "已更新" in output
+
+
+def test_task_update_without_fields():
+    tasks = Tasks(":memory:")
+    task = tasks.add("取快递", None, "custom")
+    tool = _task_tool(tasks, "task_update")
+    assert tool["execute"](task_id=task["id"]) == "没有要修改的内容"
+
+
+def test_task_update_missing_task():
+    tasks = Tasks(":memory:")
+    tool = _task_tool(tasks, "task_update")
+    assert "没有找到" in tool["execute"](task_id=999, title="改名")
+
+
+def test_task_cancel_marks_cancelled():
+    tasks = Tasks(":memory:")
+    task = tasks.add("下周开会", "2026-11-25", "schedule")
+    tool = _task_tool(tasks, "task_cancel")
+
+    assert "已取消" in tool["execute"](task_id=task["id"])
+    assert tasks.list_all()[0]["status"] == "cancelled"
+    assert "没有找到" in tool["execute"](task_id=task["id"])
+
+
+def test_task_tools_registered():
+    from tools import get_task_tools
+
+    names = [t["schema"]["function"]["name"] for t in get_task_tools(Tasks(":memory:"))]
+    assert "task_update" in names
+    assert "task_cancel" in names

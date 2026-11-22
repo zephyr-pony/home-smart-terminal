@@ -144,3 +144,29 @@ def test_agent_loop_blocks_fabricated_task():
     result = assistant.process_text("我家水费户号是多少")
     assert assistant.tasks.list_all() == []
     assert "task_add" not in result["used_tools"]
+
+def test_task_update_title_rejected_when_not_grounded():
+    args, blocked = guard_write_args(
+        "task_update", {"task_id": 1, "title": "交水费"},
+        "把那个提醒改到明天", TODAY,
+    )
+    assert blocked is not None
+    assert "交水费" in blocked
+
+
+def test_task_update_due_from_sentence():
+    args, blocked = guard_write_args(
+        "task_update", {"task_id": 1, "due_at": "2026-11-30"},
+        "取快递改到明天下午三点", TODAY,
+    )
+    assert blocked is None
+    assert args["due_at"] == "2026-11-22T15:00"
+
+
+def test_task_update_without_due_keeps_other_fields():
+    args, blocked = guard_write_args(
+        "task_update", {"task_id": 1, "title": "取快递"},
+        "取快递改个名字叫取快递包裹", TODAY,
+    )
+    assert blocked is None
+    assert "due_at" not in args

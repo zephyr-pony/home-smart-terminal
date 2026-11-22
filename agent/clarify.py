@@ -89,6 +89,9 @@ class Clarifier:
             normalized = normalize_text(text)
             if any(word in normalized for word in BILL_COMPLETION_WORDS):
                 return None
+            # 「电费的提醒不用了」是在操作已有任务，别再追问是哪个家
+            if any(word in normalized for word in CANCEL_WORDS):
+                return None
 
         # 用户已经明确说了实体，不再追问
         if self.store.find_entity(entity_type, text):

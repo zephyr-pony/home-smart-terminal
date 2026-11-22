@@ -147,3 +147,11 @@ def test_expiry_no_question_when_item_is_explicit():
     clarifier = make_clarifier(items)
 
     assert clarifier.check("蒙牛牛奶要过期了", "c1") is None
+
+def test_cancel_bill_reminder_not_clarified():
+    """「交电费的提醒不用了」是取消已有任务，不该追问是哪个家。"""
+    clarifier = Clarifier(store=AgentStore(":memory:"), items=Items(":memory:"))
+    assert clarifier.check("交电费的提醒不用了", "c1") is None
+    assert clarifier.check("把电费提醒取消掉", "c1") is None
+    # 新建账单仍然要追问
+    assert clarifier.check("明天交电费", "c1") is not None

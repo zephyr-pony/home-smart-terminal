@@ -313,6 +313,35 @@ def get_task_tools(tasks, proposals=None):
             return f"任务 #{task_id} 已完成"
         return f"没有找到未完成的任务 #{task_id}"
 
+    def update_task(task_id, title=None, due_at=None, type=None):
+        task_id = _clamp_int(task_id, 0, 0, 10 ** 9)
+        if not task_id:
+            return "任务 ID 无效"
+        if title is None and due_at is None and type is None:
+            return "没有要修改的内容"
+        try:
+            changed = tasks.update(task_id, title=title, due_at=due_at, type=type)
+        except ValueError as exc:
+            return f"无法修改任务：{exc}"
+        if not changed:
+            return f"没有找到任务 #{task_id}"
+        parts = []
+        if title is not None:
+            parts.append(f"标题「{title}」")
+        if due_at is not None:
+            parts.append(f"时间 {due_at or '清空'}")
+        if type is not None:
+            parts.append(f"类型 {type}")
+        return f"任务 #{task_id} 已更新：{'，'.join(parts)}"
+
+    def cancel_task(task_id):
+        task_id = _clamp_int(task_id, 0, 0, 10 ** 9)
+        if not task_id:
+            return "任务 ID 无效"
+        if tasks.cancel(task_id):
+            return f"任务 #{task_id} 已取消"
+        return f"没有找到可取消的任务 #{task_id}"
+
     return [
         _build(
             name="task_add",
@@ -357,6 +386,38 @@ def get_task_tools(tasks, proposals=None):
             },
             required=["task_id"],
             execute=complete_task,
+        ),
+        _build(
+            name="task_update",
+            description=(
+                "修改已存在的任务。用户说'取快递改到明天''那个提醒换个名字'"
+                "'把电费改成账单'时调用。先用 task_list 拿到 task_id。"
+                "due_at 转成 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM。"
+            ),
+            properties={
+                "task_id": {"type": "integer", "description": "任务 ID"},
+                "title": {"type": "string", "description": "新标题，不改则省略"},
+                "due_at": {
+                    "type": "string",
+                    "description": "新时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:MM；只改时间才传",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["bill", "schedule", "custom"],
+                    "description": "新类型，不改则省略",
+                },
+            },
+            required=["task_id"],
+            execute=update_task,
+        ),
+        _build(
+            name="task_cancel",
+            description="取消任务（不删除记录）。用户说'这个提醒不用了''取消下周的会议'时调用。",
+            properties={
+                "task_id": {"type": "integer", "description": "任务 ID"},
+            },
+            required=["task_id"],
+            execute=cancel_task,
         ),
     ]
 

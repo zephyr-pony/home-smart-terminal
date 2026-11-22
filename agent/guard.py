@@ -15,7 +15,10 @@ import re
 from agent.dates import has_date_hint, resolve_due
 
 # 会落库的写工具；用来判断「用户要写，但没有真的写」
-WRITE_TOOLS = ("memory_store", "item_add", "task_add", "fact_store")
+WRITE_TOOLS = (
+    "memory_store", "item_add", "task_add", "fact_store",
+    "task_update", "task_cancel", "task_complete",
+)
 
 # 中英文混排时，中文按二元组、英文数字按整词比较
 _TOKEN_SPLIT_RE = re.compile(r"[^\u4e00-\u9fa50-9a-zA-Z]+")
@@ -89,6 +92,19 @@ def guard_write_args(name, args, user_text, today=None):
         cleaned["expiry_date"] = ground_expiry(cleaned.get("expiry_date"), text, today)
         return cleaned, None
 
+    if name == "task_update":
+        title = cleaned.get("title")
+        if title is not None:
+            title = str(title).strip()
+            if title and not is_grounded(title, text):
+                return cleaned, (
+                    "已忽略：用户这句话里没有提到「%s」，不要凭空改名。" % title
+                )
+        # 只改时间时才校验日期；没传 due_at 表示不改
+        if cleaned.get("due_at") is not None:
+            cleaned["due_at"] = ground_due(cleaned.get("due_at"), text, today)
+        return cleaned, None
+
     return cleaned, None
 
 
@@ -126,7 +142,7 @@ _QUESTION_RE = re.compile(
 # 模型「已经做完」的口头表述
 _CLAIM_RE = re.compile(
     r"已记|记好了|记下了|记下来|已经记|已添加|已保存|已设置|已经设置"
-    r"|已加|已存|记好啦|搞定"
+    r"|已加|已存|记好啦|搞定|已改|改好了|已更新|已取消|已经取消"
 )
 
 
