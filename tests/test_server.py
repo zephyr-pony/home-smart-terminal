@@ -935,3 +935,61 @@ def test_task_postpone_missing_task(monkeypatch):
         headers={"Authorization": "Bearer secret"},
     )
     assert response.status_code == 404
+
+def test_stats_includes_breakdowns(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    assistant.items.add("牛奶", "2026-11-10")
+    assistant.items.add("面包", "2027-12-01")
+    assistant.tasks.add("交电费", "2026-11-10", "bill")
+    assistant.tasks.add("开会", "2026-11-11", "schedule")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    response = client.get("/api/stats", headers={"Authorization": "Bearer secret"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items_by_status"]["expired"] == 1
+    assert body["items_by_status"]["active"] == 1
+    assert body["tasks_by_type"] == {"bill": 1, "schedule": 1}
+    assert "due_today" in body
+
+
+def test_tasks_sort_and_validation(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    assistant.tasks.add("B 任务", "2026-11-30", "custom")
+    assistant.tasks.add("A 任务", "2026-11-10", "custom")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer secret"}
+
+    by_title = client.get("/api/tasks?sort=title", headers=headers).json()
+    assert [t["title"] for t in by_title["tasks"]] == ["A 任务", "B 任务"]
+
+    by_due = client.get("/api/tasks?sort=due", headers=headers).json()
+    assert [t["title"] for t in by_due["tasks"]] == ["A 任务", "B 任务"]
+
+    bad = client.get("/api/tasks?sort=unknown", headers=headers)
+    assert bad.status_code == 400
+
+
+def test_memories_sort_oldest(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    assistant.memory.store("第一条", "一")
+    assistant.memory.store("第二条", "二")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer secret"}
+
+    newest = client.get("/api/memories?sort=newest", headers=headers).json()
+    oldest = client.get("/api/memories?sort=oldest", headers=headers).json()
+    assert newest["memories"][0]["text"] == oldest["memories"][-1]["text"]
+    assert newest["memories"][0]["text"] != oldest["memories"][0]["text"]
+
+    bad = client.get("/api/memories?sort=unknown", headers=headers)
+    assert bad.status_code == 400

@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 import wave
+from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -197,6 +198,21 @@ def _require_confirm(confirm):
 
 
 def _stats_sync():
+    items_by_status = {
+        status: len(assistant.items.list_all(status))
+        for status in ("active", "reminded", "expired")
+    }
+    tasks_by_type = {}
+    all_tasks = assistant.tasks.list_all()
+    for task in all_tasks:
+        task_type = task.get("type") or "custom"
+        tasks_by_type[task_type] = tasks_by_type.get(task_type, 0) + 1
+    today = datetime.now().strftime("%Y-%m-%d")
+    due_today = sum(
+        1 for task in all_tasks
+        if task.get("status") in ("pending", "reminded")
+        and str(task.get("due_at") or "").startswith(today)
+    )
     return {
         "counts": {
             "memories": assistant.memory.count(),
@@ -205,10 +221,13 @@ def _stats_sync():
             "facts": assistant.facts.count(),
             "entities": len(assistant.clarifier.store.list_entities()),
         },
+        "items_by_status": items_by_status,
+        "tasks_by_type": tasks_by_type,
         "tasks_by_status": {
             status: assistant.tasks.count(status)
             for status in ("pending", "reminded", "done", "cancelled")
         },
+        "due_today": due_today,
         "due_items": assistant.items.get_due(days=REMINDER_DAYS),
         "due_tasks": assistant.tasks.get_due(days=REMINDER_DAYS),
     }
@@ -704,14 +723,18 @@ async def api_stats(_auth=Depends(require_api_token)):
 
 
 @app.get("/api/memories")
-async def api_memories(q: str = "", limit: int = 20, offset: int = 0,
-                       _auth=Depends(require_api_token)):
+async def api_memories(q: str = "", sort: str = "newest", limit: int = 20,
+                       offset: int = 0, _auth=Depends(require_api_token)):
+    if sort not in ("newest", "oldest"):
+        raise HTTPException(status_code=400, detail="sort 必须是 newest/oldest")
     if q:
         rows = await asyncio.to_thread(
             assistant.memory.search_details, q, 500
         )
     else:
         rows = await asyncio.to_thread(assistant.memory.list_all, 500)
+    if sort == "oldest":
+        rows = list(reversed(rows))
     page, total, limit, offset = _page(rows, limit, offset)
     return {
         "memories": page,
@@ -743,11 +766,14 @@ async def api_items(q: str = "", status: str = None, limit: int = 20,
 
 
 @app.get("/api/tasks")
-async def api_tasks(q: str = "", status: str = None, limit: int = 20,
-                    offset: int = 0, _auth=Depends(require_api_token)):
+async def api_tasks(q: str = "", status: str = None, sort: str = "due",
+                    limit: int = 20, offset: int = 0,
+                    _auth=Depends(require_api_token)):
     allowed = ("pending", "reminded", "done", "cancelled")
     if status and status not in allowed:
         raise HTTPException(status_code=400, detail="status 无效")
+    if sort not in ("due", "created", "title"):
+        raise HTTPException(status_code=400, detail="sort 必须是 due/created/title")
     rows = await asyncio.to_thread(assistant.tasks.list_all, status)
     if q:
         keyword = q.strip().lower()
@@ -755,6 +781,10 @@ async def api_tasks(q: str = "", status: str = None, limit: int = 20,
             task for task in rows
             if keyword in str(task.get("title", "")).lower()
         ]
+    if sort == "created":
+        rows = sorted(rows, key=lambda t: str(t.get("created_at") or ""), reverse=True)
+    elif sort == "title":
+        rows = sorted(rows, key=lambda t: str(t.get("title") or ""))
     page, total, limit, offset = _page(rows, limit, offset)
     return {
         "tasks": page,

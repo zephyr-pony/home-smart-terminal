@@ -125,6 +125,11 @@ html, body {
   margin-top: 8px; font-size: 13px; color: var(--muted);
 }
 
+/* 概览的统计口径明细，一行小字 */
+.stat-detail {
+  margin-top: 8px; font-size: 13px; line-height: 1.6;
+}
+
 /* 轻量 Markdown 渲染后的元素 */
 .bubble ul { margin: 4px 0; padding-left: 18px; }
 .bubble li { margin: 2px 0; }
@@ -340,6 +345,7 @@ html, body {
       <div class="view-inner">
         <h2 class="view-title">概览</h2>
         <div id="stat-cards" class="cards"></div>
+        <div id="stat-detail" class="muted stat-detail"></div>
         <h3 class="section-title">到期提醒</h3>
         <div id="overview-due" class="list"></div>
       </div>
@@ -358,6 +364,12 @@ html, body {
         <div class="data-toolbar">
           <input id="data-search" type="search" placeholder="搜索…" autocomplete="off">
           <select id="data-status" class="hidden"></select>
+          <select id="data-sort" class="hidden"></select>
+          <select id="data-size" title="每页条数">
+            <option value="20">20 条/页</option>
+            <option value="50">50 条/页</option>
+            <option value="100">100 条/页</option>
+          </select>
           <button id="data-refresh" class="small-btn" type="button">搜索</button>
         </div>
         <div id="data-list" class="list"></div>
@@ -444,11 +456,14 @@ html, body {
   var tabs       = document.querySelectorAll('.tab');
   var views      = document.querySelectorAll('.view');
   var statCards  = document.getElementById('stat-cards');
+  var statDetail = document.getElementById('stat-detail');
   var overviewDue = document.getElementById('overview-due');
   var dataTabs   = document.getElementById('data-tabs');
   var dataList   = document.getElementById('data-list');
   var dataSearch = document.getElementById('data-search');
   var dataStatus = document.getElementById('data-status');
+  var dataSort   = document.getElementById('data-sort');
+  var dataSize   = document.getElementById('data-size');
   var dataRefresh = document.getElementById('data-refresh');
   var pagePrev   = document.getElementById('page-prev');
   var pageNext   = document.getElementById('page-next');
@@ -722,6 +737,19 @@ html, body {
           '</div><div class="label">' + esc(card[0]) + '</div></div>';
       }).join('');
 
+      // 统计口径明细：物品按状态、任务按类型，数字对不上时能马上看出来
+      var itemStats = d.items_by_status || {};
+      var taskTypes = d.tasks_by_type || {};
+      var detail = [];
+      detail.push('物品：有效 ' + (itemStats.active || 0) +
+        ' · 已提醒 ' + (itemStats.reminded || 0) +
+        ' · 已过期 ' + (itemStats.expired || 0));
+      detail.push('任务：账单 ' + (taskTypes.bill || 0) +
+        ' · 日程 ' + (taskTypes.schedule || 0) +
+        ' · 自定义 ' + (taskTypes.custom || 0) +
+        ' · 今天到期 ' + (d.due_today || 0));
+      statDetail.textContent = detail.join(' ｜ ');
+
       var rows = [];
       (d.due_items || []).forEach(function(item) {
         rows.push('<div class="list-row">' + esc(item.name) +
@@ -757,6 +785,19 @@ html, body {
     tasks: [['', '全部状态'], ['pending', '待办'], ['reminded', '已提醒'], ['done', '已完成'], ['cancelled', '已取消']]
   };
 
+  var DATA_SORT_OPTIONS = {
+    memories: [['newest', '最新优先'], ['oldest', '最早优先']],
+    tasks: [['due', '按到期时间'], ['created', '按创建时间'], ['title', '按标题']]
+  };
+
+  var EMPTY_HINTS = {
+    memories: '还没有记忆。对小马说「酸奶8月5号过期」，它就会记下来。',
+    items: '还没有物品。对小马说「牛奶下周三过期」，它会记进清单并按时提醒。',
+    tasks: '还没有任务。对小马说「明天下午三点提醒我交电费」。',
+    facts: '还没有结构化事实。对小马说「记一下户号是123456」。',
+    entities: '还没有实体。对小马说「把爸妈家也叫父母家」试试。'
+  };
+
   var STATUS_LABELS = {
     active: '有效', reminded: '已提醒', expired: '已过期',
     pending: '待办', done: '已完成', cancelled: '已取消'
@@ -768,7 +809,7 @@ html, body {
   };
 
   var dataState = {
-    kind: 'memories', q: '', status: '',
+    kind: 'memories', q: '', status: '', sort: '',
     limit: 20, offset: 0, total: 0
   };
   var lastData = {};
@@ -788,14 +829,31 @@ html, body {
     dataStatus.value = '';
   }
 
+  function configureDataSort(kind) {
+    var options = DATA_SORT_OPTIONS[kind];
+    if (!options) {
+      dataSort.classList.add('hidden');
+      dataSort.innerHTML = '';
+      dataSort.value = '';
+      return;
+    }
+    dataSort.classList.remove('hidden');
+    dataSort.innerHTML = options.map(function(option) {
+      return '<option value="' + esc(option[0]) + '">' + esc(option[1]) + '</option>';
+    }).join('');
+    dataSort.value = options[0][0];
+  }
+
   function loadData(kind, reset) {
     if (kind !== dataState.kind) {
       dataState.kind = kind;
       dataState.q = '';
       dataState.status = '';
+      dataState.sort = '';
       dataState.offset = 0;
       dataSearch.value = '';
       configureDataStatus(kind);
+      configureDataSort(kind);
     }
     if (reset) dataState.offset = 0;
 
@@ -806,12 +864,14 @@ html, body {
 
     dataState.q = dataSearch.value.trim();
     dataState.status = dataStatus.value || '';
+    dataState.sort = dataSort.value || '';
 
     var params = new URLSearchParams();
     params.set('limit', String(dataState.limit));
     params.set('offset', String(dataState.offset));
     if (dataState.q) params.set('q', dataState.q);
     if (dataState.status) params.set('status', dataState.status);
+    if (dataState.sort) params.set('sort', dataState.sort);
 
     apiFetch(DATA_ENDPOINTS[kind] + '?' + params.toString()).then(function(d) {
       dataState.total = d.total || 0;
@@ -885,7 +945,19 @@ html, body {
           (aliases ? ' · 别名：' + esc(aliases) : '') + '</div></div>');
       });
     }
-    dataList.innerHTML = rows.length ? rows.join('') : '<div class="empty">暂无数据</div>';
+    dataList.innerHTML = rows.length ? rows.join('') : emptyState(kind);
+  }
+
+  function emptyState(kind) {
+    var filtered = dataState.q || dataState.status;
+    if (filtered) {
+      var parts = [];
+      if (dataState.q) parts.push('「' + dataState.q + '」');
+      if (dataState.status) parts.push(STATUS_LABELS[dataState.status] || dataState.status);
+      return '<div class="empty">没有符合 ' + esc(parts.join(' / ')) +
+        ' 的记录。<button class="small-btn" type="button" id="empty-clear">清除筛选</button></div>';
+    }
+    return '<div class="empty">' + esc(EMPTY_HINTS[kind] || '暂无数据') + '</div>';
   }
 
   function openTaskEdit(taskId) {
@@ -1181,7 +1253,27 @@ html, body {
       loadData(dataState.kind, true);
     }
   });
+  // 输入即搜（防抖 300ms），手机上不必每次点搜索
+  var searchTimer = null;
+  dataSearch.addEventListener('input', function() {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(function() {
+      searchTimer = null;
+      loadData(dataState.kind, true);
+    }, 300);
+  });
+  // 原生 search 输入框的清除按钮
+  dataSearch.addEventListener('search', function() {
+    loadData(dataState.kind, true);
+  });
   dataStatus.addEventListener('change', function() {
+    loadData(dataState.kind, true);
+  });
+  dataSort.addEventListener('change', function() {
+    loadData(dataState.kind, true);
+  });
+  dataSize.addEventListener('change', function() {
+    dataState.limit = parseInt(dataSize.value, 10) || 20;
     loadData(dataState.kind, true);
   });
   pagePrev.addEventListener('click', function() {
@@ -1195,6 +1287,16 @@ html, body {
 
   dataList.addEventListener('click', function(e) {
     if (!e.target.closest) return;
+
+    // 空状态里的「清除筛选」
+    if (e.target.id === 'empty-clear') {
+      dataSearch.value = '';
+      dataState.q = '';
+      dataState.status = '';
+      dataStatus.value = '';
+      loadData(dataState.kind, true);
+      return;
+    }
 
     var editBtn = e.target.closest('button[data-edit-task]');
     if (editBtn) {
