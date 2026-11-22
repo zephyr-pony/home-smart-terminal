@@ -20,6 +20,16 @@ def _segment(text):
     return " ".join(ch for ch in str(text) if not ch.isspace())
 
 
+def _escape_like(text):
+    """转义 LIKE 的通配符，避免用户输入 % 或 _ 时匹配到全部。"""
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
 class Memory:
     def __init__(self, db_path=MEMORY_DB_PATH):
         """初始化记忆库。旧格式数据自动迁移。
@@ -100,6 +110,8 @@ class Memory:
         """全文检索，返回原始行 (id, summary, text, timestamp)。
 
         每个关键词 -> 字符短语（"酸奶" -> "酸 奶"，匹配任意位置的"酸奶"）。
+        FTS 只索引了 summary（摘要），原文里有、摘要里没有的词会漏，
+        所以查不到时再用 LIKE 扫一遍原文补召回。
         """
         keywords = [k for k in query.replace("'", " ").replace('"', " ").split() if k.strip()]
         if not keywords:
@@ -108,7 +120,7 @@ class Memory:
         phrases = [_segment(k) for k in keywords]
         match_expr = " OR ".join(f'"{p}"' for p in phrases)
 
-        return self.conn.execute(
+        rows = self.conn.execute(
             """
             SELECT r.id, r.summary, r.text, r.timestamp
             FROM memories_fts f
@@ -117,6 +129,28 @@ class Memory:
             ORDER BY rank LIMIT ?
             """,
             (match_expr, n_results),
+        ).fetchall()
+        if rows:
+            return rows
+        return self._search_like_rows(keywords, n_results)
+
+    def _search_like_rows(self, keywords, n_results):
+        """兜底召回：对摘要和原文做子串匹配（FTS 未命中时调用）。"""
+        clauses = []
+        params = []
+        for keyword in keywords:
+            clauses.append(
+                "(COALESCE(summary, '') LIKE ? ESCAPE '\\' "
+                "OR COALESCE(text, '') LIKE ? ESCAPE '\\')"
+            )
+            pattern = "%" + _escape_like(keyword) + "%"
+            params.extend([pattern, pattern])
+        params.append(n_results)
+        return self.conn.execute(
+            "SELECT id, summary, text, timestamp FROM memories_raw "
+            "WHERE " + " OR ".join(clauses) +
+            " ORDER BY timestamp DESC LIMIT ?",
+            params,
         ).fetchall()
 
     @staticmethod

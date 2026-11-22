@@ -161,6 +161,7 @@ pytest tests -q
 - 服务端用 `asyncio.to_thread` 跑同步编排；不要在 async handler 里直接做重 IO。
 - 到期状态同步、筛选、标记必须在同一把锁内完成（见 `Items.claim_due_reminders`），避免并发窗口。
 - `memories` 是 `memories_raw` + `memories_fts` 双表；检索依赖“逐字空格化”，换分词方案需要数据迁移。
+- FTS 索引的是 summary，原文里独有的词会漏；`Memory._search_rows` 在未命中时用 LIKE 兜底扫 `summary` 和 `text`，通配符已转义。别把兜底删掉，否则「记过但查不到」会重现。
 
 ### 提醒与 SSE
 

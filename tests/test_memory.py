@@ -13,13 +13,31 @@ def test_store_and_search_chinese_substring():
     assert any("酸奶" in item for item in memory.search("酸奶 过期"))
 
 
-def test_search_indexes_summary_not_raw_text():
+def test_search_falls_back_to_raw_text():
+    """摘要里没有、原文里有的词也要能查到（FTS 查不到时用 LIKE 兜底）。"""
     memory = Memory(":memory:")
     memory.store("冰箱里那瓶酸酸的奶", "酸奶过期")
 
-    assert memory.search("酸酸的奶") == []
-    found = memory.search("酸奶")
+    found = memory.search("酸酸的奶")
     assert found and "酸酸的奶" in found[0]
+
+    # 摘要命中时仍然正常
+    assert memory.search("酸奶")
+    # 确实没有的东西仍然返回空
+    assert memory.search("纯牛奶") == []
+
+
+def test_like_fallback_escapes_wildcards():
+    """兜底用 LIKE 时必须转义 % 和 _，否则搜一个百分号会把全部记忆捞出来。"""
+    memory = Memory(":memory:")
+    memory.store("物业费涨了 5%", "物业费上涨")
+    memory.store("冰箱里还有三个鸡蛋", "冰箱三个鸡蛋")
+
+    # 搜 % 只应命中真正含 % 的那条，而不是把全部记忆捞出来
+    found = memory.search("%")
+    assert len(found) == 1
+    assert "5%" in found[0]
+    assert memory.search("_") == []
 
 
 def test_search_details_and_delete_by_id():
