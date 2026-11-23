@@ -103,6 +103,9 @@ pytest tests -q
 
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
+- 正确率基线在 `scripts/eval_accuracy.py`：20 条固定输入、真模型、每个用例独立内存库，
+  卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
+  已知问题的用例标 `known=True`，不计入失败。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
 - 旧数据迁移：`python scripts/migrate_legacy.py`（默认 dry-run，`--apply` 才写入并自动备份）。迁移逻辑在 `agent/legacy.py`，测试在 `tests/test_legacy.py`。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。

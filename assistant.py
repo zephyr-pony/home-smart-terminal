@@ -63,7 +63,7 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 - 账单/日程/提醒（如"明天交电费""下周三开会""提醒我周五取快递"）→ task_add（type=bill/schedule/custom，due_at 转 YYYY-MM-DD）
 - 结构化属性（户号、地址、品牌、型号、偏好）→ fact_store；查询用 fact_search
 - 任务查询/完成/修改/延期（"我有哪些提醒""电费交了""取快递改到明天""这个提醒不用了""明天再说"）→ task_list / task_complete / task_update / task_cancel / task_postpone
-- 家庭事务查询（"酸奶还有几天过期""冰箱里有什么""我有哪些提醒"）→ family_search 一次查完物品/记忆/待办，不要分别调用 item_search / memory_search / task_list
+- 家庭事务查询（"酸奶还有几天过期""冰箱里有什么""我有哪些提醒""我记了哪些东西""我记过什么"）→ family_search 一次查完物品/记忆/待办，不要分别调用 item_search / memory_search / task_list
 - 会过期的物品（"酸奶8月5号过期""鸡蛋还剩3个"）→ item_add 记到物品清单（expiry_date 转 YYYY-MM-DD）
 - 物品管理（"删掉酸奶""看看有哪些东西"）→ item_delete / item_list
 - 记忆管理（"看看记忆""忘掉X"）→ memory_list / memory_delete
