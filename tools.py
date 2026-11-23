@@ -485,9 +485,11 @@ def get_fact_tools(facts, proposals=None):
             fact = facts.store(subject, predicate, value, source)
         except ValueError as exc:
             return f"无法保存事实：{exc}"
-        return (
-            f"已保存：{fact['subject']} · {fact['predicate']} = {fact['value']}"
-        )
+        message = f"已保存：{fact['subject']} · {fact['predicate']} = {fact['value']}"
+        replaced = fact.get("replaced") or []
+        if replaced:
+            message += "（原值 %s 已失效）" % "、".join(replaced)
+        return message
 
     def search_facts(query=None, subject=None, predicate=None):
         return _fmt_facts(facts.search(query, subject, predicate))
@@ -498,6 +500,7 @@ def get_fact_tools(facts, proposals=None):
             description=(
                 "保存结构化事实，如户号、地址、品牌、型号、偏好。"
                 "用户说'爸妈家电费户号是123''牛奶是蒙牛的'时调用。"
+                "同一主体+属性再次保存会关闭旧值、保留历史。"
             ),
             properties={
                 "subject": {"type": "string", "description": "主体，如 '爸妈家'"},

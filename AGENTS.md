@@ -142,6 +142,7 @@ pytest tests -q
 - 提案记录在 `proposals` 表，带 `idempotency_key`；`PROPOSAL_DEDUPE_SECONDS` 内相同内容自动去重。
 - 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
 - 同名物品在 `ProposalService.add_item` 里合并：带新日期就更新到期日（清 `reminded_at`、状态退回 `active`），不带日期就保留原值，避免清单出现两条同名物品、提醒两次。
+- `Facts.store` 同一「主体 + 属性」再次保存会把旧行标 `valid_to`、新行记 `valid_from`，返回值带 `replaced`；检索默认只返回当前有效的，看历史用 `include_history=True` / `history()`。不要改回直接覆盖（丢历史）或只插新行（模型会拿到过期值）。
 - 删除类动作（`memory_delete` / `item_delete`）不直接执行，先经 `ConfirmationManager` 请求确认。
 - 写工具参数在 agent loop 里先过 `agent/guard.py`：日期一律以 `agent/dates.py` 从用户原话解析的结果为准，句子里没有日期线索就把日期留空；`task_add` 的标题在原话里找不到依据时整次调用不执行。
 - 所有「念给用户听」的写操作文案统一走 `agent/wording.py`：日期说成「11月25日（周三）」或「明天」，确认句引用用户原话，执行后只补模型没说到的日期。不要在工具或编排里自己拼句子——三处各写一遍，日期格式就会三处不一致，而语音里念成「二零二六 杠 十一 杠 二五」用户根本听不出对错。

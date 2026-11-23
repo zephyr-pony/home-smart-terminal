@@ -156,6 +156,9 @@ class ProposalService:
         message = (
             f"已保存：{fact['subject']} · {fact['predicate']} = {fact['value']}"
         )
+        replaced = fact.get("replaced") or []
+        if replaced:
+            message += "（原值 %s 已失效）" % "、".join(replaced)
         self._record("fact_store", payload, "committed", message, key)
         return message
 
