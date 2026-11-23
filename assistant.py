@@ -318,6 +318,7 @@ class Assistant:
                 turn_writes = 0
                 turn_other = False
                 turn_blocked = False
+                turn_notes = []
                 for tc in message["tool_calls"]:
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
@@ -392,6 +393,9 @@ class Assistant:
                         if wording.looks_written(name, result):
                             executed_writes.append((name, dict(args)))
                             turn_writes += 1
+                            note = wording.replaced_note(result)
+                            if note:
+                                turn_notes.append(note)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", ""),
@@ -405,6 +409,8 @@ class Assistant:
                 if (turn_writes and turn_writes == len(message["tool_calls"])
                         and not turn_other and not turn_blocked):
                     answer = wording.written_sentence(executed_writes)
+                    if turn_notes:
+                        answer += "".join(turn_notes)
                     break
                 continue  # 下一轮：带着工具结果再问
 

@@ -10,6 +10,7 @@
 - 确认时引用用户原话：人记得自己说过什么，比记得参数格式更可靠
 """
 from datetime import date
+import re
 
 _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
@@ -225,3 +226,16 @@ def has_template(tool_name):
     省掉它能把语音首句提前 2 秒左右（见 D43）。
     """
     return tool_name in _WRITE_TOOLS
+
+
+# 事实被覆盖时，工具返回里有「（原值 X 已失效）」——模板回话必须带上，
+# 否则用户以为旧值还有效。这是短路唯一会丢掉的信息。
+_REPLACED_NOTE_RE = re.compile(r"（原值\s*(.+?)\s*已失效）")
+
+
+def replaced_note(result):
+    """从工具返回里取出「原值已失效」提示；没有就返回空串。"""
+    match = _REPLACED_NOTE_RE.search(str(result or ""))
+    if not match:
+        return ""
+    return "原值 %s 已失效。" % match.group(1).strip()

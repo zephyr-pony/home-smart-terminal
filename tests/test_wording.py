@@ -130,3 +130,10 @@ def test_looks_written_reads_tool_messages():
     assert not wording.looks_written("item_add", "无法添加物品：物品名称不能为空")
     assert not wording.looks_written("memory_store", "已存在相同记忆，未重复写入")
     assert not wording.looks_written("task_list", "已存储")  # 不是写工具
+
+
+def test_replaced_note_is_carried_into_the_template():
+    """事实被覆盖时，模板必须说「原值已失效」，不能只报新值。"""
+    message = "已保存：牛奶 · 品牌 = 伊利（原值 蒙牛 已失效）"
+    assert wording.replaced_note(message) == "原值 蒙牛 已失效。"
+    assert wording.replaced_note("已保存：牛奶 · 品牌 = 伊利") == ""

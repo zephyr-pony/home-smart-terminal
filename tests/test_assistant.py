@@ -399,3 +399,19 @@ def test_agent_loop_reports_unknown_tool_without_crashing():
         m["content"] for m in assistant.llm.calls[-1] if m.get("role") == "tool"
     ]
     assert tool_messages == ["错误：未知工具 no_such_tool"]
+
+
+def test_fact_update_reply_mentions_the_invalidated_value():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply(
+            "fact_store",
+            {"subject": "牛奶", "predicate": "品牌", "value": "伊利"},
+        ),
+        _stop_reply("不应该用到这句"),
+    ]))
+    assistant.facts.store("牛奶", "品牌", "蒙牛")
+
+    result = assistant.process_text("牛奶现在是伊利的")
+
+    assert "伊利" in result["reply"]
+    assert "原值 蒙牛 已失效" in result["reply"]
