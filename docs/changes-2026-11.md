@@ -305,3 +305,58 @@ id=6 爸妈家·电费户号 123456  valid_to=NULL
 再存一次新值，有效数不变、历史变 7。
 
 测试 317 → 321。
+
+## 十三、2026-11-23：MCP 接入点，`_meta` 声纹透传实测通过
+
+### 先纠正一个方向
+
+之前 ROADMAP 里写的是「写一个 `scripts/mcp_xiaoma.py`，出站连小智的接入点」。
+读小智源码后确认方向**反了**：小智服务端才是 MCP 客户端，它出站连我们。
+
+```
+设备 ──语音──▶ xiaozhi-server ──MCP(WebSocket, 出站)──▶ 小马 /mcp_endpoint/mcp/
+```
+
+依据：`core/providers/tools/mcp_endpoint/mcp_endpoint_handler.py` 里
+`websockets.connect(mcp_endpoint_url)`，然后发 `initialize` / `tools/list` / `tools/call`。
+
+### 协议形状（按源码实现，没用官方 SDK）
+
+- 裸 JSON-RPC 2.0，transport 是 WebSocket；`protocolVersion` 为 `2024-11-05`
+- id 固定：`initialize=1`、`tools/list=2`、`tools/call` 从 3 开始
+- 工具返回值只读 `result.content[0].text`，`isError: true` 表示失败
+- 小智会忽略官方 SDK 的很多能力，用 SDK 反而要垫一层
+
+新增 `adapters/mcp_endpoint.py`，`server.py` 加路由 `/mcp_endpoint/mcp/`：
+只暴露一个工具 `ask_xiaoma(text)`，交给 `assistant.process_text`。
+
+### `_meta` 透传：实测通过
+
+小智把声纹识别结果放在 `tools/call` 的 `params._meta`：
+
+```json
+{ "speakerId": "spk-dad", "speakerName": "爸爸" }
+```
+
+未命中时整个 `_meta` 不出现。探针按同样的报文形状跑真实服务（不是 mock）：
+
+```
+① initialize → protocolVersion 2024-11-05
+② tools/list → ask_xiaoma
+③ tools/call → 你好呀！我是小马，家里的事都可以交给我记～
+服务端日志：🔊 MCP 声纹身份：speakerId=spk-dad name=爸爸
+```
+
+不带 `_meta` 时日志没有这一行，会话落在 `mcp:device`；token 错误握手 403。
+
+身份怎么用：**只分会话上下文**（`client_id = "mcp:<speakerId>"`），不认「这是谁」，
+不参与鉴权，写操作照样走提案/确认。`speakerId → persons` 的归属留给 D40。
+
+### 配置与文档
+
+- `.env` 新增 `MCP_TOKEN`，留空则接入点整体关闭（它能写库，不能默认对外）
+- `scripts/mcp_probe.py`：不需要硬件，按小智报文形状验证整条链路
+- `docs/xiaozhi-mcp.md`：方向、报文、配置、实测记录
+- `websockets==15.0.1` 显式钉住（uvicorn 的服务端 WebSocket 实现，原来是间接依赖）
+
+测试 321 → 334。

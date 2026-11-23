@@ -25,7 +25,9 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import config
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
+from fastapi import (
+    FastAPI, UploadFile, File, Form, HTTPException, Header, Depends, WebSocket,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -37,6 +39,7 @@ from config import (
     MAX_CLIENT_ID_CHARS,
     MAX_TEXT_CHARS,
     MAX_UPLOAD_BYTES,
+    MCP_TOKEN,
     PUSH_ENABLED,
     PUSH_MAX_FAILURES,
     PUSH_TTL_SECONDS,
@@ -51,6 +54,7 @@ from config import (
 )
 from assistant import Assistant
 from adapters.home_ws import run_event_stream
+from adapters.mcp_endpoint import MCPEndpoint
 from domain.push import PushStore
 from push_sender import WebPushSender
 from stt import STT
@@ -572,6 +576,23 @@ app = FastAPI(
 )
 
 
+def _mcp_ask(text, speaker):
+    """MCP 接入点唯一入口：设备上所有对话都走这里。
+
+    声纹只用来分开会话上下文，不作凭据：认不出来就用设备默认会话，
+    写操作照样走提案/确认，身份不能绕过护栏。
+    """
+    if assistant is None:
+        return "小马还没准备好，稍后再试。"
+    speaker_id = (speaker or {}).get("speaker_id") or ""
+    client_id = "mcp:%s" % speaker_id if speaker_id else "mcp:device"
+    result = assistant.process_text(text, client_id)
+    return result.get("reply") or ""
+
+
+mcp_endpoint = MCPEndpoint(_mcp_ask)
+
+
 # ---------- 请求模型 ----------
 
 class ChatRequest(BaseModel):
@@ -786,6 +807,22 @@ async def _save_upload(file, ext):
 
 
 # ---------- API 路由 ----------
+
+@app.websocket("/mcp_endpoint/mcp/")
+async def mcp_endpoint_ws(websocket: WebSocket):
+    """小智 MCP 接入点（出站 WebSocket + 裸 JSON-RPC）。
+
+    没配 MCP_TOKEN 就整体关闭：这是一个能写库的入口，不能默认对外。
+    """
+    if not MCP_TOKEN:
+        await websocket.close(code=1008)
+        return
+    token = websocket.query_params.get("token", "")
+    if not secrets.compare_digest(token, MCP_TOKEN):
+        await websocket.close(code=1008)
+        return
+    await mcp_endpoint.handle_ws(websocket)
+
 
 @app.get("/api/status")
 async def api_status(_auth=Depends(require_api_token)):

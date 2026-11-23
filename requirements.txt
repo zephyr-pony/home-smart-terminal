@@ -19,5 +19,9 @@ python-multipart==0.0.20
 # 之前是 funasr 带进来的间接依赖，现在 adapters/home_ws.py 直接 import，必须显式钉住
 aiohttp==3.13.5
 
+# ---- MCP 接入点（小智 WebSocket）----
+# 服务端 WebSocket 由 uvicorn 交给它实现；探针脚本用 aiohttp 当客户端
+websockets==15.0.1
+
 # ---- Web Push 提醒 ----
 pywebpush==2.1.2

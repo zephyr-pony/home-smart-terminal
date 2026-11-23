@@ -13,3 +13,5 @@ def _no_home_gateway(monkeypatch):
     monkeypatch.setattr("adapters.home.HOME_CONTROL_ALLOW", "")
     monkeypatch.setattr("agent.home_watch.HOME_WATCH_EVENTS", "")
     monkeypatch.setattr("agent.home_watch.HOME_FILTER_ALERT_PERCENT", 10.0)
+    # MCP 接入点是能写库的入口，测试里必须默认关掉
+    monkeypatch.setattr("server.MCP_TOKEN", "")

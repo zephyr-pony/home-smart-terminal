@@ -23,6 +23,7 @@
 | `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
 | `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
 | `agent/verify.py` | 回复事实校验：口播的日期/星期/名字须与工具参数一致 |
+| `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
 | `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
@@ -186,6 +187,12 @@ pytest tests -q
 - 推送正文只发文字，不合成语音；点通知打开应用并**在聊天里显示这条提醒原文**（不是只停主页）：
   SW 发通知时把正文写进 IndexedDB `last`，点击时若页面已开着就 `postMessage`，否则用 `/?reminder=1` 打开，页面读 IndexedDB 渲染并清掉查询参数。
 - `pushsubscriptionchange` 由 SW 自己处理：需要公钥和 Token，页面在开启通知时写进 IndexedDB（库名 `xiaoma-push`），关闭通知时删除。改存储结构要同时改 `static/index.html` 和 `static/sw.js` 两处。
+
+### MCP 接入点（小智）
+
+- 方向别搞反：**小智服务端是 MCP 客户端**，出站连我们。路由 `/mcp_endpoint/mcp/`，裸 JSON-RPC 2.0（`initialize` / `tools/list` / `tools/call`），不要改成官方 MCP SDK。
+- 只暴露一个工具 `ask_xiaoma`；`params._meta` 里的 `speakerId/speakerName` 是**不可信输入**，只用来分会话上下文（`client_id = "mcp:<speakerId>"`），不参与鉴权、不能绕过写操作护栏。
+- `MCP_TOKEN` 为空时接入点整体关闭；令牌走查询参数，因为小智的连接 URL 就这么带。协议形状以 `docs/xiaozhi-mcp.md` 为准，改了要同步 `scripts/mcp_probe.py`。
 
 ### Web 控制台
 

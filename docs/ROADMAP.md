@@ -925,7 +925,7 @@ listening --静音超时 / 说"结束" / 切后台--> idle
 
 1. **语音网关接口**：`POST /api/asr`（WAV → 文本）、`POST /api/tts`（文本 → MP3/Opus 源），带内部 Token；先做成可被 xiaozhi-server 当自定义 ASR/TTS 调用的形态
 2. **ask_xiaoma 工具**：把整句交给 `assistant.process_text`，返回口语化结果；先以 HTTP 接口 + 简单 CLI 客户端验证
-3. **MCP 接入点客户端**：`scripts/mcp_xiaoma.py`，出站连 `ws://.../mcp_endpoint/mcp/?token=...`，注册 `ask_xiaoma` 这一个工具
+3. **MCP 接入点（2026-11-23 完成）**：方向和小智源码一致——**小智服务端是 MCP 客户端**，出站连 `ws://.../mcp_endpoint/mcp/?token=...`；我们这侧由 `adapters/mcp_endpoint.py` 暴露 `ask_xiaoma`，`scripts/mcp_probe.py` 按它的报文形状验证。`params._meta` 的声纹身份已实测透传，见 `docs/xiaozhi-mcp.md`（原计划里"写一个 mcp_xiaoma 客户端"的方向是反的）
 4. **联调**：先用小智的 digital-human 测试页（不需要设备）跑一轮，量端到端延迟
 
 ### 再做网页端打磨
@@ -1271,6 +1271,8 @@ Ubuntu Server 24.04 LTS + Docker + compose，HA 用容器（和现在一致，�
 
 - 短句（「关灯」）音素太少，声纹准确率明显低于整句；儿童声线会随年龄漂移。默认阈值 0.4 偏松。
 - 小智的 `_meta` 是我们的 MCP 框架能不能透传到工具函数，需要实测（部分框架会丢掉 `_meta`）。
+  **2026-11-23 已实测**：小智用裸 JSON-RPC，`_meta` 就在 `params` 里，我们的接入点原样收到；
+  见 `docs/xiaozhi-mcp.md`。
 - 小智 speakers 配置里的「描述」不会随 `_meta` 过来，要用得在小马侧另存人物档案。
 
 ### 待决策

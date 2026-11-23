@@ -162,6 +162,27 @@ curl -X POST http://127.0.0.1:8200/api/ask \
 - `want_audio: true` 会让 `/api/ask` 额外返回 base64 mp3
 - `/api/asr` 只识别，不触发 Agent；`/api/tts` 失败会自动重试一次
 
+#### MCP 接入点（小智出站连接）
+
+小智服务端作为 **MCP 客户端**，出站连到小马，把小马注册成一个工具 `ask_xiaoma`：
+
+```
+ws://<小马 IP>:8200/mcp_endpoint/mcp/?token=<MCP_TOKEN>
+```
+
+- `MCP_TOKEN` 留空则接入点关闭；非空时用查询参数鉴权
+- 传输是裸 JSON-RPC 2.0（`initialize` / `tools/list` / `tools/call`），不用官方 MCP SDK
+- 小智的声纹识别结果在 `tools/call` 的 `params._meta` 里（`speakerId` / `speakerName`），
+  小马只拿它**分会话上下文**，不作安全凭据
+- 自带探针（按小智报文形状发一遍）：
+
+```bash
+python scripts/mcp_probe.py --token <MCP_TOKEN> \
+    --text "你好" --speaker-id spk-dad --speaker-name 爸爸
+```
+
+细节、报文形状与实测记录见 [`docs/xiaozhi-mcp.md`](docs/xiaozhi-mcp.md)。
+
 ## 到期提醒
 
 - 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品和任务，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的会**主动推送**：有网页在线时走 SSE，弹出提醒并语音播报；没有网页在线时走 Web Push，发系统通知。
@@ -214,6 +235,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `SERVER_HOST` | `127.0.0.1` | 服务监听地址；局域网使用可改为 `0.0.0.0` |
 | `SERVER_PORT` | `8000` | 服务端口 |
 | `API_TOKEN` | 空 | API Bearer Token；局域网使用建议必填 |
+| `MCP_TOKEN` | 空 | 小智 MCP 接入点令牌（`?token=`）；留空则接入点关闭 |
 | `MAX_TEXT_CHARS` | `2000` | 单次文本上限 |
 | `MAX_CLIENT_ID_CHARS` | `128` | 会话 ID 上限 |
 | `MAX_UPLOAD_BYTES` | `10485760` | WAV 上传上限 |
