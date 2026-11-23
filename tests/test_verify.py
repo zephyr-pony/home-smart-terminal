@@ -4,7 +4,7 @@ from datetime import date
 
 from agent import wording
 from agent.clarify import Clarifier
-from agent.verify import verify_reply, written_days
+from agent.verify import verify_reply, written_days, written_times
 from assistant import Assistant
 from domain.facts import Facts
 from domain.store import AgentStore
@@ -138,6 +138,48 @@ def test_multiple_writes_accept_any_of_their_dates():
     assert replaced is False
 
 
+def test_written_times_reads_due_and_skips_date_only_writes():
+    executed = [
+        ("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
+        ("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"}),
+        ("task_add", {"title": "交电费", "due_at": "2026-11-25"}),
+    ]
+
+    assert written_times(executed) == ["15:00"]
+
+
+def test_wrong_clock_is_replaced_by_template():
+    """日期全对、时间说错，也必须拦下：语音里用户按听到的记。"""
+    executed = [("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"})]
+
+    text, replaced = verify_reply("好，明天晚上8点提醒你取快递。", executed, today=TODAY)
+
+    assert replaced is True
+    assert text == "已记好：取快递，明天下午3点。"
+    assert "8点" not in text
+
+
+def test_correct_clock_is_kept_in_either_form():
+    executed = [("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"})]
+
+    for reply in ("好，明天下午3点提醒你取快递。", "明天15:00提醒你取快递。"):
+        text, replaced = verify_reply(reply, executed, today=TODAY)
+        assert replaced is False
+        assert text == reply
+
+
+def test_bare_yidian_is_not_mistaken_for_one_oclock():
+    """「快一点」不是 1 点，不能因此把整句换掉。"""
+    executed = [("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"})]
+
+    text, replaced = verify_reply(
+        "好，明天下午3点提醒你取快递，我会快一点。", executed, today=TODAY,
+    )
+
+    assert replaced is False
+    assert text == "好，明天下午3点提醒你取快递，我会快一点。"
+
+
 # ---------- 与 agent loop 的接线 ----------
 
 class ScriptedLLM:
@@ -201,18 +243,18 @@ def test_agent_loop_replaces_misquoted_date():
     assert wording.speak_date("2026-12-02") in result["reply"]
 
 
-def test_agent_loop_does_not_stream_after_a_write():
-    """写成功之后直接模板回话：不再调模型，更不会把待校验的话推出去。"""
+def test_agent_loop_does_not_stream_the_turn_after_a_write():
+    """写完之后那句要过校验，不能提前逐字推给设备。"""
     llm = ScriptedLLM([
         _tool_call("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
         _stop("记好了"),
     ])
     assistant = make_assistant(llm)
 
-    result = assistant.process_text("牛奶下周三过期", on_delta=lambda piece: None)
+    assistant.process_text("牛奶下周三过期", on_delta=lambda piece: None)
 
-    assert llm.calls == ["stream"]
-    assert result["reply"] == "已记好：牛奶，12月2日（周三）到期。"
+    # 第一轮（只吐 tool_calls）流式无妨；写完之后的最终回答必须走非流式
+    assert llm.calls == ["stream", "plain"]
 
 
 def test_written_sentence_covers_postpone():

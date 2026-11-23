@@ -143,34 +143,34 @@ def test_context_messages_clips_long_history():
 
 
 def test_agent_loop_returns_record_summary():
-    llm = ScriptedLLM([
+    assistant = make_assistant(ScriptedLLM([
         _tool_call_reply(
             "memory_store",
             {"text": "明天买电池", "summary": "明天买电池"},
         ),
         _stop_reply("记住了"),
-    ])
-    assistant = make_assistant(llm)
+    ]))
     result = assistant.process_text("明天买电池")
 
     assert result["type"] == "record"
-    # 写成功直接用参数拼回话，不再花一轮 LLM（D43）
-    assert result["reply"] == "已记好：明天买电池。"
+    assert result["reply"] == "记住了"
     assert result["summary"] == "明天买电池"
-    assert len(llm.calls) == 1
 
 
-def test_agent_loop_write_skips_second_llm_round():
+def test_agent_loop_write_uses_second_round():
+    """写操作之后仍交给模型组织回话：宁慢一点，不让模板代替理解。"""
     llm = ScriptedLLM([
         _tool_call_reply("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
-        _stop_reply("这一句不应该被用到"),
+        _stop_reply("记好了，牛奶 12 月 2 日过期"),
     ])
     assistant = make_assistant(llm)
 
     result = assistant.process_text("12月2日牛奶过期")
 
-    assert len(llm.calls) == 1
-    assert result["reply"] == "已记好：牛奶，12月2日（周三）到期。"
+    assert len(llm.calls) == 2
+    # 回复里没提到日期，回显会先补一句正确的
+    assert result["reply"].endswith("记好了，牛奶 12 月 2 日过期")
+    assert "12月2日（周三）" in result["reply"]
     assert assistant.items.count() == 1
 
 
@@ -401,17 +401,21 @@ def test_agent_loop_reports_unknown_tool_without_crashing():
     assert tool_messages == ["错误：未知工具 no_such_tool"]
 
 
-def test_fact_update_reply_mentions_the_invalidated_value():
+def test_fact_update_tool_result_carries_the_invalidated_value():
+    """事实被覆盖时，「原值已失效」要进模型上下文，否则它会以为旧值还有效。"""
     assistant = make_assistant(ScriptedLLM([
         _tool_call_reply(
             "fact_store",
             {"subject": "牛奶", "predicate": "品牌", "value": "伊利"},
         ),
-        _stop_reply("不应该用到这句"),
+        _stop_reply("牛奶现在是伊利，原来的蒙牛已经失效了"),
     ]))
     assistant.facts.store("牛奶", "品牌", "蒙牛")
 
     result = assistant.process_text("牛奶现在是伊利的")
 
+    tool_messages = [
+        m["content"] for m in assistant.llm.calls[-1] if m.get("role") == "tool"
+    ]
+    assert any("原值 蒙牛 已失效" in content for content in tool_messages)
     assert "伊利" in result["reply"]
-    assert "原值 蒙牛 已失效" in result["reply"]
