@@ -137,3 +137,11 @@ def test_replaced_note_is_carried_into_the_template():
     message = "已保存：牛奶 · 品牌 = 伊利（原值 蒙牛 已失效）"
     assert wording.replaced_note(message) == "原值 蒙牛 已失效。"
     assert wording.replaced_note("已保存：牛奶 · 品牌 = 伊利") == ""
+
+
+def test_empty_query_is_recognized_for_search_tools():
+    assert wording.is_empty_query("family_search", "（没有找到相关记录）")
+    assert wording.is_empty_query("memory_search", "没有找到关于 寄东西 的记忆")
+    assert not wording.is_empty_query("memory_search", "[2026-11-23] 牛奶快喝完了")
+    # 清单类没有关键词，不在此列
+    assert not wording.is_empty_query("task_list", "（暂无任务）")

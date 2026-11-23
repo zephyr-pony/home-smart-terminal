@@ -1,5 +1,6 @@
 import json
 
+from agent import wording
 from agent.clarify import Clarifier
 from assistant import Assistant
 from domain.facts import Facts
@@ -419,3 +420,48 @@ def test_fact_update_tool_result_carries_the_invalidated_value():
     ]
     assert any("原值 蒙牛 已失效" in content for content in tool_messages)
     assert "伊利" in result["reply"]
+
+
+def test_empty_query_question_is_appended():
+    """按错词查空了：换成固定问句，而不是顺着错词下结论。"""
+    llm = ScriptedLLM([
+        _tool_call_reply("family_search", {"query": "寄东西"}),
+        _stop_reply("没查到寄东西的信息"),
+    ])
+    assistant = make_assistant(llm)
+    assistant._tools_by_name["family_search"] = (
+        lambda **kwargs: "（没有找到相关记录）"
+    )
+
+    result = assistant.process_text("我寄了哪些东西")
+
+    assert result["reply"] == wording.EMPTY_QUERY_REPLY
+    assert len(llm.calls) == 1  # 空结果不再花一轮生成
+
+
+def test_empty_query_replaces_a_wrong_followup_question():
+    """模型自己追问「寄给谁」也算顺着错词走：一样换掉。"""
+    llm = ScriptedLLM([
+        _tool_call_reply("memory_search", {"keywords": "寄东西"}),
+        _stop_reply("没查到。你寄的是什么，寄给谁？"),
+    ])
+    assistant = make_assistant(llm)
+    assistant._tools_by_name["memory_search"] = lambda **kwargs: "（没有相关记忆）"
+
+    result = assistant.process_text("我寄了哪些东西")
+
+    assert result["reply"] == wording.EMPTY_QUERY_REPLY
+    assert len(llm.calls) == 1  # 空结果不再花一轮生成
+
+
+def test_empty_list_does_not_trigger_the_question():
+    """清单类（task_list）本来就没有关键词，不该被当成听错。"""
+    llm = ScriptedLLM([
+        _tool_call_reply("task_list", {}),
+        _stop_reply("你现在没有待办"),
+    ])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("我有哪些提醒")
+
+    assert result["reply"] == "你现在没有待办"

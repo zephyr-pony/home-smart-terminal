@@ -198,9 +198,9 @@ case("家居：查询开关状态", "客厅灯开着吗", tools=("home_query",),
      lacks=("已打开", "已关闭"))
 
 # ---------- 识别错字（ASR 同音，文字层同样暴露） ----------
-case("同音：寄/记（已知问题）", "我寄了哪些东西",
-     any_tools=("memory_search", "memory_list"),
-     lacks=("已记好",), known=True)
+case("同音：寄/记", "我寄了哪些东西",
+     any_tools=("family_search", "memory_search", "memory_list"),
+     has=("你要查的是哪件事",), lacks=("已记好",))
 
 
 def run(only=None):

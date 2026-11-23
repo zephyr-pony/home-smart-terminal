@@ -228,6 +228,29 @@ def has_template(tool_name):
     return tool_name in _WRITE_TOOLS
 
 
+# 查询类工具：结果由用户嘴里那个词决定，也最容易被听错（「记」→「寄」）。
+# 它们返回空时不能顺着错词下结论，要反问一句让用户确认。
+QUERY_TOOLS = (
+    "memory_search", "item_search", "fact_search", "family_search", "home_query",
+)
+_EMPTY_MARKERS = (
+    "没有找到", "没有相关记忆", "暂无物品记录", "暂无结构化事实",
+    "没有找到相关记录",
+)
+
+# 空结果时的回话：不猜用户想说什么，只说明没查到并请他确认，给纠正的机会。
+# 用固定句而不是让模型自由发挥——模型会顺着听错的词往下问（「寄给谁？」）。
+EMPTY_QUERY_REPLY = "我这边没查到相关记录。你要查的是哪件事？"
+
+
+def is_empty_query(tool_name, result):
+    """这次查询是不是「按关键词查了、什么都没有」。"""
+    if tool_name not in QUERY_TOOLS:
+        return False
+    text = str(result or "")
+    return any(marker in text for marker in _EMPTY_MARKERS)
+
+
 # 事实被覆盖时，工具返回里有「（原值 X 已失效）」。确认后的模板回话要带上，
 # 否则用户以为旧值还有效。
 _REPLACED_NOTE_RE = re.compile(r"（原值\s*(.+?)\s*已失效）")

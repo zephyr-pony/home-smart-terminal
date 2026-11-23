@@ -69,7 +69,7 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 - 记忆管理（"看看记忆""忘掉X"）→ memory_list / memory_delete
 - 实体管理（"把爸妈家也叫父母家"）→ entity_add / entity_rename / entity_list
 - 时间相关问题（还有几天/什么时候/是否过期）→ 直接用上方「今天日期」计算，**不要**调用 get_current_date
-- 查无结果时老实说"我还没有这方面的记录"
+- 查无结果时老实说"我还没有这方面的记录"；如果用户的话可能被听错（同音字），再问一句"你要查的是哪件事？"，不要顺着可能错的词下结论
 - 对话历史里可能已有相关上下文，理解"那个""它""还有呢"这类指代时结合历史
 - 回答简洁口语化，像家人聊天，不超过 3 句话
 - 只有闲聊（打招呼/无关话题）才直接回答，不需要调用工具"""
@@ -286,6 +286,8 @@ class Assistant:
         used_tools = []
         used_tool_names = set()
         executed_writes = []
+        query_total = 0
+        query_empty = 0
         blocked_reply = None
         summary = None
         search_keywords = None
@@ -385,6 +387,10 @@ class Assistant:
                             result = "%s\n%s" % (result, note)
                         if wording.looks_written(name, result):
                             executed_writes.append((name, dict(args)))
+                        if name in wording.QUERY_TOOLS:
+                            query_total += 1
+                            if wording.is_empty_query(name, result):
+                                query_empty += 1
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", ""),
@@ -392,6 +398,13 @@ class Assistant:
                     })
                 if blocked_reply is not None:
                     answer = blocked_reply
+                    break
+                # 关键词查询全空：没什么可总结的，模型只会顺着可能听错的词发挥
+                # （「寄给谁？」）。直接用固定问句，也省掉一轮生成——语音里模型
+                # 的话一出口就收不回来，事后再替换是没用的。
+                if (query_total and query_empty == query_total
+                        and used_tool_names <= set(wording.QUERY_TOOLS)):
+                    answer = wording.EMPTY_QUERY_REPLY
                     break
                 continue  # 下一轮：带着工具结果再问
 
