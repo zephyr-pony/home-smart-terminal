@@ -1,4 +1,5 @@
 """高风险动作确认：删除等操作先请求确认，确认后才执行。"""
+from agent import wording
 from config import PENDING_ACTION_TTL_SECONDS
 from domain.store import normalize_text
 
@@ -130,7 +131,7 @@ class ConfirmationManager:
                 "type": "record",
                 "domain": _WRITE_DOMAINS.get(action_type, "confirm"),
                 "action": "create",
-                "reply": result,
+                "reply": _written_reply(action_type, payload, result),
             }
 
         if action_type == "memory_delete":
@@ -192,3 +193,21 @@ class ConfirmationManager:
             "action": "error",
             "reply": "该操作暂未接入，已取消。",
         }
+
+
+def _written_reply(action_type, payload, result):
+    """确认之后怎么回话：用参数拼成人话，别把工具返回里的 ISO 日期念出来。"""
+    if wording.looks_written(action_type, result):
+        return "已记好：%s。" % wording.summary(action_type, payload)
+    return str(result)
+
+
+def _written_reply(action_type, payload, result):
+    """确认之后怎么回话。
+
+    工具返回的是给日志和审计看的（里面是 ISO 日期），回话要用参数拼成人话，
+    否则 TTS 会把「2026-12-02」念成「二零二六 杠 十二 杠 零二」。
+    """
+    if wording.looks_written(action_type, result):
+        return "已记好：%s。" % wording.summary(action_type, payload)
+    return str(result)

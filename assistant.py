@@ -25,6 +25,7 @@ from agent.confirm import (
 from agent.entities import EntityService
 from agent.guard import correction_note, guard_false_claim, guard_write_args
 from agent.home_watch import build_home_watch
+from agent import wording
 from agent.propose import ProposalService
 from adapters.home import build_home
 from domain.facts import Facts
@@ -283,6 +284,7 @@ class Assistant:
         tools_by_name = self._tools_by_name
         used_tools = []
         used_tool_names = set()
+        executed_writes = []
         summary = None
         search_keywords = None
         search_n = 5
@@ -330,7 +332,7 @@ class Assistant:
                         used_tool_names.add(name)
                     if self.confirm_write_actions and name in CONFIRMABLE_WRITES \
                             and name in self.confirm_write_actions:
-                        question = self._write_confirmation_question(name, args)
+                        question = self._write_confirmation_question(name, args, user_text)
                         conversation_id = (client_id or "cli").strip()
                         pending = self.confirmations.request(
                             conversation_id, name, args, question, user_text
@@ -369,6 +371,8 @@ class Assistant:
                         note = correction_note(name, args_raw, args)
                         if note:
                             result = "%s\n%s" % (result, note)
+                        if wording.looks_written(name, result):
+                            executed_writes.append((name, dict(args)))
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", ""),
@@ -381,6 +385,12 @@ class Assistant:
             break
         else:
             answer = "抱歉，我绕晕了，能再说一遍吗？"
+
+        # 模型嘴上说的日期可能是旧值（实测 4B 会）。参数里有日期时，先补一句由参数
+        # 拼出来的话；模型已经说到正确日期就不重复念。
+        prefix = wording.echo_prefix(executed_writes, answer)
+        if prefix and answer:
+            answer = prefix + answer
 
         # 类型映射：写入→record，查询→query，否则 chat
         if any(t in used_tools for t in ("memory_store", "task_add", "fact_store")):
@@ -409,37 +419,15 @@ class Assistant:
 
     @staticmethod
     def _confirmation_question(tool_name, args):
-        if tool_name == "memory_delete":
-            target = str(args.get("keywords") or "").strip() or "这条"
-            return f"确认删除关于「{target}」的记忆吗？回复「确认」或「取消」。"
-        target = str(args.get("name") or "").strip() or "这个物品"
-        return f"确认删除物品「{target}」吗？回复「确认」或「取消」。"
+        return wording.delete_question(tool_name, args)
 
     @staticmethod
-    def _write_confirmation_question(tool_name, args):
-        """复述一遍将要写进去的内容，让用户当场发现参数错了。"""
-        args = args or {}
-        suffix = "回复「确认」或「取消」。"
-        if tool_name == "item_add":
-            name = str(args.get("name") or "").strip() or "这个物品"
-            expiry = str(args.get("expiry_date") or "").strip()
-            if expiry:
-                return f"要记成：物品「{name}」，到期日 {expiry}。{suffix}"
-            return f"要记成：物品「{name}」，没有到期日。{suffix}"
-        if tool_name == "task_add":
-            title = str(args.get("title") or "").strip() or "这件事"
-            due = str(args.get("due_at") or "").strip().replace("T", " ")
-            if due:
-                return f"要记成：提醒「{title}」，时间 {due}。{suffix}"
-            return f"要记成：提醒「{title}」，没有时间。{suffix}"
-        if tool_name == "fact_store":
-            subject = str(args.get("subject") or "").strip()
-            predicate = str(args.get("predicate") or "").strip()
-            value = str(args.get("value") or "").strip()
-            head = " · ".join(p for p in (subject, predicate) if p) or "这条事实"
-            return f"要记成：{head} = {value}。{suffix}"
-        text = str(args.get("text") or "").strip()
-        return f"要记成：「{text}」。{suffix}"
+    def _write_confirmation_question(tool_name, args, user_text=None):
+        """复述一遍将要写进去的内容，让用户当场发现参数错了。
+
+        句子由 `agent/wording.py` 拼，不让模型措辞：确认环节本身失真，确认就白做了。
+        """
+        return wording.confirmation_question(tool_name, args, user_text)
 
     def _run_tool_by_name(self, name, args):
         execute = self._tools_by_name.get(name)

@@ -4,6 +4,8 @@ from datetime import date, timedelta
 
 from agent.clarify import Clarifier
 from agent.confirm import WRITE_ACTIONS, parse_confirm_actions
+from agent.dates import parse_date_text
+from agent import wording
 from assistant import Assistant
 from domain.facts import Facts
 from domain.store import AgentStore
@@ -85,9 +87,11 @@ def test_confirm_writes_and_keeps_guarded_args():
 
     rows = assistant.items.list_all()
     assert len(rows) == 1
-    assert rows[0]["expiry_date"] == "2026-11-25"
+    # 「下周三」是多少号取决于今天，别把日期写死（写死过，过一天就红）
+    expected = parse_date_text("下周三", date.today())["date"]
+    assert rows[0]["expiry_date"] == expected
     assert result["type"] == "record"
-    assert "11-25" in result["reply"]
+    assert wording.speak_date(expected) in result["reply"]
 
 
 def test_cancel_writes_nothing():
@@ -114,7 +118,8 @@ def test_task_add_confirmation_shows_time():
     tomorrow = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     assert result["type"] == "confirm"
     assert "取快递" in result["reply"]
-    assert "%s 15:00" % tomorrow in result["reply"]
+    # 念出来是「明天下午3点」，不是「2026-11-24 15:00」
+    assert wording.speak_datetime(tomorrow + "T15:00:00") in result["reply"]
 
     assistant.process_text("确认", client_id="c1")
     tasks = assistant.tasks.list_all()
