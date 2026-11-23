@@ -131,19 +131,46 @@ tar czf /backup/homeassistant-$(date +%F).tgz -C data homeassistant
 - [ ] 先在同一局域网用 `curl http://<IP>:8200/api/status -H "Authorization: Bearer …"` 验证
 - [ ] 再上 HTTPS（见下），因为推送和 PWA 只在安全上下文可用
 
-## 阶段 5：HTTPS（可选但推荐尽早）
+## 阶段 5：HTTPS（2026-11-23 已落地：Tailscale Serve）
 
 三条路，按「家里人能不能接受装证书/装 VPN」选：
 
 | 方案 | 做法 | 代价 |
 |---|---|---|
 | Caddy + 本地 CA | 本地 DNS 名（如 `xiaoma.lan`）+ Caddy `tls internal`；每台手机装一次根证书 | 一次性的证书安装；名字要能被局域网解析 |
-| Tailscale + `tailscale cert` | 手机装 Tailscale，访问 `https://xiaoma.<tailnet>.ts.net` | 依赖 VPN；推送本身仍由浏览器推送服务送达 |
+| **Tailscale Serve（本机现状）** | 手机装 Tailscale，访问 `https://win-od68q9v0uct.tail8025f9.ts.net` | 依赖 VPN；推送本身仍由浏览器推送服务送达 |
 | Cloudflare Tunnel | 公网域名 + Access 策略 | 数据出入口，隐私上要多想一步 |
 
-- [ ] Caddy/反代只把 `/`、`/api/*`、`/mcp_endpoint/*` 暴露出去
+现状（2026-11-23 实测）：
+
+```
+tailscale serve status
+https://win-od68q9v0uct.tail8025f9.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:8200
+```
+
+- 只对 tailnet 可见，**没有开 Funnel**，公网访问不到
+- 经这条 HTTPS 验过：`/api/status` 200、首页 200（含 manifest 与 SW 注册）、`/sw.js`
+  `Content-Type=application/javascript` + `no-cache`、`/api/events` 立刻收到 `: connected`
+  （Tailscale 不缓冲 SSE 流）
+- 服务端仍只监听 `127.0.0.1`：Serve 从本机反代，不需要把 8200 暴露到局域网
+
+手机侧要手动做一次（换源就等于换订阅）——**2026-11-23 已由用户实测全部通过**：
+
+- [x] 手机装 Tailscale，登录同一账号，确认与主机在同一 tailnet
+- [x] 用 `https://win-od68q9v0uct.tail8025f9.ts.net` 打开小马 →「添加到主屏」
+- [x] 从主屏图标进入 → 设置 →「开启通知」（订阅是按源存的，旧的 `http://` 订阅作废）
+- [x] 锁屏造一条到期提醒，确认能收到；点通知能打开并显示原文
+
+注意：
+
+- 通知由浏览器推送服务送达，**不需要 VPN 常开也能收到**；但点开应用时要能连上 tailnet，
+  否则页面打不开（这是 VPN 方案的固有代价）
+- 主机名变了（重命名/换机）等于换源：推送订阅与 PWA 安装都要重来一遍
+
+- [x] 反代只把 `/`、`/api/*`、`/mcp_endpoint/*` 暴露出去
 - [ ] 不要把 8123（HA）暴露到公网；HA 自己也要设密码
-- [ ] 换域名/换协议后，再让每台手机重新订阅推送
+- [x] 换域名/换协议后，再让每台手机重新订阅推送
 
 ## 阶段 6：功能验收（逐项打勾）
 
@@ -159,8 +186,11 @@ tar czf /backup/homeassistant-$(date +%F).tgz -C data homeassistant
 
 ## 阶段 7：备份与回滚
 
-- [ ] 每日备份（cron + 上面的 sqlite `.backup`），保留 7 天，异地存一份
-- [ ] 每月：从备份恢复到临时目录并打开一次，**没验证过的备份不算备份**
+- [x] 备份脚本：`scripts/backup.py`（sqlite 热备 + sha256 + integrity_check，保留 7 份），
+      用法与演练记录见 `docs/backup.md`
+- [ ] 每日定时跑一次（Windows `schtasks` / Linux `cron`，命令在 `docs/backup.md`）
+- [x] 每月：从备份恢复到临时目录并打开一次——2026-11-23 已演练，逐项计数一致
+- [ ] 异地存一份（手动拷到手机/网盘；zip 里有 `.env`，别放公共网盘）
 - [ ] 回滚：旧机器保持可启动；把路由器 DHCP 预留改回、旧服务 `start.bat` 起来；
       数据用最近备份覆盖
 

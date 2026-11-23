@@ -1,0 +1,99 @@
+# 客厅终端：立创·实战派 S3（电池版 1000mAh / 200W 摄像头）
+
+2026-11-23 实物下单。本文只记**这台机器的事实**与刷机/验收步骤；选型背景见
+`docs/ROADMAP.md` §18，硬件前清单见 `docs/pre-hardware.md`。
+
+## 结论：上游原生支持，不用自己写板级代码
+
+`78/xiaozhi-esp32` 里已经有这块板：
+
+| 项 | 值 |
+|---|---|
+| 目录 | `main/boards/lckfb/szpi-esp32s3/` |
+| 板型宏 | `BOARD_TYPE_LICHUANG_DEV_S3` |
+| menuconfig 显示名 | `LCKFB SZPI ESP32-S3 (立创·实战派)` |
+| 板级文件 | `lichuang_dev_board.cc`（类名 `LichuangDevBoard`） |
+| 默认 AEC | `config.json` 的 `builds` 带 `CONFIG_USE_DEVICE_AEC=y` |
+| 摄像头 | 板级已初始化 `Esp32Camera`（DVP，RGB565 / QVGA） |
+| 触摸 | 已接 `esp_lcd_touch_ft5x06`（失败只告警，不影响语音） |
+
+也就是说：**刷官方开源固件、选这个板型就行**，不需要我们改 C++。D23（买成品还是自己配）
+按「买成品、但必须是可刷开源固件的板」收口。
+
+## 实物参数 → 对我们意味着什么
+
+| 实物 | 参数 | 对方案的影响 |
+|---|---|---|
+| 模组 | ESP32-S3-WROOM-1 **N16R8**（16MB Flash / 8MB PSRAM） | 满足固件最低要求，WakeNet/AFE + Opus + 摄像头取帧都放得下 |
+| 屏幕 | ST7789 2.0" 320×240 IPS，SPI | 板级按 320×240 + `SWAP_XY` 配成竖屏；表情界面照常 |
+| 触摸 | FT6336 电容，I2C | 可以做「点一下开始说话」，但语音主路径仍是唤醒词 |
+| 音频 | ES8311 DAC + ES7210 四通道 ADC + NS4150B 功放 + 1811 腔体喇叭 1W | **关键项**：ES7210 四通道 + `AUDIO_INPUT_REFERENCE=true`，MIC3 接播放回采 → 硬件 AEC |
+| 麦克风 | ZTS6216 模拟双麦（MIC1/MIC2） | 双麦 + AFE 降噪，远场比单麦 DIY 板好；但 1W 小喇叭，客厅 3–5 米仍要实测 |
+| 摄像头 | 200W DVP（30W/200W 两个版本，200W 常见 OV2640） | 固件只取 QVGA 送给视觉服务，**不是视频通话**；我们暂无 VLM，先当未启用 |
+| 姿态 | QMI8658 六轴 | 暂时不用（可做拿起唤醒/翻转让它闭嘴，以后再说） |
+| 电源 | 1000mAh 电池 + SY8088AAC 双路 1A + 充电指示灯 | 摄像头 + WiFi 峰值电流要留意；先不接摄像头跑语音，排除掉压重启 |
+| 按键 | BOOT（打断/单击开始/启动时进配网）+ 复位 + 长按 3 s 开关机 | 单击 = 开始/打断；**双击 = AEC 开关**（仅 AEC 编译进来时） |
+| 接口 | Type-C（供电/烧录/串口）、Micro SD、GH1.25 ×2（5V/3.3V、GPIO/CAN/I2C/UART/PWM） | 以后接门磁/温湿度不用拆板 |
+| 无线 | 2.4G WiFi 4 + BLE 5 | **只支持 2.4G**，家里 5G SSID 连不上，配网别选错 |
+
+## 刷机步骤（到货后按顺序做）
+
+前置：`ESP-IDF v6.0.1+`（上游当前要求），Windows 上装好后 `idf.py` 可用。
+
+1. 克隆并进入：`git clone https://github.com/78/xiaozhi-esp32.git`
+2. `idf.py set-target esp32s3`
+3. `idf.py menuconfig`：
+   - `Xiaozhi Assistant` → `Board Type` → `LCKFB SZPI ESP32-S3 (立创·实战派)`
+   - `Enable Device-Side AEC` → 开（这块板要开，回采在 MIC3）
+   - `Wake Word` → 见下面「唤醒词」
+   - `OTA URL` → `http://192.168.0.138:8303/xiaozhi/ota/`（本机小智服务端）
+4. `idf.py -p COM<x> flash monitor`（Type-C 直接烧，不需要额外 USB-TTL）
+5. 首次启动进配网（AP `Xiaozhi-xxxx`），手机连上填 **2.4G** WiFi
+6. 设备连上后去小智服务端日志确认 `connection open` + 设备 ID；
+   `D:\xiaozhi-server\data\.config.yaml` 的 `server.websocket` 必须是
+   `ws://192.168.0.138:8300/xiaozhi/v1/`（设备是从服务端下发的地址，不是固件里写死的）
+
+> 小智侧配置见 `docs/xiaozhi-setup.md`；反向提醒的桥已经跑在同一进程，刷完固件就能收到。
+
+## 唤醒词：三种做法（待决策 D44）
+
+| 做法 | 成本 | 风险 |
+|---|---|---|
+| A. 内置「你好小智」 | 0，直接编译 | 家里人得改口；与产品名不一致 |
+| B. `USE_CUSTOM_WAKE_WORD`（MultiNet，拼音 `xiao ma`） | 一个 menuconfig 选项 + 重编 | MultiNet 是命令词模型，远场命中率/误触发通常不如 WakeNet，必须实测 |
+| C. 定制 WakeNet「小马」模型 | 找乐鑫定制，周期与费用 | 周期不可控，可能卡住验收 |
+
+2026-11-23 核实：上游已支持 B（`USE_CUSTOM_WAKE_WORD` + `CUSTOM_WAKE_WORD` /
+`CUSTOM_WAKE_WORD_THRESHOLD`），所以 **B 不再依赖定制**，可以先用 B 跑真机；
+命中率不行再回头走 C。
+
+## 真机验收清单（到货当天照这个走）
+
+语音主路径（全部要过）：
+
+- [ ] 唤醒：叫唤醒词 → 屏幕/提示音响应；3 米、5 米各试 5 次，记命中率
+- [ ] 一句说完：「今天有什么提醒」→ 首句时间（用 `tts/start` 之前的日志时间戳）
+- [ ] 多轮：连续追问「那明天呢」不重新唤醒
+- [ ] **打断**：播报中说「停」/ 按 BOOT → 立即停；不应被自己的声音触发（AEC 生效）
+- [ ] AEC 对比：双击 BOOT 关掉 AEC，再试打断，确认「开着才不误触发」
+- [ ] 写操作：说「明天下午三点提醒我取快递」→ 确认/落库/回话与 `data/tasks.db` 一致
+- [ ] 反向提醒：造一条今天到期的物品，设备主动念；`/api/status` 里 `device_channels=1`
+- [ ] 通道互斥：设备在线时网页不弹、手机不推；关掉设备后回落到网页/push
+- [ ] 断网恢复：断开 WiFi / 停小马服务，设备给提示；恢复后自动重连不用重启
+- [ ] 续航与发热：满电连续对话 + 播放，记到自动关机的时长
+
+摄像头（可选，先不做主线）：
+
+- [ ] 看 monitor 里 sensor 探测到的型号（确认 200W 版本实际是哪颗）
+- [ ] 若上游自带拍照工具可用，试一次「拍张照」；我们服务端还没有 VLM，识别不了内容
+
+## 已知风险 / 未知
+
+| 项 | 说明 | 处理 |
+|---|---|---|
+| 30W / 200W 两个版本 | sensor 不同，固件探测失败会没有摄像头功能 | 不影响语音；型号以 monitor 日志为准 |
+| 1000mAh + 摄像头 | 拍照瞬间电流峰值，SY8088 双路 1A 偏紧 | 先不接摄像头测语音，稳定后再开 |
+| 1W 喇叭 | 客厅背景噪声下听感偏小 | 真机听；必要时外接有源音箱（GH1.25/3.5 转接） |
+| 双麦在侧边开孔 | 指向性朝向随摆放变化 | 摆位当作验收项，不当作可调参数 |
+| 无音量键 | 板级 `VOLUME_UP/DOWN = NC` | 音量走服务端下发/屏幕，或后续加按键 |
+| 只支持 2.4G | 5G SSID 连不上 | 配网前确认路由 2.4G 开着 |
