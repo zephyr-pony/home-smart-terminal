@@ -315,6 +315,9 @@ class Assistant:
 
             if finish == "tool_calls" and message.get("tool_calls"):
                 messages.append(message)  # assistant 的 tool_calls 消息
+                turn_writes = 0
+                turn_other = False
+                turn_blocked = False
                 for tc in message["tool_calls"]:
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
@@ -326,12 +329,15 @@ class Assistant:
                     args_raw = args
                     args, blocked = guard_write_args(name, args, user_text)
                     if blocked:
+                        turn_blocked = True
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.get("id", ""),
                             "content": blocked,
                         })
                         continue
+                    if not wording.has_template(name):
+                        turn_other = True
                     if name not in used_tool_names:
                         used_tools.append(name)
                         used_tool_names.add(name)
@@ -385,6 +391,7 @@ class Assistant:
                             result = "%s\n%s" % (result, note)
                         if wording.looks_written(name, result):
                             executed_writes.append((name, dict(args)))
+                            turn_writes += 1
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", ""),
@@ -392,6 +399,12 @@ class Assistant:
                     })
                 if blocked_reply is not None:
                     answer = blocked_reply
+                    break
+                # 整轮都是成功的写操作：参数里已经有要说的那句话，不再问模型。
+                # 这是语音首句延迟最大的一块（决策之后还要再等一次生成）。
+                if (turn_writes and turn_writes == len(message["tool_calls"])
+                        and not turn_other and not turn_blocked):
+                    answer = wording.written_sentence(executed_writes)
                     break
                 continue  # 下一轮：带着工具结果再问
 

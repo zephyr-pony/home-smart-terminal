@@ -216,3 +216,12 @@ def written_sentence(executed):
     if not parts:
         return ""
     return "已记好：%s。" % "；".join(parts)
+
+
+def has_template(tool_name):
+    """这个工具写成功之后，能不能直接由参数拼出回话（不再问模型）。
+
+    写操作的第二轮 LLM 只是为了把结果说成一句话；参数里已经有这句话，
+    省掉它能把语音首句提前 2 秒左右（见 D43）。
+    """
+    return tool_name in _WRITE_TOOLS

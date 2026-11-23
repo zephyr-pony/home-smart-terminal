@@ -143,18 +143,103 @@ def test_context_messages_clips_long_history():
 
 
 def test_agent_loop_returns_record_summary():
-    assistant = make_assistant(ScriptedLLM([
+    llm = ScriptedLLM([
         _tool_call_reply(
             "memory_store",
             {"text": "明天买电池", "summary": "明天买电池"},
         ),
         _stop_reply("记住了"),
-    ]))
+    ])
+    assistant = make_assistant(llm)
     result = assistant.process_text("明天买电池")
 
     assert result["type"] == "record"
-    assert result["reply"] == "记住了"
+    # 写成功直接用参数拼回话，不再花一轮 LLM（D43）
+    assert result["reply"] == "已记好：明天买电池。"
     assert result["summary"] == "明天买电池"
+    assert len(llm.calls) == 1
+
+
+def test_agent_loop_write_skips_second_llm_round():
+    llm = ScriptedLLM([
+        _tool_call_reply("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
+        _stop_reply("这一句不应该被用到"),
+    ])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("12月2日牛奶过期")
+
+    assert len(llm.calls) == 1
+    assert result["reply"] == "已记好：牛奶，12月2日（周三）到期。"
+    assert assistant.items.count() == 1
+
+
+def test_agent_loop_query_still_uses_a_second_round():
+    """读操作没有模板句，仍要模型组织回答。"""
+    llm = ScriptedLLM([
+        _tool_call_reply("item_list", {}),
+        _stop_reply("清单里没有东西"),
+    ])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("我记了哪些东西")
+
+    assert len(llm.calls) == 2
+    assert result["reply"] == "清单里没有东西"
+
+
+def test_agent_loop_mixed_write_and_query_uses_second_round():
+    llm = ScriptedLLM([
+        {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1", "type": "function",
+                            "function": {
+                                "name": "item_add",
+                                "arguments": json.dumps(
+                                    {"name": "牛奶", "expiry_date": "2026-12-02"},
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        },
+                        {
+                            "id": "c2", "type": "function",
+                            "function": {"name": "item_list", "arguments": "{}"},
+                        },
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }]
+        },
+        _stop_reply("记好了，清单里现在有牛奶"),
+    ])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("12月2日牛奶过期，顺便看看清单")
+
+    assert len(llm.calls) == 2
+    # 回复里没提到日期，回显会先补一句正确的
+    assert result["reply"].endswith("记好了，清单里现在有牛奶")
+    assert "12月2日（周三）" in result["reply"]
+
+
+def test_agent_loop_failed_write_still_asks_the_model():
+    """没写进去时不能让模板冒充成功。"""
+    llm = ScriptedLLM([
+        _tool_call_reply("item_add", {"name": "", "expiry_date": "2026-12-02"}),
+        _stop_reply("这次没记上，物品名是空的"),
+    ])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("12月2日牛奶过期")
+
+    assert len(llm.calls) == 2
+    assert result["reply"] == "这次没记上，物品名是空的"
+    assert assistant.items.count() == 0
 
 
 def test_invented_summary_is_replaced_by_user_words():
@@ -173,6 +258,7 @@ def test_invented_summary_is_replaced_by_user_words():
     assert rows[0]["summary"] == "明天买电池"
     assert "8月9日" not in rows[0]["summary"]
     assert result["summary"] == "明天买电池"
+    assert "8月9日" not in result["reply"]
 
 
 def test_agent_loop_returns_task_record():

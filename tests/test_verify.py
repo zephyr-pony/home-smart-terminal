@@ -201,18 +201,18 @@ def test_agent_loop_replaces_misquoted_date():
     assert wording.speak_date("2026-12-02") in result["reply"]
 
 
-def test_agent_loop_does_not_stream_the_turn_after_a_write():
-    """写完之后那句要过校验，不能提前逐字推给设备。"""
+def test_agent_loop_does_not_stream_after_a_write():
+    """写成功之后直接模板回话：不再调模型，更不会把待校验的话推出去。"""
     llm = ScriptedLLM([
         _tool_call("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
         _stop("记好了"),
     ])
     assistant = make_assistant(llm)
 
-    assistant.process_text("牛奶下周三过期", on_delta=lambda piece: None)
+    result = assistant.process_text("牛奶下周三过期", on_delta=lambda piece: None)
 
-    # 第一轮（只吐 tool_calls）流式无妨；写完之后的最终回答必须走非流式
-    assert llm.calls == ["stream", "plain"]
+    assert llm.calls == ["stream"]
+    assert result["reply"] == "已记好：牛奶，12月2日（周三）到期。"
 
 
 def test_written_sentence_covers_postpone():
