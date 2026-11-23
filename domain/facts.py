@@ -3,11 +3,50 @@
 用于户号、地址、品牌、型号、偏好等结构化信息；与自然语言记忆互补。
 """
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime
 
 from config import FACTS_DB_PATH
+
+# 查询拆词：空白和常见标点都当分隔符
+_SPLIT_RE = re.compile(r"[\s,，。、;；:：/]+")
+
+
+def _escape_like(text):
+    """LIKE 里的 % _ 和反斜杠按字面匹配，别让用户的一个百分号捞出全表。"""
+    return (
+        str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+
+
+def _query_terms(query):
+    """把查询拆成检索词：多词按词拆，长词再拆成二字组。
+
+    为什么拆：`search` 是整串 LIKE，「水费户号」既不是 subject「水费」的子串，
+    也不是 predicate「户号」的子串——词序一换就查不到，而第几次说法由模型决定。
+    拆成二字组后逐词匹配，只要这些字按顺序出现在「主体+属性+值」里就能命中。
+    """
+    text = str(query or "").strip()
+    if not text:
+        return []
+    terms = []
+    for part in _SPLIT_RE.split(text):
+        if not part:
+            continue
+        if len(part) <= 2:
+            terms.append(part)
+            continue
+        terms.extend(part[i:i + 2] for i in range(len(part) - 1))
+    # 去重但保序：重复词只会让 SQL 变长
+    seen = set()
+    unique = []
+    for term in terms:
+        if term not in seen:
+            seen.add(term)
+            unique.append(term)
+    return unique
 
 
 class Facts:
@@ -143,8 +182,14 @@ class Facts:
             clauses.append("predicate LIKE ?")
             params.append(f"%{predicate}%")
         if query:
-            clauses.append("(subject LIKE ? OR predicate LIKE ? OR value LIKE ?)")
-            params.extend([f"%{query}%"] * 3)
+            # 逐词匹配「主体+属性+值」拼起来的文本：拆词的理由见 _query_terms
+            combined = (
+                "(COALESCE(subject, '') || COALESCE(predicate, '') "
+                "|| COALESCE(value, ''))"
+            )
+            for term in _query_terms(query):
+                clauses.append(combined + " LIKE ? ESCAPE '\\'")
+                params.append("%" + _escape_like(term) + "%")
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._lock:

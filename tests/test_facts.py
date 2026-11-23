@@ -102,3 +102,29 @@ def test_legacy_duplicates_are_closed_on_startup(tmp_path):
     assert [row["value"] for row in facts.search()] == ["654321"]
     assert facts.count() == 1
     assert facts.count(include_history=True) == 2
+
+
+def test_query_matches_across_subject_and_predicate():
+    """「水费户号」跨了 subject 和 predicate，整串 LIKE 查不到，拆词后能查到。"""
+    facts = Facts(":memory:")
+    facts.store("水费", "户号", "12345678")
+
+    assert [r["value"] for r in facts.search("水费户号")] == ["12345678"]
+    assert [r["value"] for r in facts.search("水费 户号")] == ["12345678"]
+
+
+def test_query_does_not_match_unrelated_rows():
+    facts = Facts(":memory:")
+    facts.store("水费", "户号", "12345678")
+    facts.store("牛奶", "品牌", "蒙牛")
+
+    assert [r["value"] for r in facts.search("牛奶品牌")] == ["蒙牛"]
+    assert facts.search("水费品牌") == []
+
+
+def test_query_treats_wildcards_literally():
+    facts = Facts(":memory:")
+    facts.store("100%纯牛奶", "品牌", "蒙牛")
+    facts.store("水费", "户号", "12345678")
+
+    assert [r["subject"] for r in facts.search("%")] == ["100%纯牛奶"]

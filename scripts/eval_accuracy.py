@@ -126,9 +126,11 @@ def seed_fact(assistant):
 
 
 def seed_fact_bare_subject(assistant):
-    """反例：主体没带家庭名、属性和事情分开存，和查询时的说法对不上。"""
+    """两家各有一条水费户号：查询必须命中带家庭名的那一条，不能串。"""
     assistant.clarifier.store.add_entity("property", "自己家")
-    assistant.facts.store("水费", "户号", "12345678")
+    assistant.clarifier.store.add_entity("property", "爸妈家")
+    assistant.facts.store("自己家", "水费户号", "11112222")
+    assistant.facts.store("爸妈家", "水费户号", "12345678")
 
 
 def seed_memory_egg(assistant):
@@ -196,12 +198,11 @@ case("事实：改品牌说清旧值", "牛奶现在是伊利的",
 case("事实：查品牌", "牛奶是什么牌子的",
      setup=lambda a: a.facts.store("牛奶", "品牌", "蒙牛"),
      any_tools=("fact_search", "fact_list"), has=("蒙牛",))
-# 已知问题：事实的键和查询都是自由文本，`Facts.search` 用整串 LIKE 匹配，
-# 「水费户号」既不是 subject「水费」也不是 predicate「户号」的连续子串，查不到。
-# 正常写入路径（带实体澄清）键能对齐；这条盯的是键一旦对不上就没有兜底（D46）。
-case("事实：查户号（键对不上，已知问题）", "水费户号是多少",
+# 两家都有水费户号：查询带家庭名时只能返回那一家，不能把另一家的户号念出来。
+case("事实：查户号不串家", "爸妈家的水费户号是多少",
      setup=seed_fact_bare_subject,
-     any_tools=("fact_search", "fact_list"), has=("12345678",), known=True)
+     any_tools=("fact_search", "fact_list"), has=("12345678",),
+     lacks=("11112222",))
 
 # ---------- 家居（只读） ----------
 case("家居：查询开关状态", "客厅灯开着吗", tools=("home_query",),
