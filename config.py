@@ -40,8 +40,11 @@ def _get_bool(key, default):
 LLM_BASE_URL = _get("LLM_BASE_URL", "")
 LLM_API_KEY = _get("LLM_API_KEY", "")
 LLM_MODEL = _get("LLM_MODEL", "")
-# 思考模式：none 关闭（首字快很多），low/medium/high 按档位开；off 表示不传该参数
-LLM_REASONING_EFFORT = _get("LLM_REASONING_EFFORT", "none")
+# 第一轮（决策/调工具）可换更快的模型；留空表示两轮都用 LLM_MODEL
+LLM_MODEL_DECISION = _get("LLM_MODEL_DECISION", "")
+# 思考模式：值原样传给网关（commandcode: off 关闭 / low…max 按档位；aisp: none 关闭）
+# 留空表示不传该参数；网关不认这个字段时留空，改用 LLM_CHAT_TEMPLATE_KWARGS
+LLM_REASONING_EFFORT = _get("LLM_REASONING_EFFORT", "")
 # 部分后端（llama.cpp / vLLM）用 chat_template_kwargs 关思考，值是 JSON，如
 # LLM_CHAT_TEMPLATE_KWARGS={"enable_thinking": false}
 LLM_CHAT_TEMPLATE_KWARGS = _get("LLM_CHAT_TEMPLATE_KWARGS", "")

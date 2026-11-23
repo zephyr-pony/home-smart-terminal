@@ -18,7 +18,7 @@ class FakeLLM:
         self.calls = []
 
     def chat_with_tools(self, messages, tools, **kwargs):
-        self.calls.append(messages)
+        self.calls.append(list(messages))
         return _stop_reply(self.reply)
 
 
@@ -30,7 +30,7 @@ class ScriptedLLM:
         self.calls = []
 
     def chat_with_tools(self, messages, tools, **kwargs):
-        self.calls.append(messages)
+        self.calls.append(list(messages))
         return self.responses.pop(0)
 
 
@@ -72,6 +72,28 @@ def _tool_call_reply(name, arguments, call_id="call-1"):
 
 def _stop_reply(content):
     return {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
+
+
+def test_decision_llm_used_only_on_first_turn():
+    """第一轮换模型：决策轮用它，工具结果回来那轮用回答模型。"""
+    decision = ScriptedLLM([_tool_call_reply("task_list", {})])
+    answer = FakeLLM("现在没有待办提醒。")
+    assistant = make_assistant(llm=answer)
+    assistant.decision_llm = decision
+    assistant.process_text("我有哪些提醒", "test-decision-llm")
+    assert len(decision.calls) == 1
+    assert len(answer.calls) == 1
+    # 回答轮看得到工具结果，决策轮看不到
+    assert not any(m.get("role") == "tool" for m in decision.calls[0])
+    assert any(m.get("role") == "tool" for m in answer.calls[0])
+
+
+def test_no_decision_llm_keeps_single_model():
+    answer = FakeLLM("好")
+    assistant = make_assistant(llm=answer)
+    assert assistant.decision_llm is None
+    assistant.process_text("你好", "test-single-model")
+    assert len(answer.calls) == 1
 
 
 def test_tool_metadata():
@@ -277,6 +299,19 @@ def test_agent_loop_returns_task_record():
     assert result["domain"] == "tasks"
     assert result["summary"] == "买电池"
     assert assistant.tasks.count() == 1
+
+
+def test_agent_loop_item_add_is_record():
+    """物品写入也要是 record：网页与统计按 type 分卡片，缺了会被当成闲聊。"""
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("item_add", {"name": "牛奶", "expiry_date": "2026-11-25"}),
+        _stop_reply("记好了"),
+    ]))
+
+    result = assistant.process_text("牛奶11月25日过期")
+
+    assert result["type"] == "record"
+    assert result["domain"] == "items"
 
 
 def test_agent_loop_returns_task_complete():

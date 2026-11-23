@@ -90,9 +90,11 @@ class Assistant:
     """家庭智能终端核心编排。"""
 
     def __init__(self, memory=None, llm=None, items=None, clarifier=None,
-                 tasks=None, facts=None, home=None):
+                 tasks=None, facts=None, home=None, decision_llm=None):
         self.memory = memory or Memory()
         self.llm = llm or LLM()
+        # 第一轮（决策/调工具）可以换更快的模型；没配置就和回答轮同一个
+        self.decision_llm = decision_llm
         self.items = items or Items()
         self.tasks = tasks or Tasks()
         self.facts = facts or Facts()
@@ -294,16 +296,19 @@ class Assistant:
         search_n = 5
 
         for _turn in range(self.max_agent_loops):
+            # 第一轮只决定「调不调工具、调哪个」，第二轮才组织要说的话；
+            # 配了 decision_llm 就分开用，没配则两轮同一个模型。
+            client = self.decision_llm if (_turn == 0 and self.decision_llm is not None) else self.llm
             try:
                 # 已经写过东西时不流式：最终回答要过事实校验，逐字推出去的片段
                 # 收不回来，校验失败就只能让用户听到错日期。
                 can_stream = on_delta is not None and not executed_writes
-                if can_stream and hasattr(self.llm, "chat_with_tools_stream"):
-                    data = self.llm.chat_with_tools_stream(
+                if can_stream and hasattr(client, "chat_with_tools_stream"):
+                    data = client.chat_with_tools_stream(
                         messages, schemas, on_delta=on_delta
                     )
                 else:
-                    data = self.llm.chat_with_tools(messages, schemas)
+                    data = client.chat_with_tools(messages, schemas)
             except Exception as exc:
                 print(f"⚠️ LLM 调用失败：{exc}")
                 return "chat", "抱歉，我现在连不上大脑，请稍后再试。", {
@@ -424,14 +429,17 @@ class Assistant:
                 answer = prefix + answer
 
         # 类型映射：写入→record，查询→query，否则 chat
-        if any(t in used_tools for t in ("memory_store", "task_add", "fact_store")):
+        if any(t in used_tools for t in (
+            "memory_store", "item_add", "task_add", "fact_store"
+        )):
             rtype = "record"
         elif any(t in used_tools for t in (
             "task_complete", "task_update", "task_cancel", "task_postpone"
         )):
             rtype = "chat"
         elif any(t in used_tools for t in (
-            "memory_search", "memory_list", "task_list", "fact_search", "fact_list"
+            "memory_search", "memory_list", "item_search", "item_list",
+            "task_list", "fact_search", "fact_list",
         )):
             rtype = "query"
         else:

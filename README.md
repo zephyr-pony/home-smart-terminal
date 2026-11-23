@@ -87,6 +87,11 @@ start.bat            # Windows 一键启动
 > 局域网访问需放行防火墙：以管理员运行 PowerShell 执行
 > `New-NetFirewallRule -DisplayName "HomeSmartTerminal" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow`
 
+> **手机想用推送和「添加到主屏」就必须走 HTTPS**（两者只在安全上下文可用，`http://<局域网IP>` 不行）。
+> 推荐 Tailscale Serve：`tailscale serve --bg http://127.0.0.1:8000` 之后，手机装 Tailscale 加入同一
+> tailnet，用 `https://<主机名>.<tailnet>.ts.net` 打开即可，证书由 Tailscale 自动签发。
+> 详见 `docs/server-migration.md` 阶段 5。
+
 > 若 `8000` 端口被占用或被系统保留（Windows 上可用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查看），改 `.env` 的 `SERVER_PORT` 即可。
 
 **命令行模式（本机语音交互）**
@@ -211,7 +216,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `LLM_BASE_URL` | （必填） | LLM 服务地址，如 `http://127.0.0.1:8081/v1` |
 | `LLM_API_KEY` | （必填） | API 密钥 |
 | `LLM_MODEL` | （可选） | 模型名 |
-| `LLM_REASONING_EFFORT` | `none` | 思考模式：`none` 关闭（语音场景更快），`low`/`medium`/`high` 按档位，`off` 不传该参数 |
+| `LLM_REASONING_EFFORT` | `off` | 思考模式，值原样传给网关：commandcode 用 `off` 关，aisp 用 `none` 关；留空表示不传该参数 |
 | `LLM_CHAT_TEMPLATE_KWARGS` | 空 | 本地 llama.cpp/vLLM 关思考用，JSON，如 `{"enable_thinking": false}` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 语音角色（女声）；男声用 `zh-CN-YunxiNeural` |
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |
@@ -329,6 +334,8 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ├── tts.py           # Edge TTS 语音合成
 ├── static/index.html # Web 客户端
 ├── scripts/
+│   ├── backup.py             # 数据备份 / 校验 / 恢复（见 docs/backup.md）
+│   ├── eval_accuracy.py      # 30 条固定评测集（真模型，不进 pytest）
 │   └── record_diagnostic.py  # 手工录音/播放诊断（不参与 pytest）
 ├── tests/           # pytest 自动化测试
 ├── requirements.txt

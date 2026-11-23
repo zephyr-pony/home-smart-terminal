@@ -58,7 +58,7 @@ from adapters.mcp_endpoint import MCPEndpoint
 from domain.push import PushStore
 from push_sender import WebPushSender
 from stt import STT
-from llm import LLM
+from llm import LLM, build_decision_llm
 from memory import Memory
 from items import Items
 from tts import TTS
@@ -513,7 +513,10 @@ async def lifespan(app: FastAPI):
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
     tts = TTS()
-    assistant = Assistant(memory=Memory(), llm=LLM(), items=Items())
+    decision_llm = build_decision_llm()
+    assistant = Assistant(memory=Memory(), llm=LLM(), items=Items(),
+                          decision_llm=decision_llm)
+    print("🧠 决策轮模型：%s" % (decision_llm.model_name if decision_llm else "同回答轮"))
     stt = STT()  # 预热 FunASR
     # Web Push：没有密钥就整体降级为纯 SSE，不影响其他功能
     push_store = PushStore()

@@ -6,7 +6,7 @@ import traceback
 from config import WAKE_ACK_TEXT, WAKE_WORD, WAKE_WORD_MAX_SECONDS
 from audio_io import record_audio, save_audio, play_audio_file
 from stt import STT
-from llm import LLM
+from llm import LLM, build_decision_llm
 from memory import Memory
 from tts import TTS
 from assistant import Assistant
@@ -119,7 +119,9 @@ def main():
     stt = STT()
     memory = Memory()
     tts = TTS()
-    assistant = Assistant(memory=memory, llm=llm)
+    decision_llm = build_decision_llm()
+    assistant = Assistant(memory=memory, llm=llm, decision_llm=decision_llm)
+    print("🧠 决策轮模型：%s" % (decision_llm.model_name if decision_llm else "同回答轮"))
 
     print(f"\n📦 记忆库已有 {memory.count()} 条记忆")
 

@@ -31,18 +31,28 @@ def make_llm(monkeypatch, captured):
     return llm.LLM("test-model")
 
 
-def test_reasoning_effort_sent(monkeypatch):
+def test_reasoning_effort_off_sent(monkeypatch):
+    """commandcode 用 off 关思考：必须发出去，不能当成「不传」。"""
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "off")
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert captured["body"]["reasoning_effort"] == "off"
+    assert captured["url"].endswith("/chat/completions")
+
+
+def test_reasoning_effort_none_passthrough(monkeypatch):
+    """aisp 的枚举是 none：原样透传，不做归一化。"""
     captured = {}
     monkeypatch.setattr(llm, "REASONING_EFFORT", "none")
     client = make_llm(monkeypatch, captured)
     client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
     assert captured["body"]["reasoning_effort"] == "none"
-    assert captured["url"].endswith("/chat/completions")
 
 
-def test_reasoning_effort_off_omits_field(monkeypatch):
+def test_reasoning_effort_empty_omits_field(monkeypatch):
     captured = {}
-    monkeypatch.setattr(llm, "REASONING_EFFORT", "off")
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "")
     client = make_llm(monkeypatch, captured)
     client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
     assert "reasoning_effort" not in captured["body"]
@@ -56,15 +66,71 @@ def test_reasoning_effort_custom_level(monkeypatch):
     assert captured["body"]["reasoning_effort"] == "low"
 
 
-def test_chat_template_kwargs_sent(monkeypatch):
-    """llama.cpp / vLLM 用模板参数关思考。"""
+def test_model_override(monkeypatch):
+    """决策轮可以换模型：请求体里的 model 跟着变，其他参数不变。"""
     captured = {}
-    monkeypatch.setattr(llm, "REASONING_EFFORT", "off")
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[],
+                           model="fast/model")
+    assert captured["body"]["model"] == "fast/model"
+
+
+def test_build_decision_llm_none_when_unset(monkeypatch):
+    monkeypatch.setattr(llm, "LLM_MODEL_DECISION", "")
+    assert llm.build_decision_llm() is None
+
+
+def test_build_decision_llm_none_when_same_model(monkeypatch):
+    monkeypatch.setattr(llm, "LLM_MODEL_DECISION", "same/model")
+    monkeypatch.setattr(llm, "MODEL_NAME", "same/model")
+    assert llm.build_decision_llm() is None
+
+
+def test_build_decision_llm_uses_decision_model(monkeypatch):
+    monkeypatch.setattr(llm, "BASE_URL", "http://example.com/v1")
+    monkeypatch.setattr(llm, "API_KEY", "k")
+    monkeypatch.setattr(llm, "LLM_MODEL_DECISION", "fast/model")
+    monkeypatch.setattr(llm, "MODEL_NAME", "slow/model")
+    client = llm.build_decision_llm()
+    assert client.model_name == "fast/model"
+
+
+def test_chat_template_kwargs_sent(monkeypatch):
+    """llama.cpp / vLLM 用模板参数关思考：这种网关不认 reasoning_effort，留空。"""
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "")
     monkeypatch.setattr(llm, "CHAT_TEMPLATE_KWARGS", {"enable_thinking": False})
     client = make_llm(monkeypatch, captured)
     client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
     assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert "reasoning_effort" not in captured["body"]
+
+
+def test_http_error_carries_gateway_body(monkeypatch):
+    """换网关时最需要看到的是服务端说哪个字段不对，不能只报 400。"""
+    captured = {}
+    monkeypatch.setattr(llm, "BASE_URL", "http://example.com/v1")
+    monkeypatch.setattr(llm, "API_KEY", "k")
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "off")
+
+    class Resp:
+        status_code = 400
+        text = '{"error":{"message":"Model \\"X\\" is not supported"}}'
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        err = llm.requests.HTTPError("400 Client Error")
+        err.response = Resp()
+        raise err
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    client = llm.LLM("test-model")
+    try:
+        client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[], retries=0)
+    except RuntimeError as exc:
+        assert "HTTP 400" in str(exc)
+        assert "not supported" in str(exc)
+    else:
+        raise AssertionError("应当抛 RuntimeError")
 
 
 class FakeStreamResponse:

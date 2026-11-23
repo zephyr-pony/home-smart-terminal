@@ -12,6 +12,7 @@ from config import (
     LLM_BASE_URL,
     LLM_API_KEY,
     LLM_MODEL,
+    LLM_MODEL_DECISION,
     LLM_REASONING_EFFORT,
     LLM_CHAT_TEMPLATE_KWARGS,
 )
@@ -32,13 +33,32 @@ RETRIES = 2
 
 
 def _apply_reasoning(body):
-    """把「关思考」的相关参数塞进请求体，两个后端参数名不同，都支持。"""
+    """把「关思考」的相关参数塞进请求体，两个后端参数名不同，都支持。
+
+    取值原样透传：各网关自己的枚举不一样（commandcode 只认 off/low/medium/high/xhigh/max，
+    aisp 认 none），代码替它归一化只会在换网关时静默 400。留空或写 `omit` 才表示不传。
+    """
     effort = str(REASONING_EFFORT or "").strip().lower()
-    if effort and effort != "off":
+    if effort and effort != "omit":
         body["reasoning_effort"] = effort
     if CHAT_TEMPLATE_KWARGS:
         body["chat_template_kwargs"] = CHAT_TEMPLATE_KWARGS
     return body
+
+
+def _describe_error(exc):
+    """把网关的错误正文带出来。
+
+    只报「400 Bad Request」几乎没法排查——实际是 model 名不被这个端点支持。
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return exc
+    try:
+        body = (response.text or "").strip().replace("\n", " ")
+    except Exception:  # 流式响应的正文可能读不出来
+        body = ""
+    return RuntimeError("HTTP %s：%s" % (response.status_code, body[:300] or "(无正文)"))
 
 
 class LLM:
@@ -59,6 +79,7 @@ class LLM:
         max_tokens=512,
         retries=RETRIES,
         on_delta=None,
+        model=None,
     ):
         """调用带 tools 参数的接口，返回完整响应 dict（供 agent loop 使用）。
 
@@ -74,7 +95,7 @@ class LLM:
         }
         """
         body = {
-            "model": self.model_name,
+            "model": model or self.model_name,
             "messages": messages,
             "temperature": temperature,
         }
@@ -108,7 +129,7 @@ class LLM:
                     raise ValueError("LLM 响应缺少 choices/message")
                 return data
             except (requests.RequestException, ValueError) as exc:
-                last_error = exc
+                last_error = _describe_error(exc)
                 if attempt < retries:
                     time.sleep(1 + attempt)
 
@@ -122,13 +143,14 @@ class LLM:
         tool_choice="auto",
         max_tokens=512,
         on_delta=None,
+        model=None,
     ):
         """流式版本：拿到一段就回调一段，返回与 chat_with_tools 相同结构。
 
         on_delta 在工具调用轮可能一次都不会触发（模型只吐 tool_calls）。
         """
         body = {
-            "model": self.model_name,
+            "model": model or self.model_name,
             "messages": messages,
             "temperature": temperature,
             "stream": True,
@@ -152,7 +174,7 @@ class LLM:
             resp.raise_for_status()
             return self._consume_stream(resp, on_delta)
         except Exception as exc:
-            raise RuntimeError(f"LLM 流式请求失败：{exc}") from exc
+            raise RuntimeError(f"LLM 流式请求失败：{_describe_error(exc)}") from exc
 
     @staticmethod
     def _consume_stream(resp, on_delta):
@@ -214,3 +236,15 @@ class LLM:
                 "finish_reason": finish or "stop",
             }]
         }
+
+
+def build_decision_llm():
+    """第一轮（决策/调工具）用更快的模型；没配或与回答轮同名时返回 None。
+
+    分开的意义：决策轮只要「选对工具和参数」，回答轮才需要措辞。但工具选错就是
+    整件事做错，所以换模型必须过评测集，不能只看快了多少。
+    """
+    name = (LLM_MODEL_DECISION or "").strip()
+    if not name or name == MODEL_NAME:
+        return None
+    return LLM(name)
