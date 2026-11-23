@@ -38,3 +38,6 @@ scripts/oc_usage.py
 # ---- 系统文件 ----
 Thumbs.db
 .DS_Store
+
+# ---- 本机备份（里面有 .env，绝不入库）----
+backups/
