@@ -120,6 +120,14 @@ def seed_task_dated(assistant):
 
 def seed_fact(assistant):
     assistant.clarifier.store.add_entity("property", "自己家")
+    # 按真实写入路径落库的键：澄清会把「自己家」并进句子，模型存成
+    # subject=自己家 / predicate=水费户号
+    assistant.facts.store("自己家", "水费户号", "12345678")
+
+
+def seed_fact_bare_subject(assistant):
+    """反例：主体没带家庭名、属性和事情分开存，和查询时的说法对不上。"""
+    assistant.clarifier.store.add_entity("property", "自己家")
     assistant.facts.store("水费", "户号", "12345678")
 
 
@@ -188,9 +196,11 @@ case("事实：改品牌说清旧值", "牛奶现在是伊利的",
 case("事实：查品牌", "牛奶是什么牌子的",
      setup=lambda a: a.facts.store("牛奶", "品牌", "蒙牛"),
      any_tools=("fact_search", "fact_list"), has=("蒙牛",))
-# 已知问题：澄清会把「自己家，水费户号是多少」整句交给模型，而入库时的 subject
-# 是「水费」，两次的键对不上。要先定「主体是否带家庭名」，见 ROADMAP 待决策。
-case("事实：查户号（已知问题）", "水费户号是多少", setup=seed_fact,
+# 已知问题：事实的键和查询都是自由文本，`Facts.search` 用整串 LIKE 匹配，
+# 「水费户号」既不是 subject「水费」也不是 predicate「户号」的连续子串，查不到。
+# 正常写入路径（带实体澄清）键能对齐；这条盯的是键一旦对不上就没有兜底（D46）。
+case("事实：查户号（键对不上，已知问题）", "水费户号是多少",
+     setup=seed_fact_bare_subject,
      any_tools=("fact_search", "fact_list"), has=("12345678",), known=True)
 
 # ---------- 家居（只读） ----------
