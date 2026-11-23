@@ -79,6 +79,9 @@ due_tasks = []
 
 # SSE 订阅者队列集合（每个在线客户端一个 asyncio.Queue，提醒循环向其广播）
 _subscribers = set()
+# 设备通道（小智服务端的提醒桥接器）：单独一组，投递时优先且不合成 mp3。
+# 为什么不复用页面订阅：页面要 mp3 自己播，设备走自己的 speak_txt；两条路径的负载不一样。
+_device_subscribers = set()
 
 # 因订阅队列满而丢弃的事件次数（丢最旧或补投失败都计入；/api/status 暴露）
 dropped_events = 0
@@ -279,14 +282,16 @@ def _task_reminder_text(task):
     return f"提醒：{title} 还有 {left} 天到期"
 
 
-async def _broadcast(event):
+async def _broadcast(event, subscribers=None):
     """把事件推给所有 SSE 订阅者；队列满时丢最旧的，保证最新提醒送达。
 
     丢事件不再静默：计数累加并通过 /api/status 的 dropped_events 暴露。
+    subscribers 为空时默认推给网页订阅者。
     """
     global dropped_events
     payload = json.dumps(event, ensure_ascii=False)
-    for queue in list(_subscribers):
+    targets = _subscribers if subscribers is None else subscribers
+    for queue in list(targets):
         try:
             queue.put_nowait(payload)
         except asyncio.QueueFull:
@@ -359,8 +364,14 @@ async def _send_push(text, event):
 
 
 async def _notify(text, event):
-    """有页面在线就走 SSE（省一条系统通知），否则走 Web Push。"""
+    """按「设备 → 网页 → Web Push」投递，同一提醒只走一条通道。
+
+    设备在线优先：客厅是最自然的落点，而且设备自己会念，不需要我们再合成 mp3。
+    """
     print("🔔 提醒：%s" % text, flush=True)
+    if _device_subscribers:
+        await _broadcast(dict(event, reply=text), _device_subscribers)
+        return
     if _subscribers:
         await _broadcast(dict(event, reply=text, audio=await _synthesize(text)))
         return
@@ -378,7 +389,7 @@ async def _scan_once():
     push_count = 0
     if push_store is not None:
         push_count = await asyncio.to_thread(push_store.count_active)
-    if not (_subscribers or push_count):
+    if not (_device_subscribers or _subscribers or push_count):
         return 0
 
     fresh_items = await asyncio.to_thread(
@@ -410,7 +421,9 @@ async def _scan_once():
 
 
 async def _has_receivers():
-    """有人在收吗：在线页面或未停用的 push 订阅。没有就别消耗提醒额度。"""
+    """有人在收吗：在线设备、在线页面或未停用的 push 订阅。没有就别消耗提醒额度。"""
+    if _device_subscribers:
+        return True
     if _subscribers:
         return True
     if push_store is None:
@@ -845,6 +858,7 @@ async def api_status(_auth=Depends(require_api_token)):
         "dropped_events": dropped_events,  # SSE 队列满导致丢弃的事件数
         "push_enabled": bool(push_sender is not None and push_sender.available),
         "push_subscriptions": push_count,
+        "device_channels": len(_device_subscribers),  # 小智提醒桥接器在线数
         "sessions": len(assistant.sessions),
     }
 
@@ -1280,14 +1294,21 @@ async def api_chat_completions(req: ChatCompletionRequest,
 
 
 @app.get("/api/events")
-async def api_events(_auth=Depends(require_api_token)):
+async def api_events(role: str = "browser", _auth=Depends(require_api_token)):
     """SSE 事件流：主动推送到期提醒。
 
     前端用 fetch 流式读取（EventSource 无法携带 Authorization 头）。
     每个连接一个队列，提醒循环通过 _broadcast 投递。
+
+    role=device 是给小智服务端的提醒桥接器用的：投递优先级最高，
+    事件里不带 mp3（设备用自己的 TTS 念）。其余情况都按网页处理。
     """
+    if role not in ("browser", "device"):
+        raise HTTPException(status_code=400, detail="role 只能是 browser 或 device")
+
     queue = asyncio.Queue(maxsize=50)
-    _subscribers.add(queue)
+    targets = _device_subscribers if role == "device" else _subscribers
+    targets.add(queue)
 
     async def event_stream():
         try:
@@ -1300,7 +1321,7 @@ async def api_events(_auth=Depends(require_api_token)):
                     continue
                 yield f"data: {payload}\n\n"
         finally:
-            _subscribers.discard(queue)
+            targets.discard(queue)
 
     return StreamingResponse(
         event_stream(),

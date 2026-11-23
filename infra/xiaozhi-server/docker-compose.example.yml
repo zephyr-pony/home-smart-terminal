@@ -1,0 +1,25 @@
+# 用法：把本目录与 D:\xiaozhi-server 的 data/、models/ 放在一起（或直接拷过去），
+# 用这个 compose 替换原来的。镜像不再用现成的，而是 Dockerfile 构建出来的带补丁版本。
+services:
+  xiaozhi-esp32-server:
+    build: .
+    container_name: xiaozhi-esp32-server
+    restart: always
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - TZ=UTC
+      # 小马地址：Windows 上用 host.docker.internal；Linux 上直接写 127.0.0.1（host 网络时）
+      - XIAOMA_BASE_URL=http://host.docker.internal:8200
+      # 和小马 .env 里的 API_TOKEN 一致；放在同目录的 .env 里，别写进这个文件
+      - XIAOMA_API_TOKEN=${XIAOMA_API_TOKEN}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # ws 服务端
+      - "8300:8000"
+      # http：OTA / 视觉分析
+      - "8303:8003"
+    volumes:
+      - ./data:/opt/xiaozhi-esp32-server/data
+      - ./models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt

@@ -24,6 +24,7 @@
 | `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
 | `agent/verify.py` | 回复事实校验：口播的日期/星期/名字须与工具参数一致 |
 | `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
+| `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
 | `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
@@ -173,7 +174,9 @@ pytest tests -q
 ### 提醒与 SSE
 
 - 提醒循环同时扫描 `items`（物品到期）和 `tasks`（账单/日程/自定义）。
-- 只有存在「在线 SSE 订阅者或未停用的 push 订阅」时才 `claim_due_reminders`，避免没送达却消耗提醒额度。
+- 投递顺序固定为 **设备 → 网页 → Web Push**，同一提醒只走一条：设备在线时页面不弹、手机不推。
+- 设备通道是同一 SSE 端点的 `?role=device`（小智提醒桥用）；设备事件**不带 mp3**，设备用自己的 TTS 念。
+- 只有存在「在线设备、在线 SSE 订阅者或未停用的 push 订阅」时才 `claim_due_reminders`，避免没送达却消耗提醒额度。
 - 提醒状态落库（`reminded_at`），冷却由 `REMINDER_COOLDOWN_HOURS` 控制。
 - SSE 事件格式：`data: {json}\n\n`，心跳为注释行；队列满时丢最旧并累加 `dropped_events`，不要静默丢。
 - 前端用 `fetch` 流式读取而非 `EventSource`（需要携带 `Authorization`）。

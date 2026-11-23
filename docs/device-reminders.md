@@ -11,6 +11,15 @@
 - 同一提醒只走一条通道：**设备在线 → 网页在线 → Web Push**
 - 不做：设备定向选择（多台同时响）、送达确认（ack）、离线补投
 
+## 进度（2026-11-23）
+
+- [x] **小马侧设备通道**：`/api/events?role=device`、优先级 设备 → 网页 → push、
+      设备事件不带 mp3、`/api/status` 暴露 `device_channels`。真实服务验过 1 → 0
+- [x] **小智侧补丁**：`infra/xiaozhi-server/`（桥接模块 + 构建时锚点替换 + Dockerfile）。
+      补丁对当前上游文件验证通过，重复执行幂等
+- [ ] **数字人页联调**：需要 Docker 起来构建镜像
+- 测试：`tests/test_server.py`（优先级/回落/通道）与 `tests/test_reminder_bridge.py`（排队/过期/多设备）
+
 ## 数据流
 
 ```
@@ -60,6 +69,9 @@ data: {"type":"reminder","reply":"提醒：牛奶今天到期","tag":"item-7", .
 | `core/websocket_server.py` | `_handle_connection` 建好 `handler` 后 | `self.devices[device_id] = handler`，`finally` 里移除 |
 | `app.py` | 启动 `WebSocketServer` 后 | `asyncio.create_task(ReminderBridge(config, server.devices).run())` |
 | `plugins_func/register.py` 或 `intentHandler` | 不需要改；`speak_txt` 直接 import | — |
+
+仓库里已经落成 `infra/xiaozhi-server/`：桥接模块、**构建时锚点替换**（不存整份改过的上游文件）、
+Dockerfile 与 compose 示例。锚点对不上会直接构建失败，升级后不会静默少功能；装法见该目录 README。
 
 调用前要按现有轮次初始化（照 `intentHandler` 的做法）：
 

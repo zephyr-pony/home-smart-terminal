@@ -1,4 +1,5 @@
 import io
+import json
 import wave
 
 from fastapi.testclient import TestClient
@@ -176,6 +177,36 @@ def test_pwa_assets_are_served():
     assert sw.headers["service-worker-allowed"] == "/"
 
     assert client.get("/static/icons/icon-192.png").status_code == 200
+
+
+def test_events_rejects_unknown_role(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "")
+
+    client = TestClient(server.app)
+    assert client.get("/api/events?role=robot").status_code == 400
+
+
+def test_events_role_device_uses_its_own_channel(monkeypatch):
+    """设备桥接器订阅 role=device：单独一组，不会被当成网页。
+
+    直接调用端点、不消费流：这是一条无限 SSE，TestClient 消费起来会挂住。
+    """
+    import asyncio
+
+    monkeypatch.setattr(server, "_subscribers", set())
+    monkeypatch.setattr(server, "_device_subscribers", set())
+
+    async def open_device():
+        return await server.api_events(role="device", _auth=None)
+
+    response = asyncio.run(open_device())
+    try:
+        assert response.status_code == 200
+        assert len(server._device_subscribers) == 1
+        assert server._subscribers == set()
+    finally:
+        for queue in list(server._device_subscribers):
+            server._device_subscribers.discard(queue)
 
 
 def test_broadcast_delivers_to_subscriber():
@@ -396,9 +427,11 @@ def test_status_exposes_drop_counter(monkeypatch):
     monkeypatch.setattr(server, "dropped_events", 7)
     monkeypatch.setattr(server, "due_items", [])
     monkeypatch.setattr(server, "due_tasks", [])
+    monkeypatch.setattr(server, "_device_subscribers", {object(), object()})
     client = TestClient(server.app)
     body = client.get("/api/status", headers={"Authorization": "Bearer secret"}).json()
     assert body["dropped_events"] == 7
+    assert body["device_channels"] == 2
     assert body["due_items"] == []
     assert body["due_tasks"] == []
     assert body["task_count"] == 0
@@ -573,6 +606,7 @@ def test_scan_skips_claim_without_any_channel(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "assistant", assistant)
     make_push_env(monkeypatch, tmp_path, FakePushSender())
     monkeypatch.setattr(server, "_subscribers", set())
+    monkeypatch.setattr(server, "_device_subscribers", set())
 
     delivered = asyncio.run(server._scan_once())
     assert delivered == 0
@@ -590,6 +624,7 @@ def test_scan_pushes_when_only_push_subscribers(monkeypatch, tmp_path):
     store.save("https://push.example.com/a", "k", "a")
     monkeypatch.setattr(server, "assistant", assistant)
     monkeypatch.setattr(server, "_subscribers", set())
+    monkeypatch.setattr(server, "_device_subscribers", set())
 
     delivered = asyncio.run(server._scan_once())
     assert delivered == 1
@@ -612,6 +647,7 @@ def test_scan_prefers_sse_over_push(monkeypatch, tmp_path):
     async def run_once():
         queue = asyncio.Queue(maxsize=5)   # 必须在当前事件循环里建
         monkeypatch.setattr(server, "_subscribers", {queue})
+        monkeypatch.setattr(server, "_device_subscribers", set())
         delivered = await server._scan_once()
         return delivered, queue
 
@@ -621,6 +657,49 @@ def test_scan_prefers_sse_over_push(monkeypatch, tmp_path):
     assert queue.qsize() == 1
     payload = queue.get_nowait()
     assert "交电费" in payload
+
+
+def test_scan_prefers_device_over_page_and_push(monkeypatch, tmp_path):
+    """设备在线时只投设备：不合成 mp3、网页不弹、手机不推。"""
+    import asyncio
+
+    item = {"id": 7, "name": "牛奶", "days_left": 0}
+    assistant = FakeDueAssistant(items=FakeDueStore([item]))
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    async def boom(_text):
+        raise AssertionError("设备通道不需要合成 mp3")
+
+    monkeypatch.setattr(server, "_synthesize", boom)
+
+    async def run_once():
+        device_queue = asyncio.Queue(maxsize=5)
+        page_queue = asyncio.Queue(maxsize=5)
+        monkeypatch.setattr(server, "_device_subscribers", {device_queue})
+        monkeypatch.setattr(server, "_subscribers", {page_queue})
+        delivered = await server._scan_once()
+        return delivered, device_queue, page_queue
+
+    delivered, device_queue, page_queue = asyncio.run(run_once())
+    assert delivered == 1
+    assert page_queue.empty()
+    assert sender.sent == []
+    event = json.loads(device_queue.get_nowait())
+    assert event["reply"].startswith("提醒：牛奶")
+    assert "audio" not in event
+
+
+def test_has_receivers_counts_device_channel(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(server, "_device_subscribers", {object()})
+    monkeypatch.setattr(server, "_subscribers", set())
+    monkeypatch.setattr(server, "push_store", None)
+
+    assert asyncio.run(server._has_receivers()) is True
 
 
 async def _fake_synthesize(reply):
