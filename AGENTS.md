@@ -171,7 +171,7 @@ pytest tests -q
 - `execute(**kwargs)` 必须返回**字符串**（直接进 LLM 上下文）。
 - 参数名与 JSON Schema 保持一致；`assistant` 会把 `memory_store` 的 `summary`、`memory_search` 的关键词提取进返回值，改动工具名/参数时注意同步。
 - `camera_look` 是唯一的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
-- `/v1` 里带 `image_url` 的请求走 `Assistant.describe_image`，不进 agent、不进记忆；图片只在内存里用一次，日志不打印 base64。
+- `/v1` 里带 `image_url` 的请求走 `Assistant.describe_image`，不进 agent、不进记忆；图片只在内存里用一次，日志不打印 base64。描述本身在 `vision_context` 里留 `VISION_CONTEXT_SECONDS`（默认 180 秒）供下一句追问，过期即删、不进记忆库。
 
 ### 存储与并发
 

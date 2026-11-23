@@ -53,6 +53,10 @@ LLM_CHAT_TEMPLATE_KWARGS = _get("LLM_CHAT_TEMPLATE_KWARGS", "")
 # 走本机代理 4.7 s（NO_PROXY 设了值会让 requests 跳过 Windows 注册表代理）。
 LLM_PROXY = _get("LLM_PROXY", "")
 
+# 看一眼之后，画面描述在会话里保留多久（秒）。只在内存里，不进记忆库：
+# 用户拍完接着问「那是什么牌子」要能接上，但三天后还拿旧画面回答就是错的。
+VISION_CONTEXT_SECONDS = _get_int("VISION_CONTEXT_SECONDS", 180)
+
 # ---- TTS 语音合成 ----
 TTS_VOICE = _get("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 

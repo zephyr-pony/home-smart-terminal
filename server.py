@@ -1338,7 +1338,10 @@ async def api_chat_completions(req: ChatCompletionRequest,
     # 照片只在这一句里用一次，不落盘、不进记忆，也不走 agent（不是一次对话）。
     if images:
         reply = await asyncio.to_thread(
-            assistant.describe_image, text or "看看画面里有什么", images
+            assistant.describe_image,
+            text or "看看画面里有什么",
+            images,
+            client_id="xiaozhi",
         )
         if req.stream:
             return StreamingResponse(

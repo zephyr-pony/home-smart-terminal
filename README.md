@@ -237,6 +237,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `LLM_MODEL` | （可选） | 模型名 |
 | `LLM_REASONING_EFFORT` | `off` | 思考模式，值原样传给网关：commandcode 用 `off` 关，aisp 用 `none` 关；留空表示不传该参数 |
 | `LLM_PROXY` | 空 | 访问网关走本机代理（如 `http://127.0.0.1:10808`）。直连很慢时配它；留空交给 requests 默认行为 |
+| `VISION_CONTEXT_SECONDS` | `180` | 拍照后「刚才看到什么」在会话里保留多久；只在内存，不进记忆库 |
 | `LLM_CHAT_TEMPLATE_KWARGS` | 空 | 本地 llama.cpp/vLLM 关思考用，JSON，如 `{"enable_thinking": false}` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 语音角色（女声）；男声用 `zh-CN-YunxiNeural` |
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |

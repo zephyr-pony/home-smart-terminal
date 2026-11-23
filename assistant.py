@@ -14,6 +14,7 @@ from config import (
     SESSION_CONTEXT_MAX_CHARS,
     SESSION_CONTEXT_TURNS,
     SESSION_TTL_SECONDS,
+    VISION_CONTEXT_SECONDS,
 )
 from agent.clarify import Clarifier
 from agent.confirm import (
@@ -161,6 +162,10 @@ class Assistant:
         self.session_context_turns = SESSION_CONTEXT_TURNS
         self.session_context_max_chars = SESSION_CONTEXT_MAX_CHARS
         self._session_lock = threading.RLock()
+        # 最近一次「看到」的画面描述：client_id -> {"text", "at"}。
+        # 只在内存里、有 TTL，不进记忆库——拍照是看一眼，不是一条事实。
+        self.vision_context = {}
+        self.vision_context_seconds = VISION_CONTEXT_SECONDS
 
     # ---------- 对外接口 ----------
 
@@ -288,12 +293,13 @@ class Assistant:
         result["text"] = text
         return result
 
-    def describe_image(self, question, images):
+    def describe_image(self, question, images, client_id="xiaozhi"):
         """看一张照片并直接回答（语音终端拍完就念这句）。
 
         照片只在内存里过一遍：不落盘、不记日志、不进对话历史。视觉结果也不写入
         记忆——「冰箱里有牛奶」三天后不一定还成立，写进 FTS 只会让后来的查询
-        拿到过期的画面。
+        拿到过期的画面。但描述会在会话里留一小会儿（`VISION_CONTEXT_SECONDS`），
+        让「那是什么牌子」这种追问能接上，不用再拍一张。
         """
         question = (question or "").strip() or "看看画面里有什么"
         parts = [{"type": "text", "text": question}]
@@ -315,8 +321,33 @@ class Assistant:
         except Exception as exc:
             print(f"⚠️ 看图失败：{exc}")
             reply = ""
-        # 看不清就说看不清：语音里编一句「看到了」比承认失败糟糕得多
-        return reply or "我这边没看清，你再说一遍？"
+        # 看不清就说看不清：语音里编一句「看到了」比承认失败糟糕得多；
+        # 失败也不留「刚才看到」，免得下一句拿空话当依据。
+        if reply:
+            self._remember_observation(client_id, reply)
+            return reply
+        return "我这边没看清，你再说一遍？"
+
+    def _remember_observation(self, client_id, text):
+        if not text or self.vision_context_seconds <= 0:
+            return
+        with self._session_lock:
+            self.vision_context[(client_id or "cli").strip()] = {
+                "text": text.strip(),
+                "at": time.time(),
+            }
+
+    def _recent_observation(self, client_id):
+        """取最近一次画面描述；过期就当没看过（重启就没了，不进库）。"""
+        key = (client_id or "cli").strip()
+        with self._session_lock:
+            item = self.vision_context.get(key)
+            if not item:
+                return None
+            if time.time() - item["at"] > self.vision_context_seconds:
+                self.vision_context.pop(key, None)
+                return None
+            return item["text"]
 
     # ---------- agent loop ----------
 
@@ -340,6 +371,18 @@ class Assistant:
             sys_prompt += CAMERA_PROMPT_LINE
         messages = [{"role": "system", "content": sys_prompt}]
         messages.extend(self._context_messages(client_id))
+        # 刚拍过照：把画面描述带进这一轮，追问「那是什么牌子」不用再拍一张。
+        # 只保留 VISION_CONTEXT_SECONDS 秒，过期和重启都没了（不进记忆库）。
+        observation = self._recent_observation(client_id)
+        if observation:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "刚才摄像头看到：%s\n"
+                    "用户接着问这个画面里的东西时按这句话回答；画面外、看不清的"
+                    "就说看不到，不要猜。" % observation
+                ),
+            })
         messages.append({"role": "user", "content": user_text})
         # 没有摄像头的入口不给这个 schema：模型看不到就不会说「我看到了」
         schemas = [

@@ -609,3 +609,73 @@ def test_describe_image_degrades_on_error():
     reply = assistant.describe_image("桌上有什么", ["data:image/jpeg;base64,AAAA"])
 
     assert "没看清" in reply
+
+
+class ObservationLLM:
+    """同时扮演看图（chat）和 agent（chat_with_tools）。"""
+
+    def __init__(self, vision_reply="桌上有一盒牛奶。", reply="是伊利的。", error=None):
+        self.vision_reply = vision_reply
+        self.reply = reply
+        self.error = error
+        self.calls = []
+        self.vision_calls = 0
+
+    def chat(self, messages, **kwargs):
+        self.vision_calls += 1
+        if self.error:
+            raise self.error
+        return _stop_reply(self.vision_reply)
+
+    def chat_with_tools(self, messages, tools, **kwargs):
+        self.calls.append(list(messages))
+        return _stop_reply(self.reply)
+
+
+def test_vision_description_is_used_in_follow_up():
+    """拍完接着问，要把刚才看到的带进这一轮，而不是再拍一张。"""
+    llm = ObservationLLM()
+    assistant = make_assistant(llm)
+
+    assistant.describe_image("桌上有什么", ["data:image/jpeg;base64,AA"])
+    assistant.process_text("那是什么牌子的", "xiaozhi", device_camera=True)
+
+    messages = llm.calls[-1]
+    assert any("桌上有一盒牛奶" in str(m.get("content") or "")
+               for m in messages if m.get("role") == "system")
+    assert llm.vision_calls == 1  # 没有重新拍
+
+
+def test_vision_description_expires():
+    llm = ObservationLLM()
+    assistant = make_assistant(llm)
+    assistant.vision_context_seconds = 0
+
+    assistant.describe_image("桌上有什么", ["data:image/jpeg;base64,AA"])
+    assistant.process_text("那是什么牌子的", "xiaozhi", device_camera=True)
+
+    messages = llm.calls[-1]
+    assert not any("桌上有一盒牛奶" in str(m.get("content") or "") for m in messages)
+
+
+def test_failed_vision_leaves_no_observation():
+    llm = ObservationLLM(error=RuntimeError("boom"))
+    assistant = make_assistant(llm)
+
+    assert "没看清" in assistant.describe_image("桌上有什么", ["data:image/jpeg;base64,AA"])
+    assistant.process_text("那是什么牌子的", "xiaozhi", device_camera=True)
+
+    messages = llm.calls[-1]
+    assert not any("刚才摄像头看到" in str(m.get("content") or "") for m in messages)
+
+
+def test_vision_observation_is_per_client():
+    """一个客户端的画面不该被另一个客户端拿来回答。"""
+    llm = ObservationLLM()
+    assistant = make_assistant(llm)
+
+    assistant.describe_image("桌上有什么", ["data:image/jpeg;base64,AA"], client_id="xiaozhi")
+    assistant.process_text("那是什么牌子的", "cli")
+
+    messages = llm.calls[-1]
+    assert not any("刚才摄像头看到" in str(m.get("content") or "") for m in messages)

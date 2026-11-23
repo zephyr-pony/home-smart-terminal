@@ -1175,8 +1175,8 @@ class VisionAssistant(FakeAssistant):
         super().__init__()
         self.seen = None
 
-    def describe_image(self, question, images):
-        self.seen = (question, images)
+    def describe_image(self, question, images, client_id="xiaozhi"):
+        self.seen = (question, images, client_id)
         return "桌上有一盒牛奶。"
 
     def process_text(self, *args, **kwargs):

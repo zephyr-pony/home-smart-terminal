@@ -39,11 +39,12 @@ CASES = []
 
 
 def case(name, text, setup=None, tools=None, any_tools=None, type=None,
-         has=(), lacks=(), check=None, known=False):
+         has=(), lacks=(), check=None, known=False, device_camera=False):
     CASES.append({
         "name": name, "text": text, "setup": setup, "tools": set(tools or ()),
         "any_tools": set(any_tools or ()), "type": type,
         "has": has, "lacks": lacks, "check": check, "known": known,
+        "device_camera": device_camera,
     })
 
 
@@ -295,6 +296,28 @@ case("记忆：确认后真删", "把鸡蛋那条记忆删掉", setup=seed_memor
      check=_confirm_then(lambda a: (a.memory.count() == 0, "记忆还剩 %d 条" % a.memory.count())),
      has=("鸡蛋",))
 
+# ---------- 摄像头（2026-11-23） ----------
+# 摄像头本身要真机，这里卡的是「该不该把这一轮交给设备」这条决策。
+
+def _device_call(name="self.camera.take_photo"):
+    def check(assistant, result):
+        call = result.get("device_call") or {}
+        if call.get("name") != name:
+            return False, "device_call=%s" % call
+        question = str((call.get("arguments") or {}).get("question") or "").strip()
+        if not question:
+            return False, "question 为空"
+        return True, ""
+    return check
+
+
+case("摄像头：看一眼交给设备", "看看桌上有什么",
+     device_camera=True, type="device_call", check=_device_call(),
+     lacks=("已拍", "看到了"))
+case("摄像头：没摄像头不返回设备调用", "看看桌上有什么",
+     check=lambda a, r: (not r.get("device_call"),
+                         "不该有 device_call：%s" % r.get("device_call")))
+
 
 def run(only=None):
     passed = 0
@@ -309,7 +332,9 @@ def run(only=None):
         try:
             if item["setup"]:
                 item["setup"](assistant)
-            result = assistant.process_text(item["text"], "eval")
+            result = assistant.process_text(
+                item["text"], "eval", device_camera=item["device_camera"]
+            )
             elapsed = time.time() - started
             reply = str(result.get("reply") or "")
             used = set(result.get("used_tools") or [])
