@@ -1,0 +1,112 @@
+# 反向提醒：服务端 → 设备（方案 A）
+
+> 决策见 `docs/ROADMAP.md` D42；背景是 MCP 只能设备→小马，反向不通。
+
+## 目标与边界
+
+让客厅设备**主动说话**（到期提醒、故障、事件），复用小智已经调好的 VAD / 流式 / 打断。
+
+- 不改固件，不重写语音链路
+- 只 fork `xiaozhi-server`，在它「说话」的既有入口上开一个口子
+- 同一提醒只走一条通道：**设备在线 → 网页在线 → Web Push**
+- 不做：设备定向选择（多台同时响）、送达确认（ack）、离线补投
+
+## 数据流
+
+```
+提醒到期
+  └─ 小马提醒循环（server.py `_scan_once`）
+       ├─ 有小智设备订阅？ ──▶ SSE `/api/events?role=device` ──▶ 小智补丁
+       │                                                     ├─ 选一台空闲连接
+       │                                                     └─ speak_txt(conn, 文本)
+       │                                                          └─ tts/start + Opus + tts/stop ──▶ 设备
+       ├─ 有网页订阅？ ──▶ 现有 SSE（带 mp3）
+       └─ 都没有 ──▶ Web Push
+```
+
+## 小马侧改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `server.py` | `_device_subscribers` 集合；`/api/events` 增加 `role=device` 参数，加入设备集合 |
+| `server.py` | `_notify` 按「设备 → 网页 → push」顺序投递；设备事件**不合成 mp3**（设备自己 TTS） |
+| `server.py` | `_has_receivers` 把设备订阅算作在线，否则提醒循环不会领取 |
+| `server.py` | `/api/status` 增加 `device_channels` 数量，便于排障 |
+| `tests/test_server.py` | 设备在线时只投设备；设备断开后回落到网页 / push；`role=device` 的事件没有 `audio` 字段 |
+
+接口契约（复用现有 SSE）：
+
+```
+GET /api/events?role=device
+Authorization: Bearer <API_TOKEN>
+
+data: {"type":"reminder","reply":"提醒：牛奶今天到期","tag":"item-7", ...}
+```
+
+`reply` 就是要念的整句；设备端不需要 `item/task` 结构，但保留原字段不影响。
+
+## 小智服务端改动清单（fork）
+
+新增文件：
+
+| 文件 | 内容 |
+|---|---|
+| `core/reminder_bridge.py` | `DeviceRegistry`（device_id → conn）+ `ReminderBridge`（订阅 SSE、选空闲设备、调 `speak_txt`、忙时排队） |
+
+修改文件（三处钩子）：
+
+| 文件 | 位置 | 改动 |
+|---|---|---|
+| `core/websocket_server.py` | `_handle_connection` 建好 `handler` 后 | `self.devices[device_id] = handler`，`finally` 里移除 |
+| `app.py` | 启动 `WebSocketServer` 后 | `asyncio.create_task(ReminderBridge(config, server.devices).run())` |
+| `plugins_func/register.py` 或 `intentHandler` | 不需要改；`speak_txt` 直接 import | — |
+
+调用前要按现有轮次初始化（照 `intentHandler` 的做法）：
+
+```python
+conn.sentence_id = uuid.uuid4().hex
+conn.client_abort = False
+speak_txt(conn, text)     # 走它自己的 TTS 队列，不用碰 Opus
+```
+
+空闲判定与排队：
+
+- 忙：`conn.client_is_speaking` 为真，或 `conn.tts.tts_text_queue` 非空 → 入内存队列（上限 20 条）
+- 每 2 秒重试一次；排队超过 10 分钟丢弃并记录日志
+- 没有任何设备连接时**断开 SSE**，让小马自动回落到网页 / push（不要让小马以为设备在线）
+
+配置（小智 `config.yaml`）：
+
+```yaml
+reminders:
+  xiaoma_base_url: http://<小马 IP>:8200
+  api_token: <小马 API_TOKEN>
+  device_id: <可选：只推给这台设备>
+```
+
+## 验收（没有 ESP32 也能做）
+
+小智的数字人测试页本身就是一个设备连接（带 `device-id` 的 WebSocket），可以直接收 `tts`。
+
+1. 起动小马与 xiaozhi-server，打开数字人测试页
+2. 注册表应有 1 台设备；`/api/status` 的 `device_channels` 为 1
+3. 造一条今天到期的物品（`POST /api/chat`：`牛奶今天过期`）
+4. 等一个提醒周期（默认 60s）：设备念出「提醒：牛奶今天到期」
+5. 同时检查：网页没收到这条、手机没收到 push、`reminded_at` 已写
+6. 关掉测试页，再造一条：应回落到网页 SSE（页面在线）或 push
+
+## 已知风险
+
+| 风险 | 处理 |
+|---|---|
+| `speak_txt` 与 `sentence_id` / `tts` 状态耦合，属内部 API | 只调一个入口；升级后先跑上面的验收 |
+| 上游 `_handle_connection` 结构变化 | 钩子只有 3 行，冲突可手工解决；必要时把能力做成通用接口提 PR |
+| 提醒在设备上播放失败但已领取 | 现阶段接受（与 push 失败一致），日志留痕；要做可靠送达再加 ack |
+| 多台设备同时在线 | 现阶段全部播报；定向播放等有多房间需求再做 |
+| 设备正在对话时来提醒 | 排队，不打断；打断策略属于产品决策 |
+
+## 以后要不要走 B
+
+只有当「少一个进程 / 完全掌控延迟 / 不要上游依赖」变成硬需求时，才考虑设备直连小马。
+那时要做的是**服务端**语音主循环（VAD、ASR 流式、TTS 流控、打断、OTA），不是写固件——
+现在的改动清单仍然有用：`speak_txt` 那段就是最小可行的「让设备说话」语义。
