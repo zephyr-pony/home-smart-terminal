@@ -125,6 +125,7 @@ pytest tests -q
   - `record`：额外带 `summary`
   - `query`：额外带 `memories`（`"[时间] 原文"` 字符串列表）
   - `list` / `delete`：额外带 `memories` / `deleted`
+  - `device_call`：额外带 `device_call`（`{"name", "arguments"}`），`reply` 为空——这一轮交给设备执行，`/v1` 据此回 OpenAI `tool_calls`
   - 修改 `_agent_loop` 时必须同步维护这些字段，CLI 和 API 都依赖它们。
 
 ### 澄清
@@ -169,6 +170,8 @@ pytest tests -q
 - 新工具在 `tools.py` 用 `_build(...)` 注册，返回 `{"schema", "execute"}`；`assistant` 会自动聚合，核心循环不用改。
 - `execute(**kwargs)` 必须返回**字符串**（直接进 LLM 上下文）。
 - 参数名与 JSON Schema 保持一致；`assistant` 会把 `memory_store` 的 `summary`、`memory_search` 的关键词提取进返回值，改动工具名/参数时注意同步。
+- `camera_look` 是唯一的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
+- `/v1` 里带 `image_url` 的请求走 `Assistant.describe_image`，不进 agent、不进记忆；图片只在内存里用一次，日志不打印 base64。
 
 ### 存储与并发
 
@@ -248,6 +251,7 @@ pytest tests -q
 ## 常见坑
 
 - 缺少 `.env` 时 `LLM()` 会在启动阶段抛 `RuntimeError`；import 模块本身不受影响，pytest 收集也不会失败。
+- LLM 请求莫名变慢（65 s 级）先看 `LLM_PROXY`：设了 `NO_PROXY` 环境变量的机器上，requests 会跳过 Windows 注册表里的系统代理，变成裸连远端；本机走代理可能只要几秒。
 - `stt.py` 内部才 `import funasr`，导入模块本身不会加载模型。
 - `TTS` 的私有事件循环刻意不关闭（Windows Proactor 下 close 会产生告警）。
 - agent loop 通过 `self.llm.chat_with_tools(...)` 调用 LLM，测试注入一个带同名方法的假实现即可。

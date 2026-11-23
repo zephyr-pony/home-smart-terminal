@@ -21,8 +21,9 @@ def make_llm(monkeypatch, captured):
     monkeypatch.setattr(llm, "BASE_URL", "http://example.com/v1")
     monkeypatch.setattr(llm, "API_KEY", "test-key")
 
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured.update({"url": url, "body": json})
+    def fake_post(url, json=None, headers=None, timeout=None, **kwargs):
+        captured.update({"url": url, "body": json,
+                         "proxies": kwargs.get("proxies")})
         return FakeResponse({
             "choices": [{"message": {"role": "assistant", "content": "好"}}]
         })
@@ -117,7 +118,7 @@ def test_http_error_carries_gateway_body(monkeypatch):
         status_code = 400
         text = '{"error":{"message":"Model \\"X\\" is not supported"}}'
 
-    def fake_post(url, json=None, headers=None, timeout=None):
+    def fake_post(url, json=None, headers=None, timeout=None, **kwargs):
         err = llm.requests.HTTPError("400 Client Error")
         err.response = Resp()
         raise err
@@ -149,7 +150,7 @@ def patch_stream(monkeypatch, lines, captured):
     monkeypatch.setattr(llm, "BASE_URL", "http://example.com/v1")
     monkeypatch.setattr(llm, "API_KEY", "k")
 
-    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False, **kwargs):
         captured["body"] = json
         return FakeStreamResponse(lines)
 
@@ -193,3 +194,26 @@ def test_stream_assembles_tool_calls(monkeypatch):
     assert data["choices"][0]["finish_reason"] == "tool_calls"
     assert message["tool_calls"][0]["function"]["name"] == "memory_search"
     assert message["tool_calls"][0]["function"]["arguments"] == '{"keywords":"牛奶"}'
+
+
+def test_proxy_passed_when_configured(monkeypatch):
+    """直连 65 s、走本机代理 4.7 s：配了 LLM_PROXY 就必须把 proxies 传给 requests。"""
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "")
+    monkeypatch.setattr(llm, "LLM_PROXY", "http://127.0.0.1:10808")
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert captured["proxies"] == {
+        "http": "http://127.0.0.1:10808",
+        "https": "http://127.0.0.1:10808",
+    }
+
+
+def test_proxy_untouched_when_unset(monkeypatch):
+    """没配就让 requests 走默认（系统代理/直连），不要强塞一个空 dict。"""
+    captured = {}
+    monkeypatch.setattr(llm, "REASONING_EFFORT", "")
+    monkeypatch.setattr(llm, "LLM_PROXY", "")
+    client = make_llm(monkeypatch, captured)
+    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert captured["proxies"] is None

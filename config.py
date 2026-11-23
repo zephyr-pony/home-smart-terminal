@@ -48,6 +48,10 @@ LLM_REASONING_EFFORT = _get("LLM_REASONING_EFFORT", "")
 # 部分后端（llama.cpp / vLLM）用 chat_template_kwargs 关思考，值是 JSON，如
 # LLM_CHAT_TEMPLATE_KWARGS={"enable_thinking": false}
 LLM_CHAT_TEMPLATE_KWARGS = _get("LLM_CHAT_TEMPLATE_KWARGS", "")
+# 可选：访问 LLM 网关走本机代理，如 http://127.0.0.1:10808。
+# 留空 = 交给 requests 的默认行为。2026-11-23 实测：同一条请求直连 65 s、
+# 走本机代理 4.7 s（NO_PROXY 设了值会让 requests 跳过 Windows 注册表代理）。
+LLM_PROXY = _get("LLM_PROXY", "")
 
 # ---- TTS 语音合成 ----
 TTS_VOICE = _get("TTS_VOICE", "zh-CN-XiaoxiaoNeural")

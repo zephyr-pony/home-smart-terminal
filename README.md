@@ -17,6 +17,7 @@
 - 🗓️ **物品与到期提醒**：记录物品到期日，服务端主动推送（SSE）即将到期 / 已过期提醒并语音播报
 - ✅ **通用任务提醒**：账单、日程、自定义提醒统一进 tasks，和物品到期一起推送；说「电费交了」可标记完成
 - 🖥️ **Web 控制台**：聊天之外提供概览统计、数据列表、搜索/筛选/分页、任务编辑和系统配置，移动端可用
+- 📷 **摄像头看一眼**（带摄像头的语音终端）：说「看看桌上有什么」，设备拍一张图由模型回答；图片只在内存里用一次，不落盘、不做人脸识别，详见 [ROADMAP §26](docs/ROADMAP.md)
 - ⚙️ **配置集中管理**：所有参数在 `.env` 中，密钥不入库
 
 ## 演进方向：家庭生活 Agent
@@ -188,6 +189,24 @@ python scripts/mcp_probe.py --token <MCP_TOKEN> \
 
 细节、报文形状与实测记录见 [`docs/xiaozhi-mcp.md`](docs/xiaozhi-mcp.md)。
 
+#### 摄像头（拍照问答）
+
+设备带摄像头时（如立创·实战派 S3），小智会把 `self.camera.take_photo` 作为工具交给 LLM。
+小马这边要做的只有两步：
+
+1. 说「看看桌上有什么」→ `/v1/chat/completions` 回一个 `tool_calls`（`finish_reason=tool_calls`），
+   参数是 `{"question": "桌上有什么"}`；
+2. 设备拍完把图 POST 到小智的视觉端点，那边转给小马的 `/v1`（`image_url`），小马用同一个模型
+   看图回答，设备直接播报。
+
+要点：
+
+- 只有请求里的 `tools` 含 `self.camera.take_photo` 时，模型才看得见 `camera_look`
+  （网页 / CLI 没有摄像头，不会说「我看到了」）
+- 图片不进记忆、不落盘、日志不打印 base64；画面里有人也不做身份推断
+- 小智侧需要 `Intent: function_call`、`server.vision_explain`、`VLLM` 三项配置，
+  见 [docs/ROADMAP.md §26](docs/ROADMAP.md)
+
 ## 到期提醒
 
 - 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品和任务，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的会**主动推送**：有网页在线时走 SSE，弹出提醒并语音播报；没有网页在线时走 Web Push，发系统通知。
@@ -217,6 +236,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `LLM_API_KEY` | （必填） | API 密钥 |
 | `LLM_MODEL` | （可选） | 模型名 |
 | `LLM_REASONING_EFFORT` | `off` | 思考模式，值原样传给网关：commandcode 用 `off` 关，aisp 用 `none` 关；留空表示不传该参数 |
+| `LLM_PROXY` | 空 | 访问网关走本机代理（如 `http://127.0.0.1:10808`）。直连很慢时配它；留空交给 requests 默认行为 |
 | `LLM_CHAT_TEMPLATE_KWARGS` | 空 | 本地 llama.cpp/vLLM 关思考用，JSON，如 `{"enable_thinking": false}` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 语音角色（女声）；男声用 `zh-CN-YunxiNeural` |
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |

@@ -54,8 +54,10 @@ class FakeAssistant:
         self.items = FakeItems()
         self.tasks = FakeTasks()
         self.sessions = {}
+        self.seen_device_camera = None
 
-    def process_text(self, text, client_id, on_delta=None):
+    def process_text(self, text, client_id, on_delta=None, device_camera=False):
+        self.seen_device_camera = device_camera
         if on_delta is not None:
             on_delta(text)
         return {
@@ -909,7 +911,7 @@ def test_last_user_text_handles_parts():
 class StreamingAssistant(FakeAssistant):
     """模拟 agent 分两段吐出内容。"""
 
-    def process_text(self, text, client_id, on_delta=None):
+    def process_text(self, text, client_id, on_delta=None, device_camera=False):
         if on_delta is not None:
             on_delta("第一句。")
             on_delta("第二句。")
@@ -937,7 +939,7 @@ def test_chat_completions_stream_emits_multiple_chunks(monkeypatch):
 
 def test_chat_completions_stream_survives_agent_error(monkeypatch):
     class BrokenAssistant(FakeAssistant):
-        def process_text(self, text, client_id, on_delta=None):
+        def process_text(self, text, client_id, on_delta=None, device_camera=False):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(server, "API_TOKEN", "secret")
@@ -1072,3 +1074,174 @@ def test_memories_sort_oldest(monkeypatch):
 
     bad = client.get("/api/memories?sort=unknown", headers=headers)
     assert bad.status_code == 400
+
+# ---------- 摄像头：tool_calls 与看图（2026-11-23） ----------
+
+CAMERA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "self.camera.take_photo",
+        "description": "拍一张照片并回答关于画面里的问题",
+        "parameters": {
+            "type": "object",
+            "properties": {"question": {"type": "string"}},
+            "required": ["question"],
+        },
+    },
+}
+
+
+class CameraAssistant(FakeAssistant):
+    """模拟带摄像头时 agent 的决定：这一轮交给设备拍，不生成回复。"""
+
+    def process_text(self, text, client_id, on_delta=None, device_camera=False):
+        self.seen_device_camera = device_camera
+        return {
+            "type": "device_call", "reply": "",
+            "used_tools": ["camera_look"], "domain": "vision", "action": "look",
+            "device_call": {
+                "name": "self.camera.take_photo",
+                "arguments": {"question": "桌上有什么"},
+            },
+        }
+
+
+def _camera_request(client, stream=False):
+    return client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "model": "xiaoma",
+            "messages": [{"role": "user", "content": "看看桌上有什么"}],
+            "stream": stream,
+            "tools": [CAMERA_TOOL],
+        },
+    )
+
+
+def test_chat_completions_stream_returns_camera_tool_call(monkeypatch):
+    assistant = CameraAssistant()
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+
+    response = _camera_request(client, stream=True)
+
+    assert response.status_code == 200
+    assert "self.camera.take_photo" in response.text
+    assert '"finish_reason": "tool_calls"' in response.text
+    assert '"finish_reason": "stop"' not in response.text
+    assert "桌上有什么" in response.text
+    assert response.text.rstrip().endswith("[DONE]")
+    assert assistant.seen_device_camera is True
+
+
+def test_chat_completions_non_stream_returns_camera_tool_call(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", CameraAssistant())
+    client = TestClient(server.app)
+
+    body = _camera_request(client).json()
+
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    call = choice["message"]["tool_calls"][0]
+    assert call["type"] == "function"
+    assert call["function"]["name"] == "self.camera.take_photo"
+    assert json.loads(call["function"]["arguments"]) == {"question": "桌上有什么"}
+
+
+def test_chat_completions_passes_camera_capability(monkeypatch):
+    """有没有摄像头由请求里的设备工具决定，不能让网页入口也以为能看。"""
+    assistant = FakeAssistant()
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+
+    client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={"messages": [{"role": "user", "content": "你好"}]},
+    )
+    assert assistant.seen_device_camera is False
+
+    _camera_request(client)
+    assert assistant.seen_device_camera is True
+
+
+class VisionAssistant(FakeAssistant):
+    def __init__(self):
+        super().__init__()
+        self.seen = None
+
+    def describe_image(self, question, images):
+        self.seen = (question, images)
+        return "桌上有一盒牛奶。"
+
+    def process_text(self, *args, **kwargs):
+        raise AssertionError("看图不该走进对话")
+
+
+def _vision_request(client, stream=False):
+    return client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "桌上有什么"},
+                    {"type": "image_url",
+                     "image_url": {"url": "data:image/jpeg;base64,AAAA"}},
+                ],
+            }],
+            "stream": stream,
+        },
+    )
+
+
+def test_chat_completions_routes_images_to_vision(monkeypatch):
+    assistant = VisionAssistant()
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+
+    body = _vision_request(client).json()
+
+    assert body["choices"][0]["message"]["content"] == "桌上有一盒牛奶。"
+    assert assistant.seen[0] == "桌上有什么"
+    assert assistant.seen[1] == ["data:image/jpeg;base64,AAAA"]
+
+
+def test_chat_completions_streams_vision_reply(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", VisionAssistant())
+    client = TestClient(server.app)
+
+    response = _vision_request(client, stream=True)
+
+    assert "桌上有一盒牛奶。" in response.text
+    assert '"finish_reason": "stop"' in response.text
+    assert response.text.rstrip().endswith("[DONE]")
+
+
+def test_user_message_splits_text_and_images():
+    text, images = server._user_text_and_images({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "这个是不是"},
+            {"type": "text", "text": "牛奶"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AA"}},
+        ],
+    })
+    assert text == "这个是不是牛奶"
+    assert images == ["data:image/jpeg;base64,AA"]
+
+
+def test_has_camera_tool_ignores_other_tools():
+    assert server._has_camera_tool([CAMERA_TOOL]) is True
+    assert server._has_camera_tool([]) is False
+    assert server._has_camera_tool([
+        {"type": "function", "function": {"name": "self.get_device_status"}},
+    ]) is False

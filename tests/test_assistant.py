@@ -28,9 +28,11 @@ class ScriptedLLM:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
+        self.tools_seen = []
 
     def chat_with_tools(self, messages, tools, **kwargs):
         self.calls.append(list(messages))
+        self.tools_seen.append([t["function"]["name"] for t in tools])
         return self.responses.pop(0)
 
 
@@ -500,3 +502,110 @@ def test_empty_list_does_not_trigger_the_question():
     result = assistant.process_text("我有哪些提醒")
 
     assert result["reply"] == "你现在没有待办"
+
+
+# ---------- 摄像头（2026-11-23） ----------
+
+def test_camera_tool_hidden_without_device():
+    """网页/CLI 没有摄像头：schema 里不给这个工具，模型就没机会说「看到了」。"""
+    llm = ScriptedLLM([_stop_reply("好的")])
+    assistant = make_assistant(llm)
+
+    assistant.process_text("你好")
+
+    assert "camera_look" not in llm.tools_seen[0]
+
+
+def test_camera_tool_offered_on_device():
+    llm = ScriptedLLM([_stop_reply("好的")])
+    assistant = make_assistant(llm)
+
+    assistant.process_text("你好", device_camera=True)
+
+    assert "camera_look" in llm.tools_seen[0]
+
+
+def test_camera_look_becomes_device_call():
+    """带摄像头时，「看看」不执行也不写库，而是把拍照交给调用方。"""
+    llm = ScriptedLLM([_tool_call_reply("camera_look", {"question": "桌上有什么"})])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("看看桌上有什么", "xiaozhi", device_camera=True)
+
+    assert result["type"] == "device_call"
+    assert result["reply"] == ""
+    assert result["device_call"] == {
+        "name": "self.camera.take_photo",
+        "arguments": {"question": "桌上有什么"},
+    }
+    assert assistant.memory.count() == 0
+    assert len(llm.calls) == 1  # 不再花一轮组织回话，照片结果由设备直接播报
+
+
+def test_camera_look_falls_back_to_user_words():
+    """模型没给 question 时用原话，别让设备拍完却问了个空问题。"""
+    llm = ScriptedLLM([_tool_call_reply("camera_look", {})])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("看看冰箱里还有牛奶吗", "xiaozhi", device_camera=True)
+
+    assert result["device_call"]["arguments"]["question"] == "看看冰箱里还有牛奶吗"
+
+
+def test_camera_look_without_device_says_it_cannot():
+    llm = ScriptedLLM([
+        _tool_call_reply("camera_look", {"question": "桌上有什么"}),
+        _stop_reply("这个入口看不到画面。"),
+    ])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("看看桌上有什么")
+
+    assert result["type"] == "chat"
+    assert "camera_look" in result["used_tools"]
+    assert result["reply"] == "这个入口看不到画面。"
+
+
+class VisionLLM:
+    def __init__(self, reply="左边是个红色的方块。", error=None):
+        self.reply = reply
+        self.error = error
+        self.messages = None
+
+    def chat(self, messages, **kwargs):
+        self.messages = messages
+        if self.error:
+            raise self.error
+        return _stop_reply(self.reply)
+
+
+def test_describe_image_passes_image_to_model():
+    llm = VisionLLM("桌上有一盒牛奶。")
+    assistant = make_assistant(llm)
+
+    reply = assistant.describe_image("桌上有什么", ["data:image/jpeg;base64,AAAA"])
+
+    assert reply == "桌上有一盒牛奶。"
+    parts = llm.messages[1]["content"]
+    assert parts[0] == {"type": "text", "text": "桌上有什么"}
+    assert parts[1]["type"] == "image_url"
+    assert parts[1]["image_url"]["url"] == "data:image/jpeg;base64,AAAA"
+    assert assistant.memory.count() == 0  # 画面不进记忆
+
+
+def test_describe_image_keeps_two_images_at_most():
+    llm = VisionLLM()
+    assistant = make_assistant(llm)
+
+    assistant.describe_image("看看", ["data:image/jpeg;base64,A"] * 5)
+
+    assert len(llm.messages[1]["content"]) == 3  # 文本 + 两张图
+
+
+def test_describe_image_degrades_on_error():
+    """看图失败要老实说没看清，不能编一句「看到了」。"""
+    assistant = make_assistant(VisionLLM(error=RuntimeError("gateway down")))
+
+    reply = assistant.describe_image("桌上有什么", ["data:image/jpeg;base64,AAAA"])
+
+    assert "没看清" in reply

@@ -85,6 +85,22 @@ HOME_CONTROL_PROMPT_LINE = """
 - 门锁、燃气、热水器这类不允许语音操作，要如实说去米家 App 处理，不要假装能开
 - home_control 的返回里已经有「执行后读到的真实状态」，照它说，别自己编"已关闭\""""
 
+# 带摄像头的终端才追加：看不见的东西不能顺着用户的话编
+CAMERA_PROMPT_LINE = """
+- 需要看画面（"看看桌上有什么""这是什么""冰箱里还有牛奶吗"）→ camera_look；决定要看就直接调，不要先说话
+- 只有用户明确要看某个东西时才调用；打招呼、闲聊、问时间、问事一律不要拍照
+- 只有这张照片能看到的范围：背后、别的房间、照片外的东西都要说看不到，不要顺着猜"""
+
+# 看图这一类请求没有工具，只有一张照片
+VISION_SYSTEM_PROMPT = """你在看客厅终端刚拍的一张照片，要直接用口语回答家里人的问题。
+今天日期：{today}
+
+要求：
+- 只回答问的那件事，一到两句话，不要客套，也不要描述拍照过程
+- 看不清、拿不准就说「没看清」，不要猜
+- 不判断画面里是谁，也不做身份推断
+"""
+
 
 class Assistant:
     """家庭智能终端核心编排。"""
@@ -148,8 +164,12 @@ class Assistant:
 
     # ---------- 对外接口 ----------
 
-    def process_text(self, text, client_id=None, on_delta=None):
+    def process_text(self, text, client_id=None, on_delta=None, device_camera=False):
         """处理用户文本输入，返回结构化结果 dict。
+
+        Args:
+            device_camera: 这个入口背后的终端带摄像头（只有 /v1 的语音终端会传 True）。
+                带的时候才把 camera_look 给模型看，避免网页/CLI 上模型说「我看到了」。
 
         Returns:
             dict: {"type": ..., "reply": str, ...}
@@ -162,6 +182,7 @@ class Assistant:
                 - "chat":   闲聊
                 - "clarify": 需要用户补充信息
                 - "confirm": 等待用户确认高风险操作
+                - "device_call": 需要设备端执行（现在只有拍照），device_call 里带工具名和参数
         """
         text = (text or "").strip()
         if not text:
@@ -228,7 +249,9 @@ class Assistant:
 
         # 3) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
         try:
-            rtype, answer, extras = self._agent_loop(text, client_id, on_delta)
+            rtype, answer, extras = self._agent_loop(
+                text, client_id, on_delta, device_camera=device_camera
+            )
         except ConfirmationRequired as exc:
             self._record_turn(client_id, text, exc.reply)
             return self._result(
@@ -246,7 +269,9 @@ class Assistant:
         reply = {"type": rtype, "reply": answer}
         reply.update(extras)
 
-        self._record_turn(client_id, text, answer)
+        # 交给设备拍照的那一轮没有回话，记进上下文只会让下一句被「看东西」带偏
+        if rtype != "device_call":
+            self._record_turn(client_id, text, answer)
         return reply
 
     def process_voice(self, stt, audio_path, client_id=None):
@@ -263,15 +288,46 @@ class Assistant:
         result["text"] = text
         return result
 
+    def describe_image(self, question, images):
+        """看一张照片并直接回答（语音终端拍完就念这句）。
+
+        照片只在内存里过一遍：不落盘、不记日志、不进对话历史。视觉结果也不写入
+        记忆——「冰箱里有牛奶」三天后不一定还成立，写进 FTS 只会让后来的查询
+        拿到过期的画面。
+        """
+        question = (question or "").strip() or "看看画面里有什么"
+        parts = [{"type": "text", "text": question}]
+        for url in (images or [])[:2]:  # 最多两张，防止有人一次塞几十张
+            if url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+        messages = [
+            {
+                "role": "system",
+                "content": VISION_SYSTEM_PROMPT.replace(
+                    "{today}", datetime.now().strftime("%Y年%m月%d日")
+                ),
+            },
+            {"role": "user", "content": parts},
+        ]
+        try:
+            data = self.llm.chat(messages, temperature=0.3, max_tokens=220)
+            reply = (data["choices"][0]["message"].get("content") or "").strip()
+        except Exception as exc:
+            print(f"⚠️ 看图失败：{exc}")
+            reply = ""
+        # 看不清就说看不清：语音里编一句「看到了」比承认失败糟糕得多
+        return reply or "我这边没看清，你再说一遍？"
+
     # ---------- agent loop ----------
 
-    def _agent_loop(self, user_text, client_id=None, on_delta=None):
+    def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
 
         client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
 
         Returns:
-            (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）
+            (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）；
+            device_camera 时还可能返回 device_call（这一轮交给设备端执行，不落库也不生成回复）。
         """
         sys_prompt = AGENT_SYSTEM_PROMPT.replace(
             "{today}", datetime.now().strftime("%Y年%m月%d日")
@@ -280,10 +336,16 @@ class Assistant:
             sys_prompt += HOME_PROMPT_LINE
             if getattr(self.home, "control_enabled", False):
                 sys_prompt += HOME_CONTROL_PROMPT_LINE
+        if device_camera:
+            sys_prompt += CAMERA_PROMPT_LINE
         messages = [{"role": "system", "content": sys_prompt}]
         messages.extend(self._context_messages(client_id))
         messages.append({"role": "user", "content": user_text})
-        schemas = [t["schema"] for t in self.tools]
+        # 没有摄像头的入口不给这个 schema：模型看不到就不会说「我看到了」
+        schemas = [
+            t["schema"] for t in self.tools
+            if device_camera or t["schema"]["function"]["name"] != "camera_look"
+        ]
         tools_by_name = self._tools_by_name
         used_tools = []
         used_tool_names = set()
@@ -294,6 +356,7 @@ class Assistant:
         summary = None
         search_keywords = None
         search_n = 5
+        device_call = None
 
         for _turn in range(self.max_agent_loops):
             # 第一轮只决定「调不调工具、调哪个」，第二轮才组织要说的话；
@@ -342,6 +405,16 @@ class Assistant:
                     if name not in used_tool_names:
                         used_tools.append(name)
                         used_tool_names.add(name)
+                    # 摄像头：画面在设备端，本机没有。把这次调用原样交给调用方
+                    # （/v1 转成 tool_calls 让 xiaozhi 去拍），这一轮不再生成回复。
+                    if name == "camera_look" and device_camera:
+                        device_call = {
+                            "name": "self.camera.take_photo",
+                            "arguments": {
+                                "question": (args.get("question") or user_text).strip(),
+                            },
+                        }
+                        break
                     if self.confirm_write_actions and name in CONFIRMABLE_WRITES \
                             and name in self.confirm_write_actions:
                         question = self._write_confirmation_question(name, args, user_text)
@@ -401,6 +474,8 @@ class Assistant:
                         "tool_call_id": tc.get("id", ""),
                         "content": str(result),
                     })
+                if device_call is not None:
+                    break
                 if blocked_reply is not None:
                     answer = blocked_reply
                     break
@@ -418,6 +493,16 @@ class Assistant:
             break
         else:
             answer = "抱歉，我绕晕了，能再说一遍吗？"
+
+        # 要看东西：把工具调用交给调用方去设备端执行。这里不生成回复（设备会把
+        # 画面描述直接念出来），也不写库——照片是一次性的，不进记忆。
+        if device_call is not None:
+            return "device_call", "", {
+                "used_tools": used_tools,
+                "domain": "vision",
+                "action": "look",
+                "device_call": device_call,
+            }
 
         # 模型嘴上说的日期可能是旧值（实测 4B 会）。先过一遍事实校验：日期、星期、
         # 名字和工具参数对不上就整句换成参数拼的模板句；对得上时再补一句回显

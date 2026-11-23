@@ -21,7 +21,7 @@
 - 不做通用编程/办公 Agent。
 - 不做多 Agent 协作和自动自我训练。
 - 不做全屋智能的完整设备控制，先预留 MQTT/Home Assistant 接口。
-- 不做复杂视觉能力，先保留图片输入扩展点。
+- 不做复杂视觉能力（视频、连续看、人脸识别）；单张拍照问答按 §26 做，算「图片输入扩展点」的落地。
 
 ## 2. 现状与差距
 
@@ -1324,4 +1324,93 @@ B（设备直连小马、自己重写语音主循环）留作远期。取舍见 
 | D44 | 唤醒词用内置还是定制「小马」 | 待定；2026-11-23 核实上游支持 `USE_CUSTOM_WAKE_WORD`（MultiNet，拼音），「小马」可自编译、不必等定制。选项：A 内置「你好小智」/ B MultiNet「小马」/ C 定制 WakeNet。B 需真机实测远场命中率 |
 | D45 | 写操作成功后是否跳过第二轮 LLM | **2026-11-23 已撤回短路（`4554eae` → 本轮回退）。** 用户判断：不准确或有歧义的不入库；既然入库的都是准确的，回话就该由模型完整组织，不能为 2 秒省掉理解。写入首句回到 7–8 s 可以接受 |
 | D46 | 结构化事实的检索口径 | **2026-11-23 已落地（方案一）**：`Facts.search` 把查询拆成二字组、逐词 AND 匹配「主体+属性+值」拼接文本，不再要求整串连续。仍不做同义改写（「账号」对「户号」查不到），那是下一步的事 |
-| D47 | LLM 网关长期用 aisp 还是 commandcode | **试用中（2026-11-23）**：commandcode `deepseek/deepseek-v4.1-flash`，评测集 **30/30**（平均 5.8 s/条）；闲聊首字 2.0 s、写入 5.5 s、查询 7.0 s（aisp 为 3.4 / 6.4 / 6.4）。精度不掉、查询略慢。`.env` 已切，aisp 注释保留可回退；正式拍板等真机听感 |
+| D47 | LLM 网关长期用 aisp 还是 commandcode | **试用中（2026-11-23）**：commandcode `deepseek/deepseek-v4.1-flash`，评测集 **30/30**（平均 5.8 s/条）；闲聊首字 2.0 s、写入 5.5 s、查询 7.0 s（aisp 为 3.4 / 6.4 / 6.4）。精度不掉、查询略慢。`.env` 已切，aisp 注释保留可回退；正式拍板等真机听感。**晚复跑 30/30、平均 7.1 s**：首轮 65 s/条是机器没走代理（`NO_PROXY` 让 requests 跳过系统代理），配 `LLM_PROXY` 后回到 2–3 s，详见 `changes-2026-11.md` §31 |
+
+## 26. 摄像头：单张拍照问答（2026-11-23 已实现，待真机验证）
+
+范围先说清楚：只做「用户问 → 拍一张 → 说出来」。不做视频、不做连续看、不做人脸/身份识别。
+这是 §1「保留图片输入扩展点」的落地，不是开「复杂视觉能力」。
+
+### 可行性已核实（2026-11-23）
+
+| 环节 | 结论 |
+|---|---|
+| 板级 | 上游 `lichuang_dev_board.cc` 有 `InitializeCamera()` / `GetCamera()`；`mcp_server.cc` 在 `board.GetCamera()` 非空时注册 `self.camera.take_photo` |
+| 上游链路 | 设备拍 QVGA(320×240) → JPEG → multipart POST 到服务端下发的 vision 地址 → 文本 → **`Action.RESPONSE` 直接播报，不经过二次 LLM** |
+| 模型 | 实测 `deepseek/deepseek-v4.1-flash`（`reasoning_effort=off`）能读图：320×200 测试图答出「左边红方块、右边蓝圆圈」，2.15 s / 2.19 s |
+| 断点 | ① 小智 `Intent: nointent` 不把设备工具交给 LLM；② `server.vision_explain` 为空；③ 我们 `/v1` 只取文本、不看 `tools` |
+
+### 决策（2026-11-23）
+
+- **D48 已定**：做单张拍照问答，照片内容进我们的大脑（能带记忆/事实上下文），允许图片经
+  commandcode 网关识别（和文字一样出门，不存原图）。
+- 代价：比纯文字多 3–5 秒（拍照约 1 s + 视觉 2–4 s）。上游把视觉结果直接播报，所以只多这一次，
+  不会「两轮变三轮」。
+
+### 要改的四处
+
+1. `D:\xiaozhi-server\data\.config.yaml`：`Intent: function_call`、`server.vision_explain:
+   http://192.168.0.138:8303/mcp/vision/explain`（Docker 里 8003 → 宿主机 8303）、`VLLM` 指向
+   `http://host.docker.internal:8200/v1`（模型名如 `xiaoma-vision`）。
+   切 `function_call` 对现有聊天无影响：上游在没有 `tool_calls` 时照常把 `content` 送 TTS。
+2. `tools.py`：注册 `camera_look(question)`，由模型自己判断什么时候要看（不做关键词路由，D43）。
+3. `assistant.py`：该工具不落库，返回「设备调用指令」，agent loop 立即收尾并带出指令。
+   注意第一轮是流式的：模型若先吐了话再决定拍照，话已经播出，收不回来——工具描述要写成
+   「要拍照时直接调，不要先说话」。
+4. `server.py`：`/v1` 有指令时回 SSE `tool_calls`（`finish_reason=tool_calls`）；请求里出现
+   `image_url` 时走视觉分支（同一模型、沿用 `reasoning_effort`），不再走 `_last_user_text`。
+
+### 落地（2026-11-23）
+
+四处都改完了，**没等硬件**：用 curl 模拟小智的请求先把两端验通。
+
+| 位置 | 实际改动 |
+|---|---|
+| `.config.yaml` | 三处配置（原文件备份为 `.config.yaml.bak-20261123-camera`）；YAML 已解析校验 |
+| `tools.py` | `camera_look(question)`；`execute` 只在没有摄像头的入口被调用，直接说「看不到」 |
+| `assistant.py` | `process_text` / `_agent_loop` 加 `device_camera`；**没有摄像头就不把 schema 给模型**；模型调 `camera_look` 时直接转成 `device_call` 收尾（不执行、不落库、不记会话）；新增 `describe_image`（最多两张图、失败降级） |
+| `server.py` | `ChatCompletionRequest.tools`；`_user_text_and_images` / `_has_camera_tool`；`/v1` 看图分支；`device_call` → SSE `tool_calls` 且**不再补一个 stop** |
+
+模拟验证（真模型、本机 /v1）：
+
+| 场景 | 结果 |
+|---|---|
+| 带 `self.camera.take_photo` 工具问「看看桌上有什么」 | 3.4 s 回 `tool_calls`，参数 `{"question": "桌上有什么东西"}`，`finish_reason=tool_calls` |
+| 带同样的工具说「你好呀」 | 5.2 s 纯文字回答，**没有触发拍照** |
+| 直接 POST 一张图（`image_url`） | 2.1–3.0 s 答出「左边一个红色方块，右边一个蓝色圆形」 |
+| **经小智视觉端点**（容器里的 VLLM → 我们 `/v1`） | 3.0 s，回 `{"success":true,"action":"RESPONSE","response":"一个红色的正方形和一个蓝色的圆形。"}` |
+
+小智侧配置确认（容器重启后）：
+
+- 启动日志 `初始化组件: intent成功 function_call`、`get_vision_url` 返回我们的
+  `http://192.168.0.138:8303/mcp/vision/explain`
+- 上游启动那行「视觉分析接口是 http://172.18.0.2:8003/…」是**硬编码打印容器 IP**，
+  不代表实际下发地址，别被它误导（实际用的是 `get_vision_url`）
+- 容器里没有 `server.auth_key`，每次启动随机生成；设备发图用的是 MCP 初始化时下发的 token
+
+测试 381 → 396（assistant 8 条、server 7 条）：schema 有无、`device_call` 形状、
+question 回退原话、无摄像头时的降级、看图不被记忆、失败降级、SSE 顺序。
+
+**踩到的坑**：第一版把「拍照」那一轮的空回复也写进了会话上下文，结果下一句「你好呀」被带偏，
+模型继续去拍照。修法是 `device_call` 这一轮不 `_record_turn`。
+
+### 硬规矩
+
+- 原图不落盘，内存里用完即弃；日志不打印 base64。
+- 不做人脸识别/身份推断：画面里有人也不描述是谁（声纹只作软身份，同 D38–D41）。
+- 每次拍照设备屏幕会显示 `% self.camera.take_photo`（上游自带），不要关掉。
+- 视觉失败要降级成「我这边没看清，你再说一遍」，不能假装看到了。
+
+### 验收（无硬件可先做一半）
+
+- [x] 模拟小智发一个带 `tools` 的流式请求 → 我们回 `tool_calls`，参数里有 question（2026-11-23）
+- [x] 直接 POST 一张 JPEG 到 `/v1`（`image_url`）→ 回一句正确的中文描述（2026-11-23）
+- [ ] 真机：说「看看桌上有什么」→ 屏幕出现 `% 拍照` → 3–5 秒内播报，内容对得上
+- [ ] 真机：遮住镜头/拔掉 WiFi → 说「看看」要给出失败提示，不能编内容
+
+### 待决策
+
+| 编号 | 问题 | 倾向 |
+|---|---|---|
+| D49 | 拍照的触发口径 | 待定：A 模型自主判断（「冰箱里有什么」也会拍）/ B 只在用户明确说「看看/拍照/这是什么」时拍 / C 做成开关。A 最自然、B 最保守；倾向 A + 屏幕提示，先真机看误拍多不多 |
+| D50 | 照片内容要不要写进记忆 | 待定。画面是一次性的，写进 FTS 会让「冰箱里有牛奶」这类陈述三天后还查得到。倾向只进当轮对话，不入库 |

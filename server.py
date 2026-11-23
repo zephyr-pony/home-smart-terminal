@@ -660,6 +660,9 @@ class ChatCompletionRequest(BaseModel):
 
     model: str = ""
     messages: list = Field(default_factory=list)
+    # 设备工具清单（function_call 模式下 xiaozhi 会把设备端 MCP 工具一起发过来）。
+    # 现在只用它判断「这台终端有没有摄像头」，不把这些工具交给我们的模型。
+    tools: list = Field(default_factory=list)
     stream: bool = False
 
 
@@ -691,7 +694,7 @@ def _sse_chunk(completion_id, created, model, delta, finish_reason=None):
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
-async def _chat_completion_stream(text, completion_id, created, model):
+async def _chat_completion_stream(text, completion_id, created, model, device_camera=False):
     """把 agent loop 的流式输出转成 OpenAI SSE。
 
     agent 在 to_thread 里跑（同步阻塞），通过 queue 把 delta 交回事件循环；
@@ -705,7 +708,9 @@ async def _chat_completion_stream(text, completion_id, created, model):
 
     def work():
         try:
-            result = assistant.process_text(text, "xiaozhi", on_delta=on_delta)
+            result = assistant.process_text(
+                text, "xiaozhi", on_delta=on_delta, device_camera=device_camera
+            )
             loop.call_soon_threadsafe(queue.put_nowait, ("done", result))
         except Exception as exc:
             traceback.print_exc()
@@ -714,6 +719,7 @@ async def _chat_completion_stream(text, completion_id, created, model):
     worker = asyncio.create_task(asyncio.to_thread(work))
 
     emitted = ""
+    tool_call_sent = False
     try:
         yield _sse_chunk(completion_id, created, model, {"role": "assistant"})
         while True:
@@ -724,7 +730,30 @@ async def _chat_completion_stream(text, completion_id, created, model):
                 continue
 
             if kind == "done":
-                full = (payload.get("reply") or "").strip()
+                result = payload or {}
+                device_call = result.get("device_call")
+                if device_call:
+                    # 要看东西：交给 xiaozhi 去驱动设备拍照。照片结果由视觉端点
+                    # 直接播报，不再回到这里生成第二段话。
+                    arguments = json.dumps(
+                        device_call.get("arguments") or {}, ensure_ascii=False
+                    )
+                    yield _sse_chunk(completion_id, created, model, {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_" + secrets.token_hex(8),
+                            "type": "function",
+                            "function": {
+                                "name": device_call.get("name") or "self.camera.take_photo",
+                                "arguments": arguments,
+                            },
+                        }],
+                    })
+                    yield _sse_chunk(completion_id, created, model, {}, "tool_calls")
+                    tool_call_sent = True
+                    break
+
+                full = (result.get("reply") or "").strip()
                 if not emitted:
                     rest = full
                 elif full.startswith(emitted):
@@ -743,32 +772,68 @@ async def _chat_completion_stream(text, completion_id, created, model):
                 )
             break
 
-        yield _sse_chunk(completion_id, created, model, {}, "stop")
+        if not tool_call_sent:
+            yield _sse_chunk(completion_id, created, model, {}, "stop")
         yield "data: [DONE]\n\n"
     finally:
         await worker
 
 
-def _last_user_text(messages):
-    """OpenAI messages → 最后一条用户文本。
+async def _chat_completion_reply(reply, completion_id, created, model):
+    """把一次性生成的回复也按 SSE 发出去（调用方要的是流式协议）。"""
+    yield _sse_chunk(completion_id, created, model, {"role": "assistant"})
+    if reply:
+        yield _sse_chunk(completion_id, created, model, {"content": reply})
+    yield _sse_chunk(completion_id, created, model, {}, "stop")
+    yield "data: [DONE]\n\n"
 
-    content 可能是字符串，也可能是多段 parts（语音终端偶尔这么传），都拼起来。
+
+def _user_text_and_images(message):
+    """一条 user 消息 → (文本, 图片 url 列表)。
+
+    content 可能是字符串，也可能是多段 parts：语音终端传文本，摄像头传 image_url。
     """
+    content = (message or {}).get("content")
+    if isinstance(content, str):
+        return content.strip(), []
+    texts = []
+    images = []
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type")
+            if kind in (None, "text"):
+                text = part.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+            elif kind == "image_url":
+                image = part.get("image_url")
+                url = image.get("url") if isinstance(image, dict) else image
+                if isinstance(url, str) and url:
+                    images.append(url)
+    return "".join(texts).strip(), images
+
+
+def _last_user_message(messages):
     for message in reversed(messages or []):
-        if (message or {}).get("role") != "user":
-            continue
-        content = (message or {}).get("content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") in (None, "text"):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-            return "".join(parts).strip()
-    return ""
+        if (message or {}).get("role") == "user":
+            return message
+    return {}
+
+
+def _last_user_text(messages):
+    """OpenAI messages → 最后一条用户文本。"""
+    return _user_text_and_images(_last_user_message(messages))[0]
+
+
+def _has_camera_tool(tools):
+    """设备工具清单里有没有拍照（有才把 camera_look 给模型看）。"""
+    for tool in tools or []:
+        function = (tool or {}).get("function") or {}
+        if function.get("name") == "self.camera.take_photo":
+            return True
+    return False
 
 
 async def _synthesize(reply: str) -> str:
@@ -1262,26 +1327,88 @@ async def api_chat_completions(req: ChatCompletionRequest,
     if assistant is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪")
 
-    text = _last_user_text(req.messages)
-    if not text:
-        raise HTTPException(status_code=400, detail="messages 里没有用户文本")
+    message = _last_user_message(req.messages)
+    text, images = _user_text_and_images(message)
 
     created = int(time.time())
     completion_id = "chatcmpl-" + secrets.token_hex(8)
+    model = req.model or "xiaoma"
+
+    # 看图：摄像头拍完把图传到小智的 vision 端点，那边再转到这里。
+    # 照片只在这一句里用一次，不落盘、不进记忆，也不走 agent（不是一次对话）。
+    if images:
+        reply = await asyncio.to_thread(
+            assistant.describe_image, text or "看看画面里有什么", images
+        )
+        if req.stream:
+            return StreamingResponse(
+                _chat_completion_reply(reply, completion_id, created, model),
+                media_type="text/event-stream",
+            )
+        return {
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": reply},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": len(text), "completion_tokens": len(reply),
+                      "total_tokens": len(text) + len(reply)},
+        }
+
+    if not text:
+        raise HTTPException(status_code=400, detail="messages 里没有用户文本")
+
+    # 有摄像头才让模型用 camera_look；没有就别让它说「我看到了」
+    device_camera = _has_camera_tool(req.tools)
 
     if req.stream:
         # 先把 head 发出去，再在后台线程跑 agent loop，按 delta 实时下发，
         # 让语音端第一句就能开始合成。
         return StreamingResponse(
-            _chat_completion_stream(text, completion_id, created, req.model or "xiaoma"),
+            _chat_completion_stream(text, completion_id, created, model, device_camera),
             media_type="text/event-stream",
         )
 
     try:
-        result = await asyncio.to_thread(assistant.process_text, text, "xiaozhi")
+        result = await asyncio.to_thread(
+            assistant.process_text, text, "xiaozhi", device_camera=device_camera
+        )
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"处理失败: {exc}")
+
+    # 要看东西：不生成回复，回一个 tool_calls 让 xiaozhi 驱动设备拍照
+    device_call = result.get("device_call")
+    if device_call:
+        arguments = json.dumps(device_call.get("arguments") or {}, ensure_ascii=False)
+        return {
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_" + secrets.token_hex(8),
+                        "type": "function",
+                        "function": {
+                            "name": device_call.get("name") or "self.camera.take_photo",
+                            "arguments": arguments,
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {"prompt_tokens": len(text), "completion_tokens": 0,
+                      "total_tokens": len(text)},
+        }
 
     reply = result.get("reply", "") or ""
 
@@ -1289,7 +1416,7 @@ async def api_chat_completions(req: ChatCompletionRequest,
         "id": completion_id,
         "object": "chat.completion",
         "created": created,
-        "model": req.model or "xiaoma",
+        "model": model,
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": reply},

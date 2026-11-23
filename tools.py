@@ -662,6 +662,36 @@ def get_home_tools(home):
     return tools
 
 
+def get_camera_tool():
+    """看一眼前方：拍照这一动作在设备端，服务端只负责说「要看」。
+
+    真正的照片走小智那条链：我们把调用转成 tool_calls，设备拍完直接播报画面描述。
+    这里留的 execute 只服务于没有引摄像头的入口（CLI / 网页），说明看不了就行，
+    免得模型编一段「我看到……」出来。
+    """
+    def look(question=""):
+        return "这个入口没有摄像头，看不到画面。"
+
+    return _build(
+        name="camera_look",
+        description=(
+            "看一眼前方：让客厅终端拍一张照片，再看画面回答。"
+            "用户说'看看''这是什么''桌上有什么''冰箱里还有牛奶吗'这类需要看的时候用它。"
+            "只有用户明确要看某个东西时才调用，打招呼、闲聊、问时间都不要拍照。"
+            "决定要看就直接调用，不要先说话——话一出口就播出去了，收不回来。"
+            "参数 question 写清楚要在画面里确认什么；画面描述会直接念给用户听。"
+        ),
+        properties={
+            "question": {
+                "type": "string",
+                "description": "要在画面里确认什么，例如 '桌上有什么'、'这个是不是牛奶'",
+            },
+        },
+        required=["question"],
+        execute=look,
+    )
+
+
 def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
                   tasks=None, facts=None, home=None):
     """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备）。"""
@@ -677,4 +707,6 @@ def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
         tools += get_fact_tools(facts, proposals)
     if home is not None:
         tools += get_home_tools(home)
+    # 摄像头只在带摄像头的终端上可用；assistant 会按入口决定给不给模型看这个 schema
+    tools.append(get_camera_tool())
     return tools

@@ -15,6 +15,7 @@ from config import (
     LLM_MODEL_DECISION,
     LLM_REASONING_EFFORT,
     LLM_CHAT_TEMPLATE_KWARGS,
+    LLM_PROXY,
 )
 
 BASE_URL = LLM_BASE_URL
@@ -44,6 +45,19 @@ def _apply_reasoning(body):
     if CHAT_TEMPLATE_KWARGS:
         body["chat_template_kwargs"] = CHAT_TEMPLATE_KWARGS
     return body
+
+
+def _proxies():
+    """可选的本机代理。
+
+    只在配了 `LLM_PROXY` 时才干预。直连网关的正常机器不该被绕一圈；而设了
+    `NO_PROXY` 环境变量的机器上，requests 会跳过 Windows 注册表里的系统代理，
+    结果「裸连」到远端——2026-11-23 实测同一条请求直连 65 s、走本机代理 4.7 s。
+    """
+    proxy = str(LLM_PROXY or "").strip()
+    if not proxy:
+        return None
+    return {"http": proxy, "https": proxy}
 
 
 def _describe_error(exc):
@@ -117,6 +131,7 @@ class LLM:
                     json=body,
                     headers={"Authorization": f"Bearer {API_KEY}"},
                     timeout=TIMEOUT,
+                    proxies=_proxies(),
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -134,6 +149,12 @@ class LLM:
                     time.sleep(1 + attempt)
 
         raise RuntimeError(f"LLM 请求失败：{last_error}") from last_error
+
+    def chat(self, messages, temperature=0.3, max_tokens=256):
+        """不带工具的对话：看图、单句改写这类场景用。"""
+        return self.chat_with_tools(
+            messages, [], temperature=temperature, max_tokens=max_tokens
+        )
 
     def chat_with_tools_stream(
         self,
@@ -170,6 +191,7 @@ class LLM:
                 headers={"Authorization": f"Bearer {API_KEY}"},
                 timeout=TIMEOUT,
                 stream=True,
+                proxies=_proxies(),
             )
             resp.raise_for_status()
             return self._consume_stream(resp, on_delta)
