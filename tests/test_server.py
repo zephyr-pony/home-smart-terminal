@@ -291,6 +291,25 @@ def test_task_complete_endpoint(monkeypatch):
     assert assistant.tasks.list_all()[0]["status"] == "done"
 
 
+def test_task_complete_endpoint_returns_next_for_recurring(monkeypatch):
+    """周期任务完成只跳过这次：接口要把下一次带回前端，卡片不能写「已完成」。"""
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    task = assistant.tasks.add("吃药", "2026-11-01T08:00", "custom", recur="daily")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    body = client.post(
+        f"/api/tasks/{task['id']}/complete",
+        headers={"Authorization": "Bearer secret"},
+    ).json()
+
+    assert body["ok"] is True
+    assert body["task"]["recur"] == "daily"
+    assert body["task"]["status"] == "pending"
+    assert assistant.tasks.get(task["id"])["due_at"] != "2026-11-01T08:00:00"
+
+
 def test_list_search_and_pagination(monkeypatch):
     monkeypatch.setattr(server, "API_TOKEN", "secret")
     assistant = make_real_assistant()

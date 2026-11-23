@@ -53,6 +53,7 @@ from config import (
     VAPID_PUBLIC_KEY,
     VAPID_SUBJECT,
 )
+from agent import wording
 from assistant import Assistant
 from adapters.home_ws import run_event_stream
 from adapters.mcp_endpoint import MCPEndpoint
@@ -273,6 +274,11 @@ def _reminder_text(item):
 def _task_reminder_text(task):
     """把到期任务转成一句口语化提醒。"""
     title = task.get("title", "任务")
+    recur = task.get("recur") or ""
+    if recur:
+        # 周期任务不用「到期」：它天天到点，说清楚是哪一个周期就行
+        label = wording.recur_label(recur, task.get("due_at"))
+        return "提醒：%s（%s）" % (title, label) if label else "提醒：%s" % title
     left = task.get("days_left")
     if left is None:
         return f"提醒：{title}"
@@ -1143,7 +1149,9 @@ async def api_task_complete(task_id: int, _auth=Depends(require_api_token)):
     ok = await asyncio.to_thread(assistant.tasks.complete, task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="任务不存在或已完成")
-    return {"ok": True}
+    # 周期任务「完成」只是跳过这一次：把下一次的时间带回前端，卡片别写「已完成」
+    task = await asyncio.to_thread(assistant.tasks.get, task_id)
+    return {"ok": True, "task": task}
 
 
 @app.post("/api/tasks/{task_id}/cancel")

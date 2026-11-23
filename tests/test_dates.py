@@ -1,7 +1,9 @@
 """中文日期短语解析测试（固定「今天」= 2026-11-21 星期六）。"""
-from datetime import date
+from datetime import date, datetime
 
-from agent.dates import has_date_hint, parse_date_text, parse_time_text, resolve_due
+from agent.dates import (
+    has_date_hint, parse_date_text, parse_recurrence, parse_time_text, resolve_due,
+)
 
 TODAY = date(2026, 11, 21)
 
@@ -90,3 +92,45 @@ def test_weekend_phrase():
     # 2026-11-21 是周六，「周末」就是当天；2026-11-22 是周日，顺延到下周六
     assert _date("周末大扫除") == "2026-11-21"
     assert _date("周末大扫除", date(2026, 11, 22)) == "2026-11-28"
+
+
+# ---------- 周期提醒（2026-11-23） ----------
+
+NOW = datetime(2026, 11, 21, 10, 0, 0)  # 周六上午十点
+
+
+def test_recurrence_daily_uses_next_occurrence():
+    # 早上八点已经过了，下一次是明天，不是立刻响
+    assert parse_recurrence("每天早上八点提醒我吃药", TODAY, NOW) == {
+        "recur": "daily", "date": "2026-11-22", "time": "08:00",
+    }
+    # 晚上八点还没到，就从今天开始
+    assert parse_recurrence("每天晚上八点提醒我吃药", TODAY, NOW)["date"] == "2026-11-21"
+
+
+def test_recurrence_weekly():
+    parsed = parse_recurrence("每周三下午三点开会", TODAY, NOW)
+    assert parsed["recur"] == "weekly"
+    assert parsed["date"] == "2026-11-25"  # 周六说「每周三」→ 下周三
+    assert parsed["time"] == "15:00"
+
+
+def test_recurrence_monthly_and_clamp():
+    parsed = parse_recurrence("每月5号早上九点交房租", TODAY, NOW)
+    assert parsed["recur"] == "monthly"
+    assert parsed["date"] == "2026-12-05"  # 本月 5 号已过
+    # 每月 31 号：11 月只有 30 天，按当月最后一天
+    parsed = parse_recurrence("每月31号早上九点", TODAY, NOW)
+    assert parsed["date"] == "2026-11-30"
+
+
+def test_recurrence_without_time_keeps_none():
+    parsed = parse_recurrence("每天提醒我吃药", TODAY, NOW)
+    assert parsed["recur"] == "daily"
+    assert parsed["time"] is None
+
+
+def test_resolve_due_uses_recurrence_anchor():
+    assert resolve_due("每天早上八点提醒我吃药", TODAY, allow_time_only=True,
+                       now=NOW) == "2026-11-22T08:00"
+    assert has_date_hint("每天提醒我吃药") is True

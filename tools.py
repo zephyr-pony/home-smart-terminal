@@ -6,6 +6,7 @@
 """
 from datetime import datetime
 
+from agent import wording
 from memory import Memory
 
 
@@ -284,15 +285,22 @@ def get_entity_tools(entities):
     ]
 
 
+def _recur_label(task):
+    """周期的人话标签：每天 / 每周三 / 每月5号。"""
+    return wording.recur_label(task.get("recur"), task.get("due_at"))
+
+
 def _fmt_tasks(tasks):
     if not tasks:
         return "（暂无任务）"
     lines = []
     for task in tasks:
         due = task.get("due_at") or "未定"
-        lines.append(
-            f"- [{task['id']}] {task['title']}：{due}（{task['status']}）"
-        )
+        label = _recur_label(task)
+        head = f"- [{task['id']}] {task['title']}：{due}"
+        if label:
+            head += "，%s" % label
+        lines.append(f"{head}（{task['status']}）")
     return "\n".join(lines)
 
 
@@ -309,17 +317,19 @@ def _fmt_facts(facts):
 
 
 def get_task_tools(tasks, proposals=None):
-    """任务与提醒工具：账单/日程/自定义提醒。"""
-    def add_task(title, due_at=None, type="custom"):
+    """任务与提醒工具：账单/日程/自定义提醒（支持每天/每周/每月）。"""
+    def add_task(title, due_at=None, type="custom", recur=""):
         if proposals is not None:
-            return proposals.add_task(title, due_at, type)
+            return proposals.add_task(title, due_at, type, recur=recur)
         try:
-            task = tasks.add(title, due_at, type)
+            task = tasks.add(title, due_at, type, recur=recur)
         except ValueError as exc:
             return f"无法创建任务：{exc}"
+        label = _recur_label(task)
+        when = task["due_at"] or "未定"
         return (
             f"已创建任务 #{task['id']}：{task['title']}，"
-            f"时间 {task['due_at'] or '未定'}"
+            f"时间 {when}" + (f"（{label}）" if label else "")
         )
 
     def complete_task(task_id):
@@ -327,6 +337,11 @@ def get_task_tools(tasks, proposals=None):
         if not task_id:
             return "任务 ID 无效"
         if tasks.complete(task_id):
+            task = tasks.get(task_id)
+            if task and task.get("recur"):
+                return "任务 #%d 这次记下了，下次 %s（%s）" % (
+                    task_id, task.get("due_at") or "未定", _recur_label(task),
+                )
             return f"任务 #{task_id} 已完成"
         return f"没有找到未完成的任务 #{task_id}"
 
@@ -381,7 +396,8 @@ def get_task_tools(tasks, proposals=None):
             description=(
                 "创建账单、日程或自定义提醒。用户说'明天交电费''下周三开会'"
                 "'提醒我周五取快递'时调用。due_at 转成 YYYY-MM-DD 或 "
-                "YYYY-MM-DDTHH:MM。"
+                "YYYY-MM-DDTHH:MM。周期提醒（'每天八点吃药''每周三下午三点开会'"
+                "'每月1号交房租'）把 recur 设为 daily/weekly/monthly。"
             ),
             properties={
                 "type": {
@@ -392,7 +408,12 @@ def get_task_tools(tasks, proposals=None):
                 "title": {"type": "string", "description": "任务标题，如 '交电费'"},
                 "due_at": {
                     "type": "string",
-                    "description": "到期时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:MM",
+                    "description": "下一次提醒时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:MM",
+                },
+                "recur": {
+                    "type": "string",
+                    "enum": ["daily", "weekly", "monthly"],
+                    "description": "周期：每天/每周/每月；一次性任务不要传",
                 },
             },
             required=["title"],

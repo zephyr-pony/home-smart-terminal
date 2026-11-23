@@ -62,6 +62,7 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 工具分工：
 - 家庭日常事实/闲聊记录（如"今天买了个新鼠标""冰箱里还有三个鸡蛋"）→ memory_store（summary 用绝对日期）
 - 账单/日程/提醒（如"明天交电费""下周三开会""提醒我周五取快递"）→ task_add（type=bill/schedule/custom，due_at 转 YYYY-MM-DD）
+- 周期提醒（"每天八点吃药""每周三下午三点开会""每月1号交房租"）→ task_add 并设 recur=daily/weekly/monthly；用户没说具体几点就先问一句，不要自己替用户定时间
 - 结构化属性（户号、地址、品牌、型号、偏好）→ fact_store；查询用 fact_search
 - 任务查询/完成/修改/延期（"我有哪些提醒""电费交了""取快递改到明天""这个提醒不用了""明天再说"）→ task_list / task_complete / task_update / task_cancel / task_postpone
 - 家庭事务查询（"酸奶还有几天过期""冰箱里有什么""我有哪些提醒""我记了哪些东西""我记过什么"）→ family_search 一次查完物品/记忆/待办，不要分别调用 item_search / memory_search / task_list

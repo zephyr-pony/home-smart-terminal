@@ -3,6 +3,7 @@
 任务类型：bill（账单）/ schedule（日程）/ custom（自定义提醒）。
 到期提醒与 Items 类似：领取时落库 reminded_at，按冷却时间避免重复提醒。
 """
+import calendar
 import json
 import os
 import sqlite3
@@ -12,7 +13,14 @@ from datetime import datetime, timedelta
 from config import TASKS_DB_PATH
 
 TASK_TYPES = ("bill", "schedule", "custom")
+# 周期提醒：留空 = 一次性。只支持这三种，够家庭场景用，不做完整 RRULE。
+RECUR_TYPES = ("", "daily", "weekly", "monthly")
 ACTIVE_STATUSES = ("pending", "reminded")
+
+_COLUMNS = (
+    "id, type, title, due_at, status, entity_id, payload, "
+    "created_at, reminded_at, completed_at, recur"
+)
 
 
 def _parse_due(value):
@@ -64,21 +72,32 @@ class Tasks:
                 payload TEXT DEFAULT '{}',
                 created_at TEXT,
                 reminded_at TEXT,
-                completed_at TEXT
+                completed_at TEXT,
+                recur TEXT DEFAULT ''
             )
         """)
+        # 老库补列：2026-11-23 之前建的 tasks 只有一次性任务
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(tasks)")}
+        if "recur" not in columns:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN recur TEXT DEFAULT ''")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_due "
             "ON tasks(status, due_at)"
         )
 
-    def add(self, title, due_at=None, type="custom", entity_id=None, payload=None):
+    def add(self, title, due_at=None, type="custom", entity_id=None, payload=None,
+            recur=""):
         title = str(title or "").strip()
         if not title:
             raise ValueError("任务标题不能为空")
         task_type = str(type or "custom").strip()
         if task_type not in TASK_TYPES:
             raise ValueError(f"任务类型必须是 {'/'.join(TASK_TYPES)}")
+        recur = str(recur or "").strip()
+        if recur not in RECUR_TYPES:
+            raise ValueError("周期只能是 daily/weekly/monthly 或留空")
+        if recur and not _parse_due(due_at):
+            raise ValueError("周期任务要有下一次的时间")
 
         due = _parse_due(due_at)
         ts = datetime.now().isoformat()
@@ -87,8 +106,8 @@ class Tasks:
         with self._lock:
             cur = self.conn.execute(
                 "INSERT INTO tasks "
-                "(type, title, due_at, status, entity_id, payload, created_at) "
-                "VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+                "(type, title, due_at, status, entity_id, payload, created_at, recur) "
+                "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
                 (
                     task_type,
                     title,
@@ -96,6 +115,7 @@ class Tasks:
                     entity_id,
                     payload_json,
                     ts,
+                    recur,
                 ),
             )
             self.conn.commit()
@@ -107,23 +127,21 @@ class Tasks:
             "title": title,
             "due_at": due.isoformat() if due else None,
             "status": "pending",
+            "recur": recur,
         }
 
     def list_all(self, status=None):
         with self._lock:
             if status:
                 rows = self.conn.execute(
-                    "SELECT id, type, title, due_at, status, entity_id, payload, "
-                    "       created_at, reminded_at, completed_at "
-                    "FROM tasks WHERE status=? "
+                    "SELECT " + _COLUMNS + " FROM tasks WHERE status=? "
                     "ORDER BY (due_at IS NULL), due_at, id",
                     (status,),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
-                    "SELECT id, type, title, due_at, status, entity_id, payload, "
-                    "       created_at, reminded_at, completed_at "
-                    "FROM tasks ORDER BY (due_at IS NULL), due_at, id"
+                    "SELECT " + _COLUMNS + " FROM tasks "
+                    "ORDER BY (due_at IS NULL), due_at, id"
                 ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
@@ -140,17 +158,73 @@ class Tasks:
             "created_at": row[7],
             "reminded_at": row[8],
             "completed_at": row[9],
+            "recur": row[10] or "",
         }
 
-    def complete(self, task_id):
+    def get(self, task_id):
         with self._lock:
-            cur = self.conn.execute(
-                "UPDATE tasks SET status='done', completed_at=? "
-                "WHERE id=? AND status <> 'done'",
-                (datetime.now().isoformat(), task_id),
-            )
+            row = self.conn.execute(
+                "SELECT " + _COLUMNS + " FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    @staticmethod
+    def _advance(due, recur):
+        """下一次的时间：daily/weekly 直接加；monthly 遇到小月用当月最后一天。"""
+        if recur == "daily":
+            return due + timedelta(days=1)
+        if recur == "weekly":
+            return due + timedelta(days=7)
+        if recur == "monthly":
+            total = due.year * 12 + due.month - 1 + 1
+            year, month = total // 12, total % 12 + 1
+            day = min(due.day, calendar.monthrange(year, month)[1])
+            return due.replace(year=year, month=month, day=day)
+        return due
+
+    def _next_after(self, due_at, recur, now):
+        """把时间推到 now 之后的第一跳；错过多次也只补一次提醒。"""
+        try:
+            due = datetime.fromisoformat(str(due_at))
+        except (TypeError, ValueError):
+            return None
+        if not recur:
+            return None
+        guard = 0
+        while due <= now and guard < 1000:
+            due = self._advance(due, recur)
+            guard += 1
+        return due
+
+    def complete(self, task_id, now=None):
+        """完成：一次性任务标记 done；周期任务只跳过这一次，滚到下一次。"""
+        now = now or datetime.now()
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT " + _COLUMNS + " FROM tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if not row:
+                return False
+            task = self._row_to_dict(row)
+            if task["status"] == "done":
+                return False
+            if task["recur"]:
+                nxt = self._next_after(task["due_at"], task["recur"], now)
+                if nxt is None:
+                    return False
+                self.conn.execute(
+                    "UPDATE tasks SET due_at=?, reminded_at=NULL, status='pending' "
+                    "WHERE id=?",
+                    (nxt.isoformat(), task_id),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE tasks SET status='done', completed_at=? "
+                    "WHERE id=? AND status <> 'done'",
+                    (now.isoformat(), task_id),
+                )
             self.conn.commit()
-            return cur.rowcount > 0
+            return True
 
     def cancel(self, task_id):
         with self._lock:
@@ -189,9 +263,7 @@ class Tasks:
         now = now or datetime.now()
         with self._lock:
             row = self.conn.execute(
-                "SELECT id, type, title, due_at, status, entity_id, payload, "
-                "       created_at, reminded_at, completed_at "
-                "FROM tasks WHERE id=?",
+                "SELECT " + _COLUMNS + " FROM tasks WHERE id=?",
                 (task_id,),
             ).fetchone()
             if not row:
@@ -214,9 +286,7 @@ class Tasks:
             )
             self.conn.commit()
             updated = self.conn.execute(
-                "SELECT id, type, title, due_at, status, entity_id, payload, "
-                "       created_at, reminded_at, completed_at "
-                "FROM tasks WHERE id=?",
+                "SELECT " + _COLUMNS + " FROM tasks WHERE id=?",
                 (task_id,),
             ).fetchone()
         return self._row_to_dict(updated)
@@ -296,9 +366,8 @@ class Tasks:
         today = now.date()
         with self._lock:
             rows = self.conn.execute(
-                "SELECT id, type, title, due_at, status, entity_id, payload, "
-                "       created_at, reminded_at, completed_at "
-                "FROM tasks WHERE due_at IS NOT NULL AND status IN (?, ?)",
+                "SELECT " + _COLUMNS + " FROM tasks "
+                "WHERE due_at IS NOT NULL AND status IN (?, ?)",
                 ACTIVE_STATUSES,
             ).fetchall()
 
@@ -330,9 +399,7 @@ class Tasks:
 
         with self._lock:
             rows = self.conn.execute(
-                "SELECT id, type, title, due_at, status, entity_id, payload, "
-                "       created_at, reminded_at, completed_at "
-                "FROM tasks WHERE due_at IS NOT NULL "
+                "SELECT " + _COLUMNS + " FROM tasks WHERE due_at IS NOT NULL "
                 "AND status IN (?, ?) AND " + where,
                 ACTIVE_STATUSES + params,
             ).fetchall()
@@ -344,13 +411,21 @@ class Tasks:
                     due = datetime.fromisoformat(task["due_at"])
                 except (TypeError, ValueError):
                     continue
+                if task["recur"]:
+                    # 周期提醒到点才响，不像一次性任务那样提前几天提醒：
+                    # 「每天八点吃药」提前一天说没有意义。
+                    if due <= now:
+                        task["days_left"] = (due.date() - today).days
+                        claimed.append(task)
+                    continue
                 days_left = (due.date() - today).days
                 if days_left <= days:
                     task["days_left"] = days_left
                     claimed.append(task)
 
-            if claimed:
-                ids = [task["id"] for task in claimed]
+            one_shot = [task for task in claimed if not task["recur"]]
+            if one_shot:
+                ids = [task["id"] for task in one_shot]
                 placeholders = ",".join("?" * len(ids))
                 self.conn.execute(
                     "UPDATE tasks SET reminded_at=?, "
@@ -358,6 +433,19 @@ class Tasks:
                     f"WHERE id IN ({placeholders})",
                     [now.isoformat()] + ids,
                 )
+            # 周期任务提醒完就滚到下一次，并清掉冷却标记——否则下次会被 24h 冷却挡住
+            for task in claimed:
+                if not task["recur"]:
+                    continue
+                nxt = self._next_after(task["due_at"], task["recur"], now)
+                if nxt is None:
+                    continue
+                self.conn.execute(
+                    "UPDATE tasks SET due_at=?, reminded_at=NULL, status='pending' "
+                    "WHERE id=?",
+                    (nxt.isoformat(), task["id"]),
+                )
+            if claimed:
                 self.conn.commit()
 
         claimed.sort(key=lambda task: (task["days_left"], task["due_at"], task["id"]))

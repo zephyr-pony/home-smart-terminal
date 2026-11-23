@@ -292,3 +292,31 @@ def test_guard_keeps_device_reply_when_tool_ran():
 
     assert replaced is False
     assert reply == "已经把客厅灯关了"
+
+# ---------- 周期提醒（2026-11-23） ----------
+
+def test_recurrence_derived_from_user_words():
+    args, blocked = guard_write_args(
+        "task_add", {"title": "吃药"}, "每天早上八点提醒我吃药", TODAY,
+    )
+    assert blocked is None
+    assert args["recur"] == "daily"
+    assert args["due_at"].endswith("T08:00")
+
+
+def test_recurring_without_time_asks_instead_of_inventing():
+    """「每天提醒我吃药」没说几点：不落库、不替用户定时间。"""
+    args, blocked = guard_write_args(
+        "task_add", {"title": "吃药", "due_at": "2026-11-22"}, "每天提醒我吃药", TODAY,
+    )
+    assert blocked is not None
+    assert "几点" in blocked
+
+
+def test_model_invented_recurrence_is_dropped():
+    args, blocked = guard_write_args(
+        "task_add", {"title": "取快递", "recur": "daily"},
+        "明天下午三点提醒我取快递", TODAY,
+    )
+    assert blocked is None
+    assert args["recur"] == ""

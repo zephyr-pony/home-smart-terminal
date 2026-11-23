@@ -180,7 +180,7 @@ case("提醒：明天下午三点", "明天下午三点提醒我取快递",
      check=_task_due(TOMORROW.isoformat() + "T15:00:00"),
      has=("下午3点",))
 case("提醒：清单", "我有哪些提醒", setup=seed_task,
-     tools=("task_list",), has=("交电费",))
+     any_tools=("task_list", "family_search"), has=("交电费",))
 case("提醒：说完成", "电费交了", setup=seed_task,
      tools=("task_complete",), check=_task_status("done"))
 case("提醒：改到后天保留时刻", "取快递改到后天", setup=seed_task_dated,
@@ -317,6 +317,29 @@ case("摄像头：看一眼交给设备", "看看桌上有什么",
 case("摄像头：没摄像头不返回设备调用", "看看桌上有什么",
      check=lambda a, r: (not r.get("device_call"),
                          "不该有 device_call：%s" % r.get("device_call")))
+
+# ---------- 周期提醒（2026-11-23） ----------
+
+def _recur(expected):
+    def check(assistant, _result):
+        rows = assistant.tasks.list_all() or []
+        if not rows:
+            return False, "任务表是空的"
+        recur = rows[0].get("recur") or ""
+        return recur == expected, "recur=%s（应为 %s）" % (recur, expected)
+    return check
+
+
+case("周期：每天八点吃药", "每天早上八点提醒我吃药",
+     tools=("task_add",), type="record", check=_recur("daily"),
+     has=("吃药",))
+case("周期：每周三下午三点开会", "每周三下午三点提醒我开会",
+     tools=("task_add",), type="record", check=_recur("weekly"))
+case("周期：每月1号交房租", "每月1号早上九点提醒我交房租",
+     tools=("task_add",), type="record", check=_recur("monthly"))
+case("周期：没说几点要追问", "每天提醒我吃药",
+     type="chat", lacks=("已记好", "记下了"),
+     check=lambda a, r: (a.tasks.count() == 0, "没说几点却落库了"))
 
 
 def run(only=None):

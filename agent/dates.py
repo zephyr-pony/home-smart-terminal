@@ -6,6 +6,7 @@
 
 只覆盖家庭场景的常见说法，不追求通用自然语言日期库。
 """
+import calendar
 import re
 from datetime import date, datetime, timedelta
 
@@ -40,12 +41,17 @@ _WEEK_RE = re.compile(r"(下下|下|这|本|上)?\s*个?\s*(?:周|星期|礼拜)
 _DAYS_LATER_RE = re.compile(r"([%s]{1,3})\s*天\s*(?:以后|之后|后)" % _NUM)
 _WEEKS_LATER_RE = re.compile(r"([%s]{1,3})\s*(?:个)?\s*(?:周|星期|礼拜)\s*(?:以后|之后|后)" % _NUM)
 _NEXT_MONTH_DAY_RE = re.compile(r"下\s*个?\s*月\s*([%s]{1,3})\s*[日号]" % _NUM)
+# 周期说法：每天 / 每周X / 每月X号。允许中间夹「个」。
+_RECUR_DAILY_RE = re.compile(r"每天|每日|天天")
+_RECUR_WEEKLY_RE = re.compile(r"每\s*个?\s*(?:周|星期|礼拜)\s*([一二三四五六日天])")
+_RECUR_MONTHLY_RE = re.compile(r"每\s*个?\s*月\s*([%s]{1,3})\s*[日号]" % _NUM)
 
 _DATE_HINT_RE = re.compile(
     r"\d{4}\s*年|\d{1,2}\s*月\s*\d{1,2}\s*[日号]|周[一二三四五六日天]|星期[一二三四五六日天]"
     r"|礼拜[一二三四五六日天]|今天|今日|明天|明日|后天|昨天|前天"
     r"|[%s]{1,3}\s*天\s*(?:以后|之后|后)|下\s*个?\s*月|月[初中底]"
-    r"|年底|年初|年末|年中|周末|下周|本周|这周|过几天|这两天|前几天|最近" % _NUM
+    r"|年底|年初|年末|年中|周末|下周|本周|这周|过几天|这两天|前几天|最近"
+    r"|每天|每日|天天|每\s*个?\s*(?:周|星期|礼拜)|每\s*个?\s*月" % _NUM
 )
 
 
@@ -217,12 +223,87 @@ def parse_time_text(text):
     return _parse_time(str(text or ""))
 
 
-def resolve_due(text, today=None, allow_time_only=False):
+def _add_months(year, month, count):
+    total = year * 12 + (month - 1) + count
+    return total // 12, total % 12 + 1
+
+
+def parse_recurrence(text, today=None, now=None):
+    """识别「每天 / 每周X / 每月X号」，返回下一次的日期与时刻。
+
+    Returns:
+        {"recur": "daily"|"weekly"|"monthly", "date": "YYYY-MM-DD", "time": "HH:MM"|None}
+        不是周期说法时返回 None。没有时间的周期说法也返回（time=None），
+        由 guard 决定要不要追问——不替用户编一个时间。
+
+    为什么 date 是「下一次」而不是今天：晚上八点说「每天早上八点」，如果按今天算，
+    这条提醒会立刻响一次。当天时刻已过就顺延一个周期。
+    """
+    text = str(text or "")
+    today = today or date.today()
+    if isinstance(today, datetime):
+        today = today.date()
+    now = now or datetime.now()
+    clock = _parse_time(text)
+
+    if _RECUR_DAILY_RE.search(text):
+        if not clock:
+            return {"recur": "daily", "date": today.isoformat(), "time": None}
+        hour, minute = [int(part) for part in clock.split(":")]
+        candidate = datetime(today.year, today.month, today.day, hour, minute)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return {"recur": "daily", "date": candidate.date().isoformat(), "time": clock}
+
+    match = _RECUR_WEEKLY_RE.search(text)
+    if match:
+        monday = today - timedelta(days=today.weekday())
+        target = monday + timedelta(days=_WEEKDAY_INDEX[match.group(1)])
+        if not clock:
+            return {"recur": "weekly", "date": target.isoformat(), "time": None}
+        hour, minute = [int(part) for part in clock.split(":")]
+        candidate = datetime(target.year, target.month, target.day, hour, minute)
+        if candidate <= now:
+            candidate += timedelta(days=7)
+        return {"recur": "weekly", "date": candidate.date().isoformat(), "time": clock}
+
+    match = _RECUR_MONTHLY_RE.search(text)
+    if match:
+        day = _cn_to_int(match.group(1))
+        if day and 1 <= day <= 31:
+            if not clock:
+                year, month = _add_months(today.year, today.month, 0)
+                last = calendar.monthrange(year, month)[1]
+                return {
+                    "recur": "monthly",
+                    "date": date(year, month, min(day, last)).isoformat(),
+                    "time": None,
+                }
+            hour, minute = [int(part) for part in clock.split(":")]
+            for offset in range(0, 3):
+                year, month = _add_months(today.year, today.month, offset)
+                last = calendar.monthrange(year, month)[1]
+                candidate = datetime(year, month, min(day, last), hour, minute)
+                if candidate > now:
+                    return {
+                        "recur": "monthly",
+                        "date": candidate.date().isoformat(),
+                        "time": clock,
+                    }
+    return None
+
+
+def resolve_due(text, today=None, allow_time_only=False, now=None):
     """把一句话换算成任务/物品可用的日期字符串。
 
     Returns:
         "YYYY-MM-DD"、"YYYY-MM-DDTHH:MM"，或 None（句子里没有日期）。
     """
+    # 周期说法要先算：它决定「下一次」是哪天（已经过了今天就顺延一个周期）
+    recurring = parse_recurrence(text, today, now)
+    if recurring and recurring["time"]:
+        return "%sT%s" % (recurring["date"], recurring["time"])
+
     parsed = parse_date_text(text, today)
     if parsed:
         if parsed["time"]:

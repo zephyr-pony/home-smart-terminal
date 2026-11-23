@@ -15,7 +15,7 @@
 import re
 from datetime import date, datetime
 
-from agent.dates import has_date_hint, parse_date_text, resolve_due
+from agent.dates import has_date_hint, parse_date_text, parse_recurrence, resolve_due
 
 # 会落库的写工具；用来判断「用户要写，但没有真的写」
 WRITE_TOOLS = (
@@ -104,6 +104,26 @@ def ground_expiry(model_value, user_text, today=None):
     return None
 
 
+def ground_recur(model_value, user_text, today=None, now=None):
+    """周期：只认原话里的「每天/每周X/每月X号」，模型自己说有也不算。
+
+    没有具体时间的周期提醒（「每天提醒我吃药」）不落库——几点吃药是用户知道的，
+    替人编一个 8 点比多问一句更糟。
+
+    Returns:
+        (recur, blocked)：blocked 非空表示这次调用不执行。
+    """
+    parsed = parse_recurrence(user_text, today, now)
+    if not parsed:
+        return "", None
+    if not parsed.get("time"):
+        return "", (
+            "已忽略：周期提醒要说明具体时间（比如「每天早上八点」）。"
+            "先问用户几点提醒，不要自己定时间。"
+        )
+    return parsed["recur"], None
+
+
 def guard_write_args(name, args, user_text, today=None):
     """在工具执行前清洗参数。
 
@@ -128,6 +148,10 @@ def guard_write_args(name, args, user_text, today=None):
             return cleaned, (
                 "已忽略：用户这句话里没有提到「%s」，不要凭空创建任务。" % title
             )
+        recur, blocked = ground_recur(cleaned.get("recur"), text, today)
+        if blocked:
+            return cleaned, blocked
+        cleaned["recur"] = recur
         cleaned["due_at"] = ground_due(cleaned.get("due_at"), text, today)
         return cleaned, None
 

@@ -103,7 +103,7 @@ pytest tests -q
 
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
-- 正确率基线在 `scripts/eval_accuracy.py`：32 条固定输入（含摄像头决策两条）、真模型、每个用例独立内存库，
+- 正确率基线在 `scripts/eval_accuracy.py`：36 条固定输入（含摄像头决策 2 条、周期提醒 4 条）、真模型、每个用例独立内存库，
   卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
   已知问题的用例标 `known=True`，不计入失败。`case()` 的 `device_camera=True` 走「终端带摄像头」分支。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
@@ -192,6 +192,7 @@ pytest tests -q
 - 设备通道是同一 SSE 端点的 `?role=device`（小智提醒桥用）；设备事件**不带 mp3**，设备用自己的 TTS 念。
 - 只有存在「在线设备、在线 SSE 订阅者或未停用的 push 订阅」时才 `claim_due_reminders`，避免没送达却消耗提醒额度。
 - 提醒状态落库（`reminded_at`），冷却由 `REMINDER_COOLDOWN_HOURS` 控制。
+- 周期任务（`recur=daily/weekly/monthly`）**到点才提醒**，领取后滚到下一次并清 `reminded_at`（否则 24h 冷却会挡住第二天）；完成是跳过本次，取消才停整个系列；周期必须有具体时间，缺时间就追问，不替用户定。
 - SSE 事件格式：`data: {json}\n\n`，心跳为注释行；队列满时丢最旧并累加 `dropped_events`，不要静默丢。
 - 前端用 `fetch` 流式读取而非 `EventSource`（需要携带 `Authorization`）。
 

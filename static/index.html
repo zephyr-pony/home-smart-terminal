@@ -843,6 +843,19 @@ html, body {
     pending: '待办', done: '已完成', cancelled: '已取消'
   };
 
+  // 周期任务在列表里说清是哪一种，别只显示下一次的时间
+  function recurLabel(task) {
+    var recur = (task && task.recur) || '';
+    if (!recur) return '';
+    if (recur === 'daily') return '每天';
+    var dateText = ((task && task.due_at) || '').slice(0, 10);
+    var moment = new Date(dateText + 'T00:00:00');
+    if (isNaN(moment.getTime())) return '';
+    if (recur === 'weekly') return '每周' + '日一二三四五六'[moment.getDay()];
+    if (recur === 'monthly') return '每月' + moment.getDate() + '号';
+    return '';
+  }
+
   var ENTITY_LABELS = {
     property: '住所', person: '家庭成员', product: '物品',
     provider: '缴费单位', place: '地点', device: '设备'
@@ -968,7 +981,8 @@ html, body {
         actions += '</div>';
         rows.push('<div class="list-row">#' + esc(task.id) + ' ' + esc(task.title) +
           '<div class="meta">' + esc(task.due_at || '未定') +
-          ' · ' + esc(STATUS_LABELS[task.status] || task.status) + '</div>' + actions + '</div>');
+          ' · ' + esc(STATUS_LABELS[task.status] || task.status) +
+          (task.recur ? ' · ' + esc(recurLabel(task)) : '') + '</div>' + actions + '</div>');
       });
     } else if (kind === 'facts') {
       (data.facts || []).forEach(function(fact) {
@@ -1575,7 +1589,13 @@ html, body {
             var next = (res && res.task && res.task.due_at) ? res.task.due_at.slice(0, 10) : '';
             finish(next ? ('已延期到 ' + next) : '已延期');
           } else if (spec.action === 'complete') {
-            finish('已完成');
+            var updated = res && res.task;
+            if (updated && updated.recur) {
+              var nextAt = (updated.due_at || '').replace('T', ' ').slice(0, 16);
+              finish(nextAt ? ('这次记下了，下次 ' + nextAt) : '这次记下了');
+            } else {
+              finish('已完成');
+            }
           } else {
             finish('已取消');
           }

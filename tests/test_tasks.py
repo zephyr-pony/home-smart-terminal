@@ -155,3 +155,81 @@ def test_update_to_a_date_keeps_the_clock():
     tasks.update(task["id"], due_at="2026-11-26")
 
     assert tasks.list_all()[0]["due_at"] == "2026-11-26T15:00:00"
+
+# ---------- 周期提醒（2026-11-23） ----------
+
+def test_recurring_daily_rolls_after_reminder():
+    tasks = Tasks(":memory:")
+    tasks.add("吃药", "2026-11-21T08:00", type="custom", recur="daily")
+
+    claimed = tasks.claim_due_reminders(
+        days=3, cooldown_hours=24, now=datetime(2026, 11, 21, 8, 0, 5)
+    )
+
+    assert [task["title"] for task in claimed] == ["吃药"]
+    row = tasks.get(claimed[0]["id"])
+    assert row["due_at"] == "2026-11-22T08:00:00"
+    assert row["status"] == "pending"
+    assert row["reminded_at"] is None  # 冷却不挡住下一次
+
+    # 第二天同一时刻还能再提醒
+    again = tasks.claim_due_reminders(
+        days=3, cooldown_hours=24, now=datetime(2026, 11, 22, 8, 0, 5)
+    )
+    assert [task["title"] for task in again] == ["吃药"]
+
+
+def test_recurring_not_reminded_before_due():
+    tasks = Tasks(":memory:")
+    tasks.add("吃药", "2026-11-21T20:00", recur="daily")
+
+    assert tasks.claim_due_reminders(
+        days=3, cooldown_hours=24, now=datetime(2026, 11, 21, 10, 0)
+    ) == []
+
+
+def test_recurring_skips_missed_occurrences():
+    """服务关了一周再开：只补一次，然后滚到下一次，不连放七条。"""
+    tasks = Tasks(":memory:")
+    tasks.add("吃药", "2026-11-01T08:00", recur="daily")
+
+    claimed = tasks.claim_due_reminders(
+        days=3, cooldown_hours=24, now=datetime(2026, 11, 21, 10, 0)
+    )
+
+    assert len(claimed) == 1
+    assert tasks.get(claimed[0]["id"])["due_at"] == "2026-11-22T08:00:00"
+
+
+def test_complete_recurring_skips_to_next():
+    tasks = Tasks(":memory:")
+    task = tasks.add("吃药", "2026-11-21T08:00", recur="daily")
+
+    assert tasks.complete(task["id"], now=datetime(2026, 11, 21, 8, 30)) is True
+
+    row = tasks.get(task["id"])
+    assert row["status"] == "pending"
+    assert row["due_at"] == "2026-11-22T08:00:00"
+
+
+def test_complete_one_shot_still_marks_done():
+    tasks = Tasks(":memory:")
+    task = tasks.add("交电费", "2026-11-21")
+
+    assert tasks.complete(task["id"]) is True
+    assert tasks.get(task["id"])["status"] == "done"
+
+
+def test_monthly_roll_uses_last_day_of_short_month():
+    tasks = Tasks(":memory:")
+    task = tasks.add("交房租", "2026-01-31T09:00", recur="monthly")
+
+    tasks.complete(task["id"], now=datetime(2026, 1, 31, 10, 0))
+
+    assert tasks.get(task["id"])["due_at"] == "2026-02-28T09:00:00"
+
+
+def test_recurring_requires_due_time():
+    tasks = Tasks(":memory:")
+    with pytest.raises(ValueError):
+        tasks.add("吃药", None, recur="daily")

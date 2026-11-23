@@ -9,7 +9,7 @@
 - 有时间才说时间，且说「早上8点」不说「08:00」
 - 确认时引用用户原话：人记得自己说过什么，比记得参数格式更可靠
 """
-from datetime import date
+from datetime import date, datetime
 import re
 
 _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
@@ -86,6 +86,36 @@ def speak_datetime(value, today=None):
     return (day_part + clock) if clock else day_part
 
 
+def recur_label(recur, due_at=None):
+    """每天 / 每周三 / 每月5号。一次性任务返回空串。
+
+    周期任务不说「明天」——说明天反而误导，用户关心的是「每天都在这个点」。
+    """
+    recur = str(recur or "").strip()
+    if recur == "daily":
+        return "每天"
+    if recur not in ("weekly", "monthly"):
+        return ""
+    try:
+        moment = datetime.fromisoformat(str(due_at))
+    except (TypeError, ValueError):
+        return "每周" if recur == "weekly" else "每月"
+    if recur == "weekly":
+        return "每周%s" % "一二三四五六日"[moment.weekday()]
+    return "每月%d号" % moment.day
+
+
+def speak_clock_from_iso(value):
+    """从 YYYY-MM-DDTHH:MM 里取时刻并说人话；没有时间返回空串。"""
+    text = str(value or "")
+    if "T" not in text:
+        return ""
+    raw = text.split("T", 1)[1]
+    head, _, rest = raw.partition(":")
+    minute = rest.split(":", 1)[0] if rest else "0"
+    return speak_clock(head, minute)
+
+
 def summary(tool_name, args):
     """一条写入的参数摘要，不带动词。"""
     args = args or {}
@@ -96,6 +126,9 @@ def summary(tool_name, args):
     if tool_name == "task_add":
         title = str(args.get("title") or "").strip() or "这件事"
         due = str(args.get("due_at") or "").strip()
+        label = recur_label(args.get("recur"), due)
+        if label:
+            return "%s，%s%s" % (title, label, speak_clock_from_iso(due))
         return "%s，%s" % (title, speak_datetime(due)) if due else "%s，没定时间" % title
     if tool_name in ("task_update", "task_postpone"):
         title = str(args.get("title") or "").strip() or "这个提醒"
