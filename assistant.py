@@ -285,6 +285,7 @@ class Assistant:
         used_tools = []
         used_tool_names = set()
         executed_writes = []
+        blocked_reply = None
         summary = None
         search_keywords = None
         search_n = 5
@@ -339,6 +340,13 @@ class Assistant:
                         )
                         raise ConfirmationRequired(question, pending)
                     if name in ("memory_delete", "item_delete"):
+                        resolved, blocked = self._resolve_delete(name, args)
+                        if blocked:
+                            # 删除目标不唯一或不存在：这句就是最终回复。
+                            # 继续让模型转述，它很可能说成「已经删了」。
+                            blocked_reply = blocked
+                            break
+                        args = resolved
                         question = self._confirmation_question(name, args)
                         conversation_id = (client_id or "cli").strip()
                         pending = self.confirmations.request(
@@ -378,6 +386,9 @@ class Assistant:
                         "tool_call_id": tc.get("id", ""),
                         "content": str(result),
                     })
+                if blocked_reply is not None:
+                    answer = blocked_reply
+                    break
                 continue  # 下一轮：带着工具结果再问
 
             # 普通回答（finish=stop）
@@ -417,10 +428,46 @@ class Assistant:
             extras["memories"] = self.memory.search(search_keywords, search_n)
         return rtype, answer, extras
 
+    def _resolve_delete(self, tool_name, args):
+        """删除前先把目标坐实。
+
+        删除不可逆，宁可不做也不能删错：
+        - 精确同名 → 直接用
+        - 只命中一条相似项 → 用它的全名（用户说「牛奶」，清单里是「蒙牛牛奶」）
+        - 多条或没有 → 不删，把情况交给模型去反问
+
+        Returns:
+            (resolved_args, blocked)：blocked 非空表示这次不删。
+        """
+        args = dict(args or {})
+        if tool_name == "item_delete":
+            name = str(args.get("name") or "").strip()
+            if not name:
+                return args, "要删哪个物品？名字不能为空。"
+            exact = self.items.find_exact(name)
+            if exact:
+                return args, None
+            hits = self.items.search(name)
+            if len(hits) == 1:
+                args["name"] = hits[0]["name"]
+                return args, None
+            if len(hits) > 1:
+                names = "、".join(row["name"] for row in hits[:5])
+                return args, f"清单里有好几个相近的：{names}。要删哪一个？请说完整名称。"
+            return args, f"没有找到「{name}」这个物品，什么都没删。"
+
+        keywords = str(args.get("keywords") or "").strip()
+        if not keywords:
+            return args, "要删哪条记忆？关键词不能为空。"
+        hits = self.memory.find_matching(keywords)
+        if not hits:
+            return args, f"没有找到关于「{keywords}」的记忆，什么都没删。"
+        args["count"] = len(hits)
+        return args, None
+
     @staticmethod
     def _confirmation_question(tool_name, args):
         return wording.delete_question(tool_name, args)
-
     @staticmethod
     def _write_confirmation_question(tool_name, args, user_text=None):
         """复述一遍将要写进去的内容，让用户当场发现参数错了。

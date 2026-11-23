@@ -191,17 +191,34 @@ def get_items_tools(items, proposals=None):
         ),
         _build(
             name="item_delete",
-            description="删除物品。用户说'删掉酸奶''不要酸奶了'时调用，会删除名称包含关键词的全部物品。返回被删除的物品。",
+            description=(
+                "删除物品。用户说'删掉酸奶''不要酸奶了'时调用。"
+                "只删名称完全相同的物品，不做模糊匹配：删「酸奶」不会碰「酸奶机」。"
+                "找不到同名物品时返回清单里的相似名称，不要自己改名字重试。"
+            ),
             properties={
-                "name": {"type": "string", "description": "要删除的物品名称"},
+                "name": {"type": "string", "description": "要删除的物品名称，用清单里的全名"},
             },
             required=["name"],
-            execute=lambda name: (
-                lambda deleted: f"已删除 {len(deleted)} 个物品：{', '.join(d['name'] for d in deleted)}"
-                if deleted else f"没有找到物品：{name}"
-            )(items.delete(name)),
+            execute=lambda name: _delete_item(items, name),
         ),
     ]
+
+
+def _delete_item(items, name):
+    """删物品：精确同名才动，相似项只作为提示。"""
+    name = str(name or "").strip()
+    deleted = items.delete_exact(name)
+    if deleted:
+        return "已删除 %d 个物品：%s" % (
+            len(deleted), "、".join(d["name"] for d in deleted),
+        )
+    candidates = [row["name"] for row in items.search(name)][:5]
+    if candidates:
+        return "没有叫「%s」的物品，什么都没删。清单里有：%s。要删哪个请说完整名称。" % (
+            name, "、".join(candidates),
+        )
+    return "没有找到「%s」这个物品，什么都没删。" % name
 
 
 def get_entity_tools(entities):

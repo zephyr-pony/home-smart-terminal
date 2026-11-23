@@ -194,6 +194,15 @@ class Memory:
             for rid, summary, text, ts in rows
         ]
 
+    def find_matching(self, keywords, limit=50):
+        """只查不删：删除前先看会命中什么，避免「没命中却报告删了」或删错。"""
+        with self._lock:
+            rows = self._search_rows(keywords, n_results=limit)
+        return [
+            {"id": row[0], "summary": row[1], "text": row[2], "timestamp": row[3]}
+            for row in rows
+        ]
+
     def delete_by_keywords(self, query):
         """按关键词删除匹配的记忆。
 

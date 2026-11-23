@@ -162,7 +162,8 @@ class ConfirmationManager:
 
         if action_type == "item_delete":
             name = str(payload.get("name") or "")
-            deleted = self.items.delete(name)
+            resolved = self.items.resolve_name(name) or name
+            deleted = self.items.delete_exact(resolved)
             self.store.record_proposal(
                 "item_delete",
                 {"name": name, "deleted": len(deleted)},
@@ -183,7 +184,7 @@ class ConfirmationManager:
                 "type": "chat",
                 "domain": "items",
                 "action": "delete",
-                "reply": f"没有找到物品：{name}",
+                "reply": f"没有叫「{name}」的物品，什么都没删。",
             }
 
         return {

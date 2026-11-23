@@ -128,6 +128,11 @@ def delete_question(tool_name, args):
     args = args or {}
     if tool_name == "memory_delete":
         target = str(args.get("keywords") or "").strip() or "这条"
+        count = args.get("count")
+        if count and count > 1:
+            return "关于「%s」找到 %d 条记忆，要全部删掉吗？回复「确认」或「取消」。" % (
+                target, count,
+            )
         return "确认删除关于「%s」的记忆吗？回复「确认」或「取消」。" % target
     target = str(args.get("name") or "").strip() or "这个物品"
     return "确认删除物品「%s」吗？回复「确认」或「取消」。" % target

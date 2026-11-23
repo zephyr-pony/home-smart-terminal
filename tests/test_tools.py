@@ -145,3 +145,31 @@ def test_home_query_registered_only_when_gateway_configured():
         t["schema"]["function"]["name"]
         for t in get_all_tools(Memory(":memory:"))
     ]
+
+def test_item_delete_tool_refuses_similar_name():
+    """清单里只有「酸奶机」时，说「删掉酸奶」不能删它，只给候选。"""
+    from tools import get_items_tools
+
+    items = Items(":memory:")
+    items.add("酸奶机")
+    tool = [t for t in get_items_tools(items) if t["schema"]["function"]["name"] == "item_delete"][0]
+
+    out = tool["execute"](name="酸奶")
+
+    assert "没有叫「酸奶」的物品" in out
+    assert "酸奶机" in out
+    assert items.list_all() != []
+
+
+def test_item_delete_tool_deletes_exact_match():
+    from tools import get_items_tools
+
+    items = Items(":memory:")
+    items.add("酸奶")
+    items.add("酸奶机")
+    tool = [t for t in get_items_tools(items) if t["schema"]["function"]["name"] == "item_delete"][0]
+
+    out = tool["execute"](name="酸奶")
+
+    assert "已删除 1 个物品" in out
+    assert [row["name"] for row in items.list_all()] == ["酸奶机"]

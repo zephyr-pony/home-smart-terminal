@@ -102,6 +102,61 @@ class Items:
             ).fetchone()
         return self._row_to_dict(row)
 
+    def find_exact(self, name):
+        """按名字精确匹配（去首尾空格、不分大小写）。
+
+        删除、改期这类动作只认这个：用户说「酸奶」，就不该动到「酸奶机」。
+        """
+        name = str(name or "").strip()
+        if not name:
+            return []
+        with self._lock:
+            self._sync_expired_status_locked()
+            rows = self.conn.execute(
+                "SELECT id, name, expiry_date, status, created_at FROM items "
+                "WHERE TRIM(name) = ? COLLATE NOCASE "
+                "ORDER BY created_at DESC, id DESC",
+                (name,),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def resolve_name(self, name):
+        """把用户说的名字落到清单里的真实名字。
+
+        - 精确同名 → 原样返回
+        - 只命中一条相似项 → 返回它的全名（用户说「牛奶」，清单里是「蒙牛牛奶」）
+        - 多条或没有 → None，调用方不要自己猜
+
+        删除是不可逆的，所以「猜名字」这件事只允许在唯一候选时发生。
+        """
+        name = str(name or "").strip()
+        if not name:
+            return None
+        if self.find_exact(name):
+            return name
+        hits = self.search(name)
+        if len(hits) == 1:
+            return hits[0]["name"]
+        return None
+
+    def delete_exact(self, name):
+        """只删同名物品。
+
+        旧实现是 LIKE 匹配后全删：用户说「删掉酸奶」，清单里的「酸奶机」会一起消失。
+        精确匹配不到就什么都不删，相似项只用来提示，由用户补全名字。
+        """
+        rows = self.find_exact(name)
+        if not rows:
+            return []
+        ids = [row["id"] for row in rows]
+        with self._lock:
+            placeholders = ",".join("?" * len(ids))
+            self.conn.execute(
+                "DELETE FROM items WHERE id IN (%s)" % placeholders, ids,
+            )
+            self.conn.commit()
+        return rows
+
     def delete(self, name):
         """按名称模糊匹配并删除全部命中物品。"""
         name = str(name or "").strip()

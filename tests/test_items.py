@@ -110,3 +110,34 @@ def test_get_due_and_list_all_sync_expired_status():
     items.add("过期牛奶", "2020-01-01")
     assert items.get_due(days=3)[0]["status"] == "expired"
     assert items.list_all("expired")[0]["name"] == "过期牛奶"
+
+
+def test_delete_exact_does_not_touch_similar_names():
+    """删「酸奶」不能把「酸奶机」一起删掉。"""
+    items = Items(":memory:")
+    items.add("酸奶")
+    items.add("酸奶机")
+
+    deleted = items.delete_exact("酸奶")
+
+    assert [row["name"] for row in deleted] == ["酸奶"]
+    assert [row["name"] for row in items.list_all()] == ["酸奶机"]
+
+
+def test_delete_exact_only_deletes_same_name_duplicates():
+    items = Items(":memory:")
+    items.add("酸奶")
+    items.add("酸奶")
+
+    deleted = items.delete_exact("酸奶")
+
+    assert len(deleted) == 2
+    assert items.list_all() == []
+
+
+def test_delete_exact_is_noop_when_name_differs():
+    items = Items(":memory:")
+    items.add("酸奶机")
+
+    assert items.delete_exact("酸奶") == []
+    assert [row["name"] for row in items.list_all()] == ["酸奶机"]
