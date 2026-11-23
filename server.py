@@ -822,8 +822,12 @@ async def _save_upload(file, ext):
 # ---------- API 路由 ----------
 
 @app.websocket("/mcp_endpoint/mcp/")
+@app.websocket("/mcp_endpoint/call/")
 async def mcp_endpoint_ws(websocket: WebSocket):
     """小智 MCP 接入点（出站 WebSocket + 裸 JSON-RPC）。
+
+    两个路径指向同一个处理器：小智服务端会把配置里的 `/mcp/` 自动改写成
+    `/call/`（它给自己接入点的约定），我们不改它的代码，加一个等价路由即可。
 
     没配 MCP_TOKEN 就整体关闭：这是一个能写库的入口，不能默认对外。
     """

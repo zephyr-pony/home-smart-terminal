@@ -16,8 +16,11 @@
 - [x] **小马侧设备通道**：`/api/events?role=device`、优先级 设备 → 网页 → push、
       设备事件不带 mp3、`/api/status` 暴露 `device_channels`。真实服务验过 1 → 0
 - [x] **小智侧补丁**：`infra/xiaozhi-server/`（桥接模块 + 构建时锚点替换 + Dockerfile）。
-      补丁对当前上游文件验证通过，重复执行幂等
-- [ ] **数字人页联调**：需要 Docker 起来构建镜像
+      已构建镜像并跑在 `D:\xiaozhi-server`，日志出现 `🔔 小马提醒桥启动`
+- [x] **端到端验收**：用一个保持连接的假设备（协议上与数字人页等价）验过：
+      插入今天到期的物品 → `device_channels=1` → 收到
+      `tts sentence_start 提醒 / 联调提醒 今天到期 / stop` + 76 个音频包；
+      断开后 `device_channels` 回到 0
 - 测试：`tests/test_server.py`（优先级/回落/通道）与 `tests/test_reminder_bridge.py`（排队/过期/多设备）
 
 ## 数据流
@@ -116,6 +119,8 @@ reminders:
 | 提醒在设备上播放失败但已领取 | 现阶段接受（与 push 失败一致），日志留痕；要做可靠送达再加 ack |
 | 多台设备同时在线 | 现阶段全部播报；定向播放等有多房间需求再做 |
 | 设备正在对话时来提醒 | 排队，不打断；打断策略属于产品决策 |
+| 小智 INFO 日志会打印设备握手的 `authorization` 头（含 token） | 日志只在本机、别外发；迁移时可调低日志级别或做脱敏 |
+| 小智会把配置里的 `/mcp/` 改写成 `/call/` | 小马两条路径都接了：`/mcp_endpoint/mcp/` 与 `/mcp_endpoint/call/` |
 
 ## 以后要不要走 B
 

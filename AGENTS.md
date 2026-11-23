@@ -196,6 +196,7 @@ pytest tests -q
 - 方向别搞反：**小智服务端是 MCP 客户端**，出站连我们。路由 `/mcp_endpoint/mcp/`，裸 JSON-RPC 2.0（`initialize` / `tools/list` / `tools/call`），不要改成官方 MCP SDK。
 - 只暴露一个工具 `ask_xiaoma`；`params._meta` 里的 `speakerId/speakerName` 是**不可信输入**，只用来分会话上下文（`client_id = "mcp:<speakerId>"`），不参与鉴权、不能绕过写操作护栏。
 - `MCP_TOKEN` 为空时接入点整体关闭；令牌走查询参数，因为小智的连接 URL 就这么带。协议形状以 `docs/xiaozhi-mcp.md` 为准，改了要同步 `scripts/mcp_probe.py`。
+- 小智会把配置里的 `/mcp/` 自动改写成 `/call/`；`server.py` 把 `/mcp_endpoint/mcp/` 与 `/mcp_endpoint/call/` 都指向同一个处理器，别删别名。
 
 ### Web 控制台
 

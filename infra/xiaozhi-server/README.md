@@ -56,6 +56,26 @@ docker logs -f xiaozhi-esp32-server
 5. 关掉测试页：`device_channels` 回到 0，提醒桥日志断开，
    下一条提醒回落到网页 SSE 或 Web Push
 
+2026-11-23 实测（用一个保持连接的假设备，协议上与数字人页等价）：
+
+```
+初始 device_channels: 0
+设备会话已建立: cc433e0b
+提醒桥在线 device_channels: 1
+已插入今天到期的物品: 联调提醒-可删
+tts: sentence_start 提醒
+tts: sentence_start 联调提醒-可删 今天到期
+tts: stop
+收到 tts 消息 3 条、音频包 76 个
+清理后（连接关闭）device_channels: 0
+```
+
+## 注意
+
+- 小智的 INFO 日志会打印设备握手的 `authorization` 头（含 token）。日志只留在本机，别外发；
+  迁移时可以考虑调低日志级别或做脱敏。
+- 小智会把 `mcp_endpoint` 里的 `/mcp/` 改写成 `/call/`，小马两条路径都接了，不用管。
+
 ## 排障
 
 | 现象 | 检查 |

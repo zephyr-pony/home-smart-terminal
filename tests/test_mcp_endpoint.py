@@ -206,3 +206,20 @@ def test_websocket_is_closed_when_token_not_configured(monkeypatch):
     with pytest.raises(Exception):
         with client.websocket_connect("/mcp_endpoint/mcp/?token="):
             pass
+
+
+def test_websocket_alias_path_works(monkeypatch):
+    """小智会把 /mcp/ 改写成 /call/：两条路径必须都通。"""
+    fake = FakeAssistant()
+    monkeypatch.setattr(server, "assistant", fake)
+    monkeypatch.setattr(server, "MCP_TOKEN", "t0ken")
+
+    client = TestClient(server.app)
+    with client.websocket_connect("/mcp_endpoint/call/?token=t0ken") as ws:
+        ws.send_text(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "ask_xiaoma", "arguments": {"text": "你好"}},
+        }))
+        assert ws.receive_json()["result"]["content"][0]["text"] == "我在"
+
+    assert fake.calls == [("你好", "mcp:device")]
