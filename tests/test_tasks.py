@@ -127,3 +127,31 @@ def test_postpone_rejects_finished_task():
     task = tasks.add("交电费", "2026-11-10", "bill")
     tasks.complete(task["id"])
     assert tasks.postpone(task["id"], 1) is None
+
+
+def test_postpone_to_a_date_keeps_the_clock():
+    """「取快递改到后天」没说几点：还是下午三点那个提醒，不是零点。"""
+    tasks = Tasks(":memory:")
+    task = tasks.add("取快递", "2026-11-24T15:00")
+
+    updated = tasks.postpone(task["id"], due_at="2026-11-25")
+
+    assert updated["due_at"] == "2026-11-25T15:00:00"
+
+
+def test_postpone_with_explicit_time_overrides_the_clock():
+    tasks = Tasks(":memory:")
+    task = tasks.add("取快递", "2026-11-24T15:00")
+
+    updated = tasks.postpone(task["id"], due_at="2026-11-25T09:30")
+
+    assert updated["due_at"] == "2026-11-25T09:30:00"
+
+
+def test_update_to_a_date_keeps_the_clock():
+    tasks = Tasks(":memory:")
+    task = tasks.add("取快递", "2026-11-24T15:00")
+
+    tasks.update(task["id"], due_at="2026-11-26")
+
+    assert tasks.list_all()[0]["due_at"] == "2026-11-26T15:00:00"

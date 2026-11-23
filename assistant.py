@@ -25,6 +25,7 @@ from agent.confirm import (
 from agent.entities import EntityService
 from agent.guard import correction_note, guard_false_claim, guard_write_args
 from agent.home_watch import build_home_watch
+from agent.verify import verify_reply
 from agent import wording
 from agent.propose import ProposalService
 from adapters.home import build_home
@@ -292,7 +293,10 @@ class Assistant:
 
         for _turn in range(self.max_agent_loops):
             try:
-                if on_delta is not None and hasattr(self.llm, "chat_with_tools_stream"):
+                # 已经写过东西时不流式：最终回答要过事实校验，逐字推出去的片段
+                # 收不回来，校验失败就只能让用户听到错日期。
+                can_stream = on_delta is not None and not executed_writes
+                if can_stream and hasattr(self.llm, "chat_with_tools_stream"):
                     data = self.llm.chat_with_tools_stream(
                         messages, schemas, on_delta=on_delta
                     )
@@ -397,11 +401,14 @@ class Assistant:
         else:
             answer = "抱歉，我绕晕了，能再说一遍吗？"
 
-        # 模型嘴上说的日期可能是旧值（实测 4B 会）。参数里有日期时，先补一句由参数
-        # 拼出来的话；模型已经说到正确日期就不重复念。
-        prefix = wording.echo_prefix(executed_writes, answer)
-        if prefix and answer:
-            answer = prefix + answer
+        # 模型嘴上说的日期可能是旧值（实测 4B 会）。先过一遍事实校验：日期、星期、
+        # 名字和工具参数对不上就整句换成参数拼的模板句；对得上时再补一句回显
+        # （模型已经说到正确日期就不重复念）。
+        answer, replaced = verify_reply(answer, executed_writes, user_text)
+        if not replaced:
+            prefix = wording.echo_prefix(executed_writes, answer)
+            if prefix and answer:
+                answer = prefix + answer
 
         # 类型映射：写入→record，查询→query，否则 chat
         if any(t in used_tools for t in ("memory_store", "task_add", "fact_store")):

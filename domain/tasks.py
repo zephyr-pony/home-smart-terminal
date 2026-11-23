@@ -24,6 +24,23 @@ def _parse_due(value):
         raise ValueError("时间必须是 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM")
 
 
+def _keep_clock(new_due, old_value, raw_value):
+    """只给了日期时保留原来的时刻。
+
+    用户说「取快递改到后天」，指的是还是下午三点那个提醒，不是改成零点。
+    只有原话里带了时间（raw_value 含 T）才覆盖时刻。
+    """
+    if "T" in str(raw_value or ""):
+        return new_due
+    try:
+        old = datetime.fromisoformat(str(old_value))
+    except (TypeError, ValueError):
+        return new_due
+    if old.hour or old.minute:
+        return new_due.replace(hour=old.hour, minute=old.minute)
+    return new_due
+
+
 class Tasks:
     def __init__(self, db_path=TASKS_DB_PATH):
         if db_path:
@@ -187,6 +204,9 @@ class Tasks:
                 except (TypeError, ValueError):
                     base = now
                 new_due = base + timedelta(days=days)
+            elif due_at:
+                # 「改到后天」没说几点：保留原来的时刻
+                new_due = _keep_clock(new_due, row[3], due_at)
             self.conn.execute(
                 "UPDATE tasks SET due_at=?, reminded_at=NULL, status='pending' "
                 "WHERE id=?",
@@ -220,15 +240,22 @@ class Tasks:
             fields.append("type=?")
             params.append(task_type)
 
-        if due_at is not None:
-            due = _parse_due(due_at)
-            fields.append("due_at=?")
-            params.append(due.isoformat() if due else None)
-
-        if not fields:
-            return False
-
         with self._lock:
+            if due_at is not None:
+                due = _parse_due(due_at)
+                if due is not None:
+                    row = self.conn.execute(
+                        "SELECT due_at FROM tasks WHERE id=?", (task_id,)
+                    ).fetchone()
+                    if row:
+                        # 只给了日期：保留原来的时刻，别把下午三点改成零点
+                        due = _keep_clock(due, row[0], due_at)
+                fields.append("due_at=?")
+                params.append(due.isoformat() if due else None)
+
+            if not fields:
+                return False
+
             cur = self.conn.execute(
                 "UPDATE tasks SET " + ", ".join(fields) + " WHERE id=?",
                 params + [task_id],

@@ -96,6 +96,10 @@ def summary(tool_name, args):
         title = str(args.get("title") or "").strip() or "这件事"
         due = str(args.get("due_at") or "").strip()
         return "%s，%s" % (title, speak_datetime(due)) if due else "%s，没定时间" % title
+    if tool_name in ("task_update", "task_postpone"):
+        title = str(args.get("title") or "").strip() or "这个提醒"
+        due = str(args.get("due_at") or "").strip()
+        return "%s，改到%s" % (title, speak_datetime(due)) if due else "%s，已改期" % title
     if tool_name == "fact_store":
         subject = str(args.get("subject") or "").strip()
         predicate = str(args.get("predicate") or "").strip()
@@ -160,21 +164,27 @@ def echo_prefix(executed, reply=""):
     return "；".join(parts) + "。"
 
 
-_WRITE_TOOLS = ("memory_store", "item_add", "task_add", "fact_store")
+_WRITE_TOOLS = (
+    "memory_store", "item_add", "task_add", "fact_store",
+    "task_update", "task_postpone",
+)
 # 出现这些词说明没写进去（被护栏拒绝、重复、找不到目标）
 _NOT_WRITTEN = (
     "无法", "没有找到", "错误", "已忽略", "未重复", "不存在", "失败",
 )
+# 各工具「写成了」的说法不一样：物品是「已添加」，任务改期是「已改到」
+_WRITTEN_MARKERS = ("已更新", "已改到", "已延期", "已改期")
 
 
 def _day_token(tool_name, args):
     """这条写入口语里会出现的「哪天」，用来判断回复有没有已经说到。"""
     args = args or {}
-    if tool_name == "task_add":
-        return speak_datetime(args.get("due_at"))
-    if tool_name == "item_add":
-        expiry = str(args.get("expiry_date") or "").strip()
-        return speak_date(expiry) if expiry else ""
+    expiry = str(args.get("expiry_date") or "").strip()
+    if expiry:
+        return speak_date(expiry)
+    due = str(args.get("due_at") or "").strip()
+    if due:
+        return speak_datetime(due)
     return ""
 
 
@@ -190,4 +200,19 @@ def looks_written(tool_name, result):
         return False
     if any(word in text for word in _NOT_WRITTEN):
         return False
-    return text.startswith("已") or "已更新" in text
+    return text.startswith("已") or any(mark in text for mark in _WRITTEN_MARKERS)
+
+
+def written_sentence(executed):
+    """写成功之后的模板句：内容全部来自参数，不经模型。
+
+    回复校验不通过时整句换成它——宁可少说几句，也不能把错日期念出去。
+    """
+    parts = [
+        summary(tool_name, args)
+        for tool_name, args in executed or []
+        if tool_name in _WRITE_TOOLS
+    ]
+    if not parts:
+        return ""
+    return "已记好：%s。" % "；".join(parts)
