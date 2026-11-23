@@ -6,6 +6,8 @@
 - 日期：句子里没有日期线索却给了到期日 → 丢掉。4B 模型实测「冰箱里还有三个鸡蛋」
   有约一半概率凭空补一个到期日（补过今天、12-21、12-31），落库后会变成误提醒。
 - 标题：任务标题在用户原话里找不到 → 判定为凭空创建，整次调用不执行。
+- 摘要：记忆摘要里出现了原话没有的字（尤其是日期）→ 丢掉摘要，改用原话。
+  摘要进 FTS 索引，编造的日期会变成「查不到」或「查到错的」。
 
 有日期线索但解析不出来时保留模型给的值：那种情况多半是我们还没覆盖的说法，
 贸然丢掉会把正常需求也拦掉。
@@ -51,6 +53,36 @@ def is_grounded(value, user_text):
     return bool(_tokens(value) & _tokens(user_text))
 
 
+# 摘要比对前去掉标点：模型常补个句号或逗号，那不算「加了内容」
+_PUNCT_RE = re.compile(r"[\s，。！？、,.!?：:；;“”\"'（）()【】\[\]·…—～~]+")
+
+
+def _strip_punct(text):
+    return _PUNCT_RE.sub("", str(text or ""))
+
+
+def _is_subsequence(shorter, longer):
+    """shorter 的每个字都能在 longer 里按顺序找到（允许跳过字）。"""
+    remaining = iter(longer)
+    return all(ch in remaining for ch in shorter)
+
+
+def summary_grounded(summary, user_text):
+    """摘要是否只用了用户原话里已有的字。
+
+    为什么用子序列而不是 `is_grounded`：后者只要有一个二元组重合就算通过，
+    「明天买电池」和「8月9日买电池」共享「买电」「电池」，编造的日期照样过关。
+    摘要的本职是「把原话剪短」，所以判据是「能不能从原话里按顺序删出来」。
+
+    只删不加也顺带拦住了模型把「三个鸡蛋」写成「3个鸡蛋」这类改写——数字对不上
+    就退回原话，检索靠 FTS 的原文兜底，不会丢。
+    """
+    summary = _strip_punct(summary)
+    if not summary:
+        return True
+    return _is_subsequence(summary, _strip_punct(user_text))
+
+
 def ground_due(model_value, user_text, today=None):
     """任务的到期时间：能从句子里算出来就以句子里为准。"""
     resolved = resolve_due(user_text, today, allow_time_only=True)
@@ -81,6 +113,14 @@ def guard_write_args(name, args, user_text, today=None):
     """
     cleaned = dict(args or {})
     text = str(user_text or "")
+
+    if name == "memory_store":
+        summary = str(cleaned.get("summary") or "").strip()
+        if summary and not summary_grounded(summary, text):
+            # 记忆本身是用户的真实陈述，不能因为摘要编了东西就不记；
+            # 但摘要会进检索索引，错的摘要比长摘要更糟，所以退回原话。
+            cleaned["summary"] = text.strip()
+        return cleaned, None
 
     if name == "task_add":
         title = str(cleaned.get("title") or "").strip()
@@ -137,6 +177,12 @@ def correction_note(name, before, after):
     """
     before = before or {}
     after = after or {}
+    if name == "memory_store":
+        old = str(before.get("summary") or "").strip()
+        new = str(after.get("summary") or "").strip()
+        if old == new:
+            return ""
+        return "（摘要里出现了用户原话没有的内容，已改用原话记录；回答时不要提这些内容）"
     if name == "item_add":
         old = str(before.get("expiry_date") or "").strip()
         new = str(after.get("expiry_date") or "").strip()

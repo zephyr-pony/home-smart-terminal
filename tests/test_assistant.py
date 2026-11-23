@@ -146,7 +146,7 @@ def test_agent_loop_returns_record_summary():
     assistant = make_assistant(ScriptedLLM([
         _tool_call_reply(
             "memory_store",
-            {"text": "明天买电池", "summary": "8月9日买电池"},
+            {"text": "明天买电池", "summary": "明天买电池"},
         ),
         _stop_reply("记住了"),
     ]))
@@ -154,7 +154,25 @@ def test_agent_loop_returns_record_summary():
 
     assert result["type"] == "record"
     assert result["reply"] == "记住了"
-    assert result["summary"] == "8月9日买电池"
+    assert result["summary"] == "明天买电池"
+
+
+def test_invented_summary_is_replaced_by_user_words():
+    """模型把「明天」算成「8月9日」：记忆照记，摘要退回原话。"""
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply(
+            "memory_store",
+            {"text": "明天买电池", "summary": "8月9日买电池"},
+        ),
+        _stop_reply("记住了"),
+    ]))
+    result = assistant.process_text("明天买电池")
+
+    rows = assistant.memory.list_all()
+    assert len(rows) == 1
+    assert rows[0]["summary"] == "明天买电池"
+    assert "8月9日" not in rows[0]["summary"]
+    assert result["summary"] == "明天买电池"
 
 
 def test_agent_loop_returns_task_record():

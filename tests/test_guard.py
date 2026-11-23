@@ -79,6 +79,58 @@ def test_is_grounded_basics():
     assert is_grounded("", "随便说点什么")
 
 
+# ---------- 记忆摘要：只能删字，不能加字 ----------
+
+def test_summary_kept_when_it_only_drops_words():
+    args, blocked = guard_write_args(
+        "memory_store",
+        {"text": "冰箱里还有三个鸡蛋", "summary": "冰箱里有三个鸡蛋"},
+        "冰箱里还有三个鸡蛋",
+    )
+    assert blocked is None
+    assert args["summary"] == "冰箱里有三个鸡蛋"
+
+
+def test_summary_with_invented_date_falls_back_to_user_words():
+    """实测模型把「明天」算成「8月9日」：摘要里的日期没有依据，退回原话。"""
+    args, blocked = guard_write_args(
+        "memory_store",
+        {"text": "明天买电池", "summary": "8月9日买电池"},
+        "明天买电池",
+    )
+    assert blocked is None
+    assert args["text"] == "明天买电池"
+    assert args["summary"] == "明天买电池"
+
+
+def test_summary_with_renamed_noun_falls_back():
+    args, _ = guard_write_args(
+        "memory_store",
+        {"text": "酸奶还有三天过期", "summary": "牛奶快过期了"},
+        "酸奶还有三天过期",
+    )
+    assert args["summary"] == "酸奶还有三天过期"
+
+
+def test_summary_punctuation_is_ignored():
+    args, _ = guard_write_args(
+        "memory_store",
+        {"text": "明天交电费", "summary": "明天交电费。"},
+        "明天交电费",
+    )
+    assert args["summary"] == "明天交电费。"
+
+
+def test_summary_may_skip_middle_words():
+    """原话里插了别的话，摘要仍可以只挑要紧的部分。"""
+    args, _ = guard_write_args(
+        "memory_store",
+        {"text": "我明天要去超市，顺便买电池", "summary": "明天买电池"},
+        "我明天要去超市，顺便买电池",
+    )
+    assert args["summary"] == "明天买电池"
+
+
 def _scripted(replies):
     class ScriptedLLM:
         def __init__(self, responses):

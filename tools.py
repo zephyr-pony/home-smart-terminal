@@ -72,11 +72,11 @@ def get_memory_tools(memory: Memory, proposals=None):
             name="memory_store",
             description=(
                 "存储一条新记忆到家庭记忆库。当用户陈述家庭事实（如'明天交电费''冰箱里还有三个鸡蛋'）时调用。"
-                "text 为原文，summary 为精简摘要（15 字内，相对时间转绝对日期，如'8月8日'）。"
+                "text 为原文；summary 是精简摘要（15 字内），只能删掉原话里的字，不要改写、不要换算日期。"
             ),
             properties={
                 "text": {"type": "string", "description": "用户原话"},
-                "summary": {"type": "string", "description": "精简摘要，含绝对日期"},
+                "summary": {"type": "string", "description": "精简摘要，只删原话的字，不加内容"},
             },
             required=["text", "summary"],
             execute=store_memory,
