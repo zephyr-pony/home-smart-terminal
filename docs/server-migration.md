@@ -110,6 +110,8 @@ tar czf /backup/homeassistant-$(date +%F).tgz -C data homeassistant
 ```
 
 - [ ] 新机器上恢复 `data/` 与 `.env`
+- [ ] `.env` 的 `LLM_PROXY` 是 Windows 本机代理地址（`127.0.0.1:10808`），Linux 上按新环境
+      改或留空——直连网关正常就不要配，配错会绕远
 - [ ] 核对数量：`/api/stats` 的 memories / items / tasks / facts / entities
       与旧机器一致（facts 的 `valid_to` 迁移会在启动时自动做）
 - [ ] `pytest tests -q` 在新机器上跑一遍（Linux 与 Windows 的路径差异只有这里能发现）
@@ -124,6 +126,7 @@ tar czf /backup/homeassistant-$(date +%F).tgz -C data homeassistant
 | localStorage 聊天记录 | 绑定旧「源」 | 不会跟过去（可接受；要保留就导出） |
 | 小智 MCP 地址 | `ws://<旧 IP>:8200/mcp_endpoint/mcp/?token=…` | xiaozhi-server 配置 |
 | 小智服务端自身 | `D:\xiaozhi-server`（8000/8003 或 8300/8303） | 新机器 compose + `.config.yaml` |
+| 摄像头视觉地址 | `server.vision_explain=http://<旧 IP>:8303/mcp/vision/explain` | `.config.yaml`（必须是**设备能访问到**的新 LAN IP） |
 | 设备固件 OTA/WS 地址 | 旧 IP | 小智 OTA 返回的地址（本机部署时用新 IP） |
 | HA 回调 | `homeassistant.local` | 新机器的 `/etc/hosts` |
 | SSE / API 调用方 | 旧 IP | `docs/xiaozhi-mcp.md` 里的地址 |

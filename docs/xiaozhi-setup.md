@@ -38,6 +38,9 @@ server:
   http_port: 8003
   websocket: ws://<局域网IP>:8300/xiaozhi/v1/   # 设备回来后用这个地址
   timezone_offset: +8
+  # 摄像头拍完把图 POST 到这里（宿主机端口映射到容器 8003）。
+  # 留空的话 get_vision_url() 返回空串，take_photo 拍完没地方传。
+  vision_explain: http://<局域网IP>:8303/mcp/vision/explain
 
 prompt: |
   你叫小马，是这个家的生活助手。说话简短、口语化，像家里人聊天。
@@ -48,7 +51,10 @@ selected_module:
   LLM: ChatGLMLLM     # 名字不重要，关键是下面的 base_url 指向小马
   TTS: EdgeTTS
   Memory: nomem
-  Intent: nointent    # 工具调用在小马内部完成，这里不要再跑一遍意图
+  # 只有 function_call 才会把设备工具（含 self.camera.take_photo）交给 LLM；
+  # 没有 tool_calls 时上游照样把 content 直接送 TTS，普通对话不受影响
+  Intent: function_call
+  VLLM: XiaomaVLLM
 
 ASR:
   FunASR:
@@ -60,12 +66,24 @@ LLM:
     base_url: http://host.docker.internal:8200/v1
     model_name: xiaoma
     api_key: <API_TOKEN>
+
+# 视觉：设备拍完由 vision_handler 调它，图直接进小马的 /v1 看图分支
+VLLM:
+  XiaomaVLLM:
+    type: openai
+    base_url: http://host.docker.internal:8200/v1
+    model_name: xiaoma-vision
+    api_key: <API_TOKEN>
 ```
 
 要点：
 
 - `host.docker.internal` 是容器访问宿主机的入口；`/v1/chat/completions` 由 `server.py` 提供
-- `Intent: nointent`，否则会在小马之外再跑一次意图识别，白花一次模型调用
+- `Intent: function_call`：设备工具（拍照、音量、设备状态）只在这个模式下发；普通文本回复
+  仍是 `content` 直送 TTS，不会多跑一轮
+- `vision_explain` 必须是**设备能访问到**的宿主机地址（Docker 里 8003 映射到 8303）。
+  上游启动日志那行「视觉分析接口是 http://172.18.0.2:8003/…」是硬编码打印**容器 IP**，
+  不代表实际下发地址，别被它误导
 - `ASR.language: zh`，避免短句被 SenseVoice 误判成韩文/日文
 
 ## 启动

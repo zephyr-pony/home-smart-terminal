@@ -203,9 +203,15 @@ python scripts/mcp_probe.py --token <MCP_TOKEN> \
 
 - 只有请求里的 `tools` 含 `self.camera.take_photo` 时，模型才看得见 `camera_look`
   （网页 / CLI 没有摄像头，不会说「我看到了」）
+- 小智会把工具名里的点换成下划线（`self_camera_take_photo`）；小马回 `tool_calls` 时用它给的
+  那个名字，否则小智查不到工具
 - 图片不进记忆、不落盘、日志不打印 base64；画面里有人也不做身份推断
 - 小智侧需要 `Intent: function_call`、`server.vision_explain`、`VLLM` 三项配置，
   见 [docs/ROADMAP.md §26](docs/ROADMAP.md)
+- **没有硬件也能验整条链**：`python scripts/fake_camera_device.py --image 一张测试图.jpg` 会当一台带
+  摄像头的设备连上去，报工具、收调用、把图 POST 到视觉端点，最后打印服务端念出来的话。
+  脚本先按服务端下发的 LAN 地址试，不通再退到 `127.0.0.1`（Docker Desktop 的转发在本机上只对
+  loopback 生效），所以它不能替代「另一台设备能不能连」的验证
 
 ## 到期提醒
 
@@ -356,7 +362,8 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ├── static/index.html # Web 客户端
 ├── scripts/
 │   ├── backup.py             # 数据备份 / 校验 / 恢复（见 docs/backup.md）
-│   ├── eval_accuracy.py      # 30 条固定评测集（真模型，不进 pytest）
+│   ├── eval_accuracy.py      # 32 条固定评测集（真模型，不进 pytest）
+│   ├── fake_camera_device.py # 假设备：无硬件验摄像头整条链
 │   └── record_diagnostic.py  # 手工录音/播放诊断（不参与 pytest）
 ├── tests/           # pytest 自动化测试
 ├── requirements.txt

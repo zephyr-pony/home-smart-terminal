@@ -79,6 +79,10 @@ TTS 1.9 s 左右。目标 3 s 在现结构下只有闲聊接近。
       （电池版 1000mAh / 200W 摄像头），见 `docs/device-lichuang-s3.md`
 - [x] 核对固件支持列表：ESP32-S3 N16R8 满足；上游已有板型 `BOARD_TYPE_LICHUANG_DEV_S3`
 - [x] AEC 参考回采：ES7210 四通道，MIC3 接回采，板级默认 `CONFIG_USE_DEVICE_AEC=y`
+- [ ] **刷机前先验局域网可达**：从另一台设备（手机，关掉 Tailscale）打开
+      `http://<PC-IP>:8303/mcp/vision/explain` 应返回一行文字；`ws://<PC-IP>:8300` 也要能连。
+      本机访问自己的 LAN IP 会超时（Docker Desktop 的端口转发对 loopback 生效），
+      **不能用本机的结果判断设备能不能连**
 - [ ] 到货后：刷固件 + 跑 `docs/device-lichuang-s3.md` 的验收清单
 
 ### 5. HTTPS（手机推送与「添加到主屏」）

@@ -1106,7 +1106,7 @@ class CameraAssistant(FakeAssistant):
         }
 
 
-def _camera_request(client, stream=False):
+def _camera_request(client, stream=False, tools=None):
     return client.post(
         "/v1/chat/completions",
         headers={"Authorization": "Bearer secret"},
@@ -1114,7 +1114,7 @@ def _camera_request(client, stream=False):
             "model": "xiaoma",
             "messages": [{"role": "user", "content": "看看桌上有什么"}],
             "stream": stream,
-            "tools": [CAMERA_TOOL],
+            "tools": tools or [CAMERA_TOOL],
         },
     )
 
@@ -1245,3 +1245,46 @@ def test_has_camera_tool_ignores_other_tools():
     assert server._has_camera_tool([
         {"type": "function", "function": {"name": "self.get_device_status"}},
     ]) is False
+
+
+SANITIZED_CAMERA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "self_camera_take_photo",  # 小智把点换成下划线后再给 LLM
+        "description": "拍一张照片并回答关于画面里的问题",
+        "parameters": {
+            "type": "object",
+            "properties": {"question": {"type": "string"}},
+            "required": ["question"],
+        },
+    },
+}
+
+
+def test_camera_tool_name_accepts_sanitized_name():
+    """真机上小智发来的是 self_camera_take_photo，不能只认带点的写法。"""
+    assert server._camera_tool_name([SANITIZED_CAMERA_TOOL]) == "self_camera_take_photo"
+    assert server._has_camera_tool([SANITIZED_CAMERA_TOOL]) is True
+
+
+def test_tool_call_uses_name_from_request(monkeypatch):
+    """回调用请求里的名字，否则小智查不到这个工具，拍照直接失败。"""
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", CameraAssistant())
+    client = TestClient(server.app)
+
+    body = _camera_request(client, tools=[SANITIZED_CAMERA_TOOL]).json()
+
+    call = body["choices"][0]["message"]["tool_calls"][0]
+    assert call["function"]["name"] == "self_camera_take_photo"
+
+
+def test_stream_tool_call_uses_name_from_request(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", CameraAssistant())
+    client = TestClient(server.app)
+
+    response = _camera_request(client, stream=True, tools=[SANITIZED_CAMERA_TOOL])
+
+    assert "self_camera_take_photo" in response.text
+    assert "self.camera.take_photo" not in response.text

@@ -103,10 +103,13 @@ pytest tests -q
 
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
-- 正确率基线在 `scripts/eval_accuracy.py`：20 条固定输入、真模型、每个用例独立内存库，
+- 正确率基线在 `scripts/eval_accuracy.py`：32 条固定输入（含摄像头决策两条）、真模型、每个用例独立内存库，
   卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
-  已知问题的用例标 `known=True`，不计入失败。
+  已知问题的用例标 `known=True`，不计入失败。`case()` 的 `device_camera=True` 走「终端带摄像头」分支。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
+- 摄像头整条链用 `scripts/fake_camera_device.py --image 图.jpg`：假设备报工具、收调用、把图 POST 到
+  `vision_explain`，验证 `tool_calls` 名字、设备驱动和播报。它先试 LAN 地址再退 `127.0.0.1`，
+  **不能替代**「另一台设备能不能连 8300/8303」的验证。
 - 旧数据迁移：`python scripts/migrate_legacy.py`（默认 dry-run，`--apply` 才写入并自动备份）。迁移逻辑在 `agent/legacy.py`，测试在 `tests/test_legacy.py`。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
 - 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`；任务/事实在 `tests/test_tasks.py` / `tests/test_facts.py`。
@@ -171,6 +174,7 @@ pytest tests -q
 - `execute(**kwargs)` 必须返回**字符串**（直接进 LLM 上下文）。
 - 参数名与 JSON Schema 保持一致；`assistant` 会把 `memory_store` 的 `summary`、`memory_search` 的关键词提取进返回值，改动工具名/参数时注意同步。
 - `camera_look` 是唯一的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
+- 小智会把设备工具名的点换成下划线（`self.camera.take_photo` → `self_camera_take_photo`）再给 LLM；`/v1` 回 `tool_calls` 时**必须用请求里那个名字**，用带点的原始名它查不到工具，拍照会静默失败。判断有没有摄像头也要按归一化后的名字比。
 - `/v1` 里带 `image_url` 的请求走 `Assistant.describe_image`，不进 agent、不进记忆；图片只在内存里用一次，日志不打印 base64。描述本身在 `vision_context` 里留 `VISION_CONTEXT_SECONDS`（默认 180 秒）供下一句追问，过期即删、不进记忆库。
 
 ### 存储与并发

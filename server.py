@@ -13,6 +13,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -694,7 +695,8 @@ def _sse_chunk(completion_id, created, model, delta, finish_reason=None):
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
-async def _chat_completion_stream(text, completion_id, created, model, device_camera=False):
+async def _chat_completion_stream(text, completion_id, created, model,
+                                  device_camera=False, camera_tool=None):
     """把 agent loop 的流式输出转成 OpenAI SSE。
 
     agent 在 to_thread 里跑（同步阻塞），通过 queue 把 delta 交回事件循环；
@@ -744,7 +746,8 @@ async def _chat_completion_stream(text, completion_id, created, model, device_ca
                             "id": "call_" + secrets.token_hex(8),
                             "type": "function",
                             "function": {
-                                "name": device_call.get("name") or "self.camera.take_photo",
+                                "name": camera_tool or device_call.get("name")
+                                        or "self.camera.take_photo",
                                 "arguments": arguments,
                             },
                         }],
@@ -827,13 +830,34 @@ def _last_user_text(messages):
     return _user_text_and_images(_last_user_message(messages))[0]
 
 
-def _has_camera_tool(tools):
-    """设备工具清单里有没有拍照（有才把 camera_look 给模型看）。"""
+def _normalize_tool_name(name):
+    """工具名归一。
+
+    小智把设备工具名里的点换成下划线再给 LLM（`self.camera.take_photo` →
+    `self_camera_take_photo`），调用时要用它给的那个名字，不能用原始名。
+    """
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+_CAMERA_TOOL_KEY = _normalize_tool_name("self.camera.take_photo")
+
+
+def _camera_tool_name(tools):
+    """在设备工具清单里找拍照工具，返回请求里**原样**的名字。
+
+    返回 None 表示这台终端没有摄像头。名字可能带点也可能带下划线，两种都认。
+    """
     for tool in tools or []:
         function = (tool or {}).get("function") or {}
-        if function.get("name") == "self.camera.take_photo":
-            return True
-    return False
+        name = function.get("name") or ""
+        if name and _normalize_tool_name(name) == _CAMERA_TOOL_KEY:
+            return name
+    return None
+
+
+def _has_camera_tool(tools):
+    """设备工具清单里有没有拍照（有才把 camera_look 给模型看）。"""
+    return _camera_tool_name(tools) is not None
 
 
 async def _synthesize(reply: str) -> str:
@@ -1365,14 +1389,18 @@ async def api_chat_completions(req: ChatCompletionRequest,
     if not text:
         raise HTTPException(status_code=400, detail="messages 里没有用户文本")
 
-    # 有摄像头才让模型用 camera_look；没有就别让它说「我看到了」
-    device_camera = _has_camera_tool(req.tools)
+    # 有摄像头才让模型用 camera_look；没摄像头就别让它说「我看到了」。
+    # 名字要用请求里给的那个（小智会把点换成下划线），否则它认不出这次调用。
+    camera_tool = _camera_tool_name(req.tools)
+    device_camera = camera_tool is not None
 
     if req.stream:
         # 先把 head 发出去，再在后台线程跑 agent loop，按 delta 实时下发，
         # 让语音端第一句就能开始合成。
         return StreamingResponse(
-            _chat_completion_stream(text, completion_id, created, model, device_camera),
+            _chat_completion_stream(
+                text, completion_id, created, model, device_camera, camera_tool
+            ),
             media_type="text/event-stream",
         )
 
@@ -1402,7 +1430,8 @@ async def api_chat_completions(req: ChatCompletionRequest,
                         "id": "call_" + secrets.token_hex(8),
                         "type": "function",
                         "function": {
-                            "name": device_call.get("name") or "self.camera.take_photo",
+                            "name": camera_tool or device_call.get("name")
+                                    or "self.camera.take_photo",
                             "arguments": arguments,
                         },
                     }],
