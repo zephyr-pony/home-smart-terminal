@@ -219,6 +219,8 @@ python scripts/mcp_probe.py --token <MCP_TOKEN> \
 - 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品和任务，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的会**主动推送**：有网页在线时走 SSE，弹出提醒并语音播报；没有网页在线时走 Web Push，发系统通知。
 - 同一物品在 `REMINDER_COOLDOWN_HOURS`（默认 24h）内不重复提醒；设为 `0` 表示只提醒一次。
 - 提醒状态落库（`reminded_at`），重启服务也不会重复打扰。
+- 点开任务提醒（网页卡片或系统通知）后，输入框上方会出现「正在处理：…」：接下来一句
+  「完成了」「延到周五」直接落到那条任务，不用再说一遍是哪条；10 分钟内有效，可手动取消。
 - 网页状态栏同时常驻显示当前到期物品（`/api/status` 的 `due_items`）。
 
 ### 手机系统通知（Web Push）

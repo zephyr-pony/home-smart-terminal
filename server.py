@@ -325,11 +325,18 @@ async def _send_push(text, event):
     if not subscriptions:
         return 0, 0, 0
 
+    task = event.get("task") or {}
+    item = event.get("item") or {}
     payload = {
         "title": "小马提醒",
         "body": text,
         "url": "/",
         "tag": event.get("tag") or "xiaoma-reminder",
+        # 点通知时要能定位到具体任务（网页端据此把这一轮绑定到那条提醒）
+        "kind": "task" if task else ("item" if item else ""),
+        "task_id": task.get("id") or 0,
+        "task_title": task.get("title") or "",
+        "item_id": item.get("id") or 0,
     }
 
     async def deliver(subscription):
@@ -621,6 +628,8 @@ mcp_endpoint = MCPEndpoint(_mcp_ask)
 class ChatRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
     client_id: str = Field(default="", max_length=MAX_CLIENT_ID_CHARS)
+    # 从到期提醒点进来时带上的任务；只影响这一轮，不落库
+    task_id: Optional[int] = Field(default=None, ge=0)
 
 
 class ConfigUpdate(BaseModel):
@@ -684,9 +693,9 @@ def _slim_memories(memories):
     return [{"text": str(m), "time": ""} for m in memories]
 
 
-def _handle_voice_sync(audio_path: str, client_id: str) -> dict:
+def _handle_voice_sync(audio_path: str, client_id: str, task_id=None) -> dict:
     """同步处理语音文件（在 to_thread 里跑：STT 识别 + 编排）。"""
-    result = assistant.process_voice(stt, audio_path, client_id)
+    result = assistant.process_voice(stt, audio_path, client_id, task_id=task_id)
     return result
 
 
@@ -1515,7 +1524,9 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
 
     try:
         # 编排是同步阻塞（memory 检索 + LLM 调用），丢线程池避免卡事件循环
-        result = await asyncio.to_thread(assistant.process_text, req.text, req.client_id)
+        result = await asyncio.to_thread(
+            assistant.process_text, req.text, req.client_id, task_id=req.task_id,
+        )
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"处理失败: {e}")
@@ -1535,9 +1546,13 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
 
 
 @app.post("/api/voice")
-async def api_voice(file: UploadFile = File(...), client_id: str = Form(""), _auth=Depends(require_api_token)):
+async def api_voice(file: UploadFile = File(...), client_id: str = Form(""),
+                    task_id: Optional[int] = Form(None),
+                    _auth=Depends(require_api_token)):
     if len(client_id) > MAX_CLIENT_ID_CHARS:
         raise HTTPException(status_code=422, detail="client_id 过长")
+    if task_id is not None and task_id < 0:
+        raise HTTPException(status_code=422, detail="task_id 无效")
     if not file.filename or not file.filename.lower().endswith(".wav"):
         raise HTTPException(status_code=400, detail="仅支持 WAV 音频")
 
@@ -1546,7 +1561,7 @@ async def api_voice(file: UploadFile = File(...), client_id: str = Form(""), _au
     try:
         tmp_path = await _save_upload(file, ext)
         async with stt_lock:
-            result = await asyncio.to_thread(_handle_voice_sync, tmp_path, client_id)
+            result = await asyncio.to_thread(_handle_voice_sync, tmp_path, client_id, task_id)
     except HTTPException:
         raise
     except Exception as e:

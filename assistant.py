@@ -170,12 +170,15 @@ class Assistant:
 
     # ---------- 对外接口 ----------
 
-    def process_text(self, text, client_id=None, on_delta=None, device_camera=False):
+    def process_text(self, text, client_id=None, on_delta=None, device_camera=False,
+                     task_id=None):
         """处理用户文本输入，返回结构化结果 dict。
 
         Args:
             device_camera: 这个入口背后的终端带摄像头（只有 /v1 的语音终端会传 True）。
                 带的时候才把 camera_look 给模型看，避免网页/CLI 上模型说「我看到了」。
+            task_id: 用户点开的到期任务（通知/任务卡带过来的）。只作为这一轮的工具
+                上下文，让「完成了 / 延期」指向那一条；不落库、不进历史。
 
         Returns:
             dict: {"type": ..., "reply": str, ...}
@@ -256,7 +259,8 @@ class Assistant:
         # 3) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
         try:
             rtype, answer, extras = self._agent_loop(
-                text, client_id, on_delta, device_camera=device_camera
+                text, client_id, on_delta, device_camera=device_camera,
+                task_id=task_id,
             )
         except ConfirmationRequired as exc:
             self._record_turn(client_id, text, exc.reply)
@@ -280,7 +284,7 @@ class Assistant:
             self._record_turn(client_id, text, answer)
         return reply
 
-    def process_voice(self, stt, audio_path, client_id=None):
+    def process_voice(self, stt, audio_path, client_id=None, task_id=None):
         """识别音频文件并处理。stt 由调用方传入（模型加载归调用方管）。
 
         Returns:
@@ -290,7 +294,7 @@ class Assistant:
         text = stt.transcribe(audio_path).strip()
         if not text:
             return {"type": "empty", "reply": "", "text": ""}
-        result = self.process_text(text, client_id)
+        result = self.process_text(text, client_id, task_id=task_id)
         result["text"] = text
         return result
 
@@ -350,12 +354,59 @@ class Assistant:
                 return None
             return item["text"]
 
+    def _task_context_note(self, task_id):
+        """把「点开的那条提醒」说成一条 system 提示；没有有效 id 就返回空串。
+
+        为什么不让模型自己 task_list 找：语音链路每次多一个工具调用就多跑一轮
+        LLM（约 2 秒），而点通知时目标本来就确定。这里只提供上下文，不替模型
+        执行——写操作仍走工具、护栏和确认。
+        """
+        if not task_id:
+            return ""
+        try:
+            tid = int(task_id)
+        except (TypeError, ValueError):
+            return ""
+        if tid <= 0:
+            return ""
+        try:
+            task = self.tasks.get(tid)
+        except Exception:
+            task = None
+        if not task:
+            # 旧通知点进来时任务可能已经被处理/删除：如实说，不要改别的任务
+            return (
+                "用户是从一条提醒点进来的，但任务 #%d 已经不存在了。"
+                "如果他说完成、延期或取消「这条」，先如实告诉他这条提醒已经不在，"
+                "不要改别的任务。" % tid
+            )
+
+        title = task.get("title") or "这条提醒"
+        due = task.get("due_at") or ""
+        status = task.get("status") or ""
+        lines = [
+            "用户是从提醒点进来的，当前任务：#%d「%s」%s，状态 %s。" % (
+                tid, title, ("，到期 " + due) if due else "", status or "未知",
+            ),
+            "他说「完成了」「延期」「不用提醒了」时默认指这条；调用 task_complete / "
+            "task_update / task_cancel / task_postpone 直接用 task_id=%d，"
+            "不要先 task_list，也不要挑别的任务。" % tid,
+        ]
+        if status == "done":
+            lines.append("这条已经完成了：他说完成时如实说明，不要当成新任务。")
+        elif status == "cancelled":
+            lines.append("这条已经取消了：他说完成或延期时如实说明，不要恢复它。")
+        return "\n".join(lines)
+
     # ---------- agent loop ----------
 
-    def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False):
+    def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False,
+                    task_id=None):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
 
         client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
+        task_id 是用户点开的到期任务：只在这一轮注入一条 system 提示，
+        让「完成了 / 延期」指向那一条，不写进会话历史。
 
         Returns:
             (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）；
@@ -384,6 +435,11 @@ class Assistant:
                     "就说看不到，不要猜。" % observation
                 ),
             })
+        # 用户从提醒点进来：把那条任务告诉模型，省掉 task_list 这一步，
+        # 也避免「完成了」被它安到别的任务上。只在这一轮有效。
+        task_note = self._task_context_note(task_id)
+        if task_note:
+            messages.append({"role": "system", "content": task_note})
         messages.append({"role": "user", "content": user_text})
         # 没有摄像头的入口不给这个 schema：模型看不到就不会说「我看到了」
         schemas = [

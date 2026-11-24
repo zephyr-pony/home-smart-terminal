@@ -679,3 +679,69 @@ def test_vision_observation_is_per_client():
 
     messages = llm.calls[-1]
     assert not any("刚才摄像头看到" in str(m.get("content") or "") for m in messages)
+
+
+# ---------- 任务上下文（点提醒进来） ----------
+
+def test_bound_task_is_told_to_the_model():
+    """点开提醒后，「完成了」要指向那条任务，不用先 task_list。"""
+    llm = FakeLLM("好，这条完成了")
+    assistant = make_assistant(llm)
+    task = assistant.tasks.add("交电费", due_at="2026-11-24T09:00:00", type="bill")
+
+    assistant.process_text("完成了", "web", task_id=task["id"])
+
+    notes = [
+        str(m.get("content") or "")
+        for m in llm.calls[0] if m.get("role") == "system"
+    ]
+    joined = "\n".join(notes)
+    assert "当前任务：#%d" % task["id"] in joined
+    assert "task_id=%d" % task["id"] in joined
+    assert "不要先 task_list" in joined
+
+
+def test_bound_task_lets_the_model_complete_without_listing():
+    llm = ScriptedLLM([
+        _tool_call_reply("task_complete", {"task_id": 1}),
+        _stop_reply("交电费这条完成了"),
+    ])
+    assistant = make_assistant(llm)
+    task = assistant.tasks.add("交电费", due_at="2026-11-24T09:00:00", type="bill")
+
+    result = assistant.process_text("完成了", "web", task_id=task["id"])
+
+    assert result["used_tools"] == ["task_complete"]
+    assert assistant.tasks.get(task["id"])["status"] == "done"
+
+
+def test_missing_bound_task_is_flagged_not_guessed():
+    """旧通知点进来，任务已经没了：要说清楚，不拿别的任务顶。"""
+    llm = FakeLLM("这条提醒已经不在了")
+    assistant = make_assistant(llm)
+
+    assistant.process_text("完成了", "web", task_id=9999)
+
+    notes = [
+        str(m.get("content") or "")
+        for m in llm.calls[0] if m.get("role") == "system"
+    ]
+    joined = "\n".join(notes)
+    assert "9999" in joined
+    assert "已经不存在" in joined
+
+
+def test_task_context_only_applies_to_that_turn():
+    """绑定只在这一轮注入，不能留在历史里带偏下一句。"""
+    llm = FakeLLM("好的")
+    assistant = make_assistant(llm)
+    task = assistant.tasks.add("交电费", due_at="2026-11-24T09:00:00", type="bill")
+
+    assistant.process_text("完成了", "web", task_id=task["id"])
+    assistant.process_text("今天天气怎么样", "web")
+
+    notes = [
+        str(m.get("content") or "")
+        for m in llm.calls[-1] if m.get("role") == "system"
+    ]
+    assert not any("task_id=%d" % task["id"] in text for text in notes)

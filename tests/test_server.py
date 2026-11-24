@@ -56,7 +56,8 @@ class FakeAssistant:
         self.sessions = {}
         self.seen_device_camera = None
 
-    def process_text(self, text, client_id, on_delta=None, device_camera=False):
+    def process_text(self, text, client_id, on_delta=None, device_camera=False,
+                     task_id=None):
         self.seen_device_camera = device_camera
         if on_delta is not None:
             on_delta(text)
@@ -852,9 +853,10 @@ def test_ask_endpoint_uses_default_client_id(monkeypatch):
     seen = {}
 
     class RecordingAssistant(FakeAssistant):
-        def process_text(self, text, client_id):
+        def process_text(self, text, client_id, **kwargs):
             seen["client_id"] = client_id
-            return super().process_text(text, client_id)
+            seen["task_id"] = kwargs.get("task_id")
+            return super().process_text(text, client_id, **kwargs)
 
     monkeypatch.setattr(server, "API_TOKEN", "secret")
     monkeypatch.setattr(server, "assistant", RecordingAssistant())
@@ -930,7 +932,8 @@ def test_last_user_text_handles_parts():
 class StreamingAssistant(FakeAssistant):
     """模拟 agent 分两段吐出内容。"""
 
-    def process_text(self, text, client_id, on_delta=None, device_camera=False):
+    def process_text(self, text, client_id, on_delta=None, device_camera=False,
+                     task_id=None):
         if on_delta is not None:
             on_delta("第一句。")
             on_delta("第二句。")
@@ -958,7 +961,8 @@ def test_chat_completions_stream_emits_multiple_chunks(monkeypatch):
 
 def test_chat_completions_stream_survives_agent_error(monkeypatch):
     class BrokenAssistant(FakeAssistant):
-        def process_text(self, text, client_id, on_delta=None, device_camera=False):
+        def process_text(self, text, client_id, on_delta=None, device_camera=False,
+                     task_id=None):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(server, "API_TOKEN", "secret")
@@ -1113,7 +1117,8 @@ CAMERA_TOOL = {
 class CameraAssistant(FakeAssistant):
     """模拟带摄像头时 agent 的决定：这一轮交给设备拍，不生成回复。"""
 
-    def process_text(self, text, client_id, on_delta=None, device_camera=False):
+    def process_text(self, text, client_id, on_delta=None, device_camera=False,
+                     task_id=None):
         self.seen_device_camera = device_camera
         return {
             "type": "device_call", "reply": "",
@@ -1307,3 +1312,95 @@ def test_stream_tool_call_uses_name_from_request(monkeypatch):
 
     assert "self_camera_take_photo" in response.text
     assert "self.camera.take_photo" not in response.text
+
+
+# ---------- 任务上下文：从提醒点进来 ----------
+
+def test_chat_passes_bound_task(monkeypatch):
+    seen = {}
+
+    class Recording(FakeAssistant):
+        def process_text(self, text, client_id, **kwargs):
+            seen["task_id"] = kwargs.get("task_id")
+            return super().process_text(text, client_id, **kwargs)
+
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", Recording())
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/chat",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "完成了", "task_id": 7},
+    )
+
+    assert response.status_code == 200
+    assert seen["task_id"] == 7
+
+
+def test_voice_passes_bound_task(monkeypatch, tmp_path):
+    seen = {}
+
+    class StubStt:
+        def transcribe(self, path):
+            return "完成了"
+
+    class VoiceAssistant(FakeAssistant):
+        def process_voice(self, stt, audio_path, client_id=None, task_id=None):
+            seen["task_id"] = task_id
+            return {
+                "type": "chat", "reply": "好", "text": "完成了", "memories": [],
+                "used_tools": [], "domain": "chat", "action": "chat",
+            }
+
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(server, "stt", StubStt())
+    monkeypatch.setattr(server, "assistant", VoiceAssistant())
+    monkeypatch.setattr(server, "tts", FakeTTS())
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/voice",
+        headers={"Authorization": "Bearer secret"},
+        data={"client_id": "web", "task_id": "7"},
+        files={"file": ("v.wav", wav_bytes(1), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert seen["task_id"] == 7
+
+
+def test_push_payload_carries_task_id(monkeypatch, tmp_path):
+    import asyncio
+
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+
+    asyncio.run(server._send_push("提醒：交电费", {
+        "type": "reminder",
+        "task": {"id": 12, "title": "交电费"},
+        "tag": "task-12",
+    }))
+
+    payload = sender.sent[0][1]
+    assert payload["task_id"] == 12
+    assert payload["task_title"] == "交电费"
+    assert payload["kind"] == "task"
+
+
+def test_push_payload_without_task_has_zero_id(monkeypatch, tmp_path):
+    import asyncio
+
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+
+    asyncio.run(server._send_push("提醒：牛奶还有 2 天过期", {
+        "type": "reminder", "item": {"id": 3, "name": "牛奶"},
+    }))
+
+    payload = sender.sent[0][1]
+    assert payload["task_id"] == 0
+    assert payload["kind"] == "item"

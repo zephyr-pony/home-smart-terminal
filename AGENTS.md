@@ -132,6 +132,12 @@ pytest tests -q
   - `list` / `delete`：额外带 `memories` / `deleted`
   - `device_call`：额外带 `device_call`（`{"name", "arguments"}`），`reply` 为空——这一轮交给设备执行，`/v1` 据此回 OpenAI `tool_calls`
   - 修改 `_agent_loop` 时必须同步维护这些字段，CLI 和 API 都依赖它们。
+- `process_text(..., task_id=)` / `process_voice(..., task_id=)`：用户点开到期提醒时带上那条任务，
+  `_agent_loop` 只在这一轮注入一条 system 提示（`_task_context_note`），让「完成了 / 延期」
+  直接落到那条任务，省掉 `task_list` 一轮；任务不存在或已完成时如实说明，不改别的任务。
+  **只注入上下文，不代执行**——写操作仍走工具、护栏和确认；提示不进会话历史。
+  `/api/chat` 的 `task_id`、`/api/voice` 的表单字段、Web Push 的 `task_id`/`task_title`/`kind`
+  都走这条链；MCP（`ask_xiaoma`）目前没有任务上下文。
 
 ### 澄清
 

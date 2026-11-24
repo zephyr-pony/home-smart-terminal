@@ -252,6 +252,21 @@ html, body {
 }
 
 /* ---- input area ---- */
+#task-chip {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-secondary);
+}
+#task-chip .chip-label {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+#task-chip button {
+  flex-shrink: 0; background: none; border: 0; padding: 0 4px;
+  color: var(--text-secondary); font-size: 14px; cursor: pointer;
+}
+
 #input-area {
   flex-shrink: 0; display: flex; align-items: center; gap: 10px;
   padding: 12px 14px calc(20px + env(safe-area-inset-bottom));
@@ -339,6 +354,10 @@ html, body {
   <main id="views">
     <section id="view-chat" class="view active">
       <div id="messages"></div>
+      <div id="task-chip" class="hidden">
+        <span class="chip-label"></span>
+        <button type="button" aria-label="取消任务绑定">✕</button>
+      </div>
       <div id="input-area">
         <button id="record-btn" aria-label="按住说话">
           <span id="record-label">按住说话</span>
@@ -466,6 +485,9 @@ html, body {
   var recLabel   = document.getElementById('record-label');
   var textInput  = document.getElementById('text-input');
   var sendBtn    = document.getElementById('send-btn');
+  var taskChip   = document.getElementById('task-chip');
+  var taskChipLabel = taskChip.querySelector('.chip-label');
+  var taskChipClose = taskChip.querySelector('button');
   var tabs       = document.querySelectorAll('.tab');
   var views      = document.querySelectorAll('.view');
   var statCards  = document.getElementById('stat-cards');
@@ -1153,6 +1175,29 @@ html, body {
   // ---- 点系统通知进来：把通知原文显示在聊天里 ----
   var lastReminderAt = 0;
 
+  // ---- 当前绑定的提醒任务：从通知/卡片点进来后，下一轮对话带上 task_id ----
+  var activeTask = null;
+  var activeTaskTimer = null;
+  var TASK_BIND_MS = 10 * 60 * 1000;
+
+  function bindTask(id, title) {
+    var tid = parseInt(id, 10);
+    if (!tid) return;
+    activeTask = { id: tid, title: title || ('任务 #' + tid) };
+    taskChipLabel.textContent = '正在处理：' + activeTask.title;
+    taskChip.classList.remove('hidden');
+    if (activeTaskTimer) clearTimeout(activeTaskTimer);
+    activeTaskTimer = setTimeout(clearTask, TASK_BIND_MS);
+  }
+
+  function clearTask() {
+    activeTask = null;
+    if (activeTaskTimer) { clearTimeout(activeTaskTimer); activeTaskTimer = null; }
+    taskChip.classList.add('hidden');
+  }
+
+  taskChipClose.addEventListener('click', clearTask);
+
   function showLastReminder(force) {
     return pushIdbOpen().then(function(db) {
       return new Promise(function(resolve, reject) {
@@ -1167,6 +1212,8 @@ html, body {
       lastReminderAt = payload.at || Date.now();
       switchTab('chat');
       addMsg(payload.body, 'bot', null, { reminder: true });
+      // 点了这条通知，后面一句「完成了 / 延到周五」就指这条任务
+      if (payload.taskId) bindTask(payload.taskId, payload.taskTitle || payload.body);
     }).catch(function() { /* 没有存过通知就什么都不做 */ });
   }
 
@@ -1528,6 +1575,8 @@ html, body {
     // 任务是可操作的通知：渲染成带按钮的卡片（仅在页面在线时可用，历史记录里只存文字）
     if (ev.task && ev.task.id) {
       addTaskCard(ev.task, ev.reply || _taskReminderText(ev.task), ev.audio || null);
+      // 页面开着时收到提醒，后面说的话也默认指这条任务
+      bindTask(ev.task.id, ev.task.title);
     } else {
       addMsg(ev.reply || '有物品快到期了', 'bot', ev.audio || null);
     }
@@ -1724,7 +1773,10 @@ html, body {
 
   // ---- 通知点进来：显示通知原文 ----
   if (/[?&]reminder=1(&|$)/.test(window.location.search)) {
+    var taskParam = /[?&]task=(\d+)/.exec(window.location.search);
     showLastReminder(true).then(function() {
+      // IndexedDB 没写成功时，至少用 URL 里的任务 id 把这一轮绑上
+      if (taskParam && !activeTask) bindTask(taskParam[1], '');
       if (window.history && history.replaceState) {
         history.replaceState(null, '', window.location.pathname);
       }
@@ -1733,7 +1785,11 @@ html, body {
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function(event) {
-      if (event.data && event.data.type === 'open-reminder') showLastReminder(true);
+      if (event.data && event.data.type === 'open-reminder') {
+        showLastReminder(true).then(function() {
+          if (event.data.taskId && !activeTask) bindTask(event.data.taskId, '');
+        });
+      }
     });
   }
 
@@ -1759,7 +1815,11 @@ html, body {
     fetch('/api/chat', {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ text: t, client_id: clientId })
+      body: JSON.stringify({
+        text: t,
+        client_id: clientId,
+        task_id: activeTask ? activeTask.id : 0
+      })
     })
     .then(function(r) {
       if (!r.ok) throw new Error(r.status);
@@ -1931,6 +1991,7 @@ html, body {
     var fd = new FormData();
     fd.append('file', blob, 'recording.wav');
     fd.append('client_id', clientId);
+    if (activeTask) fd.append('task_id', String(activeTask.id));
 
     fetch('/api/voice', { method: 'POST', headers: authHeaders(), body: fd })
     .then(function(r) {

@@ -190,16 +190,24 @@ self.addEventListener('push', function(event) {
     body: payload.body || '',
     icon: '/static/icons/icon-192.png',
     badge: '/static/icons/icon-192.png',
-    data: { url: payload.url || '/' },
+    data: {
+      url: payload.url || '/',
+      taskId: payload.task_id || 0,
+      kind: payload.kind || ''
+    },
     tag: payload.tag || 'xiaoma-reminder',
     renotify: true
   };
-  // 正文存一份到 IndexedDB：点通知时页面靠它还原提醒内容
+  // 正文存一份到 IndexedDB：点通知时页面靠它还原提醒内容，
+  // taskId/kind 用来把下一轮对话绑定到这条任务上
   event.waitUntil(Promise.all([
     pushDbSet('last', {
       title: title,
       body: options.body,
       tag: options.tag,
+      taskId: options.data.taskId,
+      taskTitle: payload.task_title || '',
+      kind: options.data.kind,
       at: Date.now()
     }).catch(function() { /* 存不了也能弹通知，只是点开看不到原文 */ }),
     self.registration.showNotification(title, options)
@@ -208,18 +216,21 @@ self.addEventListener('push', function(event) {
 
 self.addEventListener('notificationclick', function(event) {
   event.notification.close();
-  var target = (event.notification.data && event.notification.data.url) || '/';
+  var data = event.notification.data || {};
+  var target = data.url || '/';
+  var taskId = data.taskId || 0;
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(list) {
       for (var i = 0; i < list.length; i++) {
         if (list[i].url.indexOf(self.location.origin) === 0) {
-          // 页面已经开着：直接把提醒内容交给它渲染，不再新开窗口
-          list[i].postMessage({ type: 'open-reminder' });
+          // 页面已经开着：直接把提醒内容（和任务）交给它渲染，不再新开窗口
+          list[i].postMessage({ type: 'open-reminder', taskId: taskId });
           return list[i].focus();
         }
       }
       var sep = target.indexOf('?') === -1 ? '?' : '&';
-      return self.clients.openWindow(target + sep + 'reminder=1');
+      var extra = 'reminder=1' + (taskId ? ('&task=' + encodeURIComponent(taskId)) : '');
+      return self.clients.openWindow(target + sep + extra);
     })
   );
 });

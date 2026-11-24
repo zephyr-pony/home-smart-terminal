@@ -34,16 +34,17 @@
 - 实体 / 别名 / 事实 / 任务模型；写操作走「提案 → 澄清 → 确认 → 提交」，`proposals` 带幂等键与审计。
 - 结构化提醒：物品到期、账单/日程/自定义任务、周期提醒（每天/每周/每月），冷却与 SSE。
 - Web Push（含 `pushsubscriptionchange` 自愈）、设备通道（小智提醒桥），投递顺序设备 → 网页 → Push。
+- 提醒可操作：点通知或任务卡会带 `task_id`，下一句「完成了 / 延期」落到那条任务上。
 - 小智接入：MCP 端点 `ask_xiaoma`、声纹 `_meta` 分会话、单张拍照问答（模拟设备整链验证）。
 - 小米生态：Home Assistant + 官方集成，`home_query` / `home_control`（白名单 + 回读确认）、
   `home_watch` 健康巡检与 WebSocket 事件。
-- 评测与回归：431 条 pytest；`scripts/eval_accuracy.py` 38 条真模型用例（当前 38/38）。
+- 评测与回归：439 条 pytest；`scripts/eval_accuracy.py` 38 条真模型用例（当前 38/38）。
 
 ### 主要差距
 
 - 没有 RAG，也没有地图/公交/天气等实时工具（阶段 3，延后）。
 - 多家庭/多终端未落地：`space_id` 目前只在 `push_subscriptions`，业务表还没有。
-- 任务上下文没接进会话：`/api/chat`、`/api/voice` 不带 `task_id`，网页任务卡只能按天数延期。
+- 任务上下文只接了网页：点通知/任务卡会带 `task_id`；设备端（MCP `ask_xiaoma`）还没有「刚提醒过哪条」。
 - 设备真机验收未做：唤醒词（D44）、拍照（D49）、反向提醒的真机听感都还等硬件。
 - HA 事件只验证了灯，水浸/烟感/门磁还没真正触发过（缺传感器）。
 - 事实的 `subject` 还是文本，没和 `entities` 关联（§12 第 4 条）。
@@ -394,7 +395,7 @@ POST /v1/actions/act-1/confirm
 
 当前进展（2026-11-24 校对）：阶段 0–2 的主体与 Web 控制台已落地，并已越过分阶段计划走进设备接入：
 实体/事实/任务/提案/澄清/确认、旧数据迁移、Web Push、小智 MCP 接入点、单张拍照问答、
-周期提醒、Home Assistant 接入（只读 + 白名单控制 + 事件订阅）。测试 **431** 条；
+周期提醒、Home Assistant 接入（只读 + 白名单控制 + 事件订阅）。测试 **439** 条；
 `scripts/eval_accuracy.py` **38** 条真模型用例（38/38）。下一阶段主线是**设备真机验收**，
 不是 Android App（见 §17–§19 的调整）。
 
@@ -539,7 +540,7 @@ CLI/Web/API 仍是 `main.py` / `server.py`，**没有全部迁进 `adapters/`**�
 
 ### 阶段 6：Agent 化增强与评测
 
-状态（2026-11-24）：**评测已落地**（38 条真模型用例 + 431 条 pytest）；多步任务、主动建议、
+状态（2026-11-24）：**评测已落地**（38 条真模型用例 + 439 条 pytest）；多步任务、主动建议、
 tracing、成本统计仍未做，也还没评估第三方框架。
 
 目标：多步任务、主动建议、可持续迭代。
@@ -563,7 +564,7 @@ tracing、成本统计仍未做，也还没评估第三方框架。
 
 - **歧义/澄清**：`tests/test_clarify.py` + 评测集里的两轮澄清用例（电费、牛奶）。
 - **工具与护栏**：`tests/test_guard.py`、`test_confirm.py`、`test_propose.py`、`test_verify.py`。
-- **回归**：431 条 pytest；正确率基线 `scripts/eval_accuracy.py` 38 条真模型用例（38/38，
+- **回归**：439 条 pytest；正确率基线 `scripts/eval_accuracy.py` 38 条真模型用例（38/38，
   平均 4.7 s/条），直接跑 `pytest tests -q` 即可，评测另行手动跑。
 - **端到端**：`scripts/xiaozhi_probe.py`（小智协议）、`scripts/fake_camera_device.py`（拍照整链）。
 
@@ -625,8 +626,9 @@ tracing、成本统计仍未做，也还没评估第三方框架。
 1. **设备真机**（主线）：立创 S3 到货 → 刷开源固件指局域网 → 跑 `docs/device-lichuang-s3.md`
    验收清单；先验「另一台设备能不能连 8300/8303」，再验唤醒词（D44）、反向提醒、拍照（D49）。
 2. **HA 真实事件**：现在只用灯验过 WebSocket；水浸/烟感/门磁要等传感器到位（D33）。
-3. **任务上下文接进会话**：`/api/chat`、`/api/voice` 带 `task_id`，让「完成了」「延到周五」
-   指向具体任务（§16 的后端改动只落了 `task_update` / `task_cancel`，任务绑定还没做）。
+3. ~~**任务上下文接进会话**~~ **网页侧已完成（2026-11-24）**：点通知/任务卡后
+   `/api/chat`、`/api/voice` 带 `task_id`。设备端仍缺「刚提醒过哪条」的会话记忆，
+   等反向提醒真机跑通再定要不要在 MCP 侧补。
 4. **事实与实体关联**：`facts.subject` 从文本升级为实体 ID，支持属性查询（D40 的前置）。
 5. 运维底线：日志轮转、systemd 自启、Linux 上跑一遍 `pytest tests -q`（搬家庭服务器前，§22）。
 6. Android App 与 RAG 继续延后：等设备端稳定、且 RAG 有明确的内容来源清单（D3）再启动。
@@ -826,12 +828,16 @@ App 不在前台、甚至完全关闭时，也能收到「牛奶还有 2 天过�
 
 ## 16. 设计草案：任务通知与语音处理（2026-11-21）
 
-> 实施状态（2026-11-24）：**只有服务端工具与任务卡落了地**——`task_update` / `task_cancel`
-> 已上线，日期解析抽到 `agent/dates.py`；网页任务卡有「完成 / 延期一天 / 取消」。
-> **任务上下文（`task_id`）没接**：`/api/chat`、`/api/voice` 不带 `task_id`，推送 payload
-> 也不带 `kind`/`task_id`（`sw.js` 只存正文）。所以下面「点开进入带任务上下文的语音会话」
-> 仍是设计，不是现状；D17–D19 也还没定。另：§17 之后网页端连续语音已暂缓，
-> 语音留在设备端，任务卡只做文字入口。
+> 实施状态（2026-11-24）：**网页侧已接上任务上下文**——点系统通知或页面里的任务卡后，
+> 下一轮 `/api/chat`、`/api/voice` 带 `task_id`，`Assistant` 把它写成一条 system 提示
+> （「当前任务：#12 交电费，到期 …」），模型直接调 `task_complete` / `task_update` /
+> `task_cancel` / `task_postpone`，不必先 `task_list`；任务已不存在/已完成时如实说明，
+> 不拿别的任务顶。推送 payload 已带 `task_id` / `task_title` / `kind`，`sw.js` 存进 IndexedDB，
+> 点通知后页面显示提醒并在输入框上方挂一条「正在处理：…」的绑定条（可手动取消，10 分钟过期）。
+> 已落地 `task_update` / `task_cancel` 与 `agent/dates.py`；网页任务卡有「完成 / 延期一天 / 取消」。
+> **设备端还没接**：小智走 MCP `ask_xiaoma`，提醒是播报出来的、没有「点击」这个动作，
+> 也没有把「刚提醒过哪条任务」写给 MCP 会话，所以客厅里说「完成了」仍要靠 `task_list`。
+> D17–D19 还没定；§17 之后网页连续语音已暂缓，语音留在设备端。
 
 ### 目标
 
