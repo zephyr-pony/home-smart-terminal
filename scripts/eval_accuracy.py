@@ -10,6 +10,9 @@ agent loop，回答的是「用户那句话，小马到底做对没有」。慢�
 判据只卡「做对没有」，不卡措辞：类型、调用到的工具、库里的状态、以及回复里必须
 出现/不能出现的关键事实（日期、名字、号码）。措辞好坏靠人看最后一列。
 
+`case()` 的 `bound_task` 模拟「点开提醒」：`"latest"` 取 setup 造出的第一条任务，
+也可以给具体 id（用来验旧通知）；`not_tools` 断言没有多调指定工具（比如 task_list）。
+
 每次用例都用全新的内存库，互不影响。
 """
 import argparse
@@ -39,12 +42,14 @@ CASES = []
 
 
 def case(name, text, setup=None, tools=None, any_tools=None, type=None,
-         has=(), lacks=(), check=None, known=False, device_camera=False):
+         has=(), lacks=(), check=None, known=False, device_camera=False,
+         bound_task=None, not_tools=()):
     CASES.append({
         "name": name, "text": text, "setup": setup, "tools": set(tools or ()),
         "any_tools": set(any_tools or ()), "type": type,
         "has": has, "lacks": lacks, "check": check, "known": known,
-        "device_camera": device_camera,
+        "device_camera": device_camera, "bound_task": bound_task,
+        "not_tools": set(not_tools or ()),
     })
 
 
@@ -188,6 +193,19 @@ case("提醒：改到后天保留时刻", "取快递改到后天", setup=seed_ta
      check=_task_due(DAY_AFTER.isoformat() + "T15:00:00"))
 case("提醒：补一句延后", "取快递晚一天", setup=seed_task_dated,
      tools=("task_postpone",), has=("取快递",))
+
+# 点开提醒（task_id 绑定）：目标已经确定，不能再先 task_list 或改别的任务
+case("提醒：点开直接完成", "完成了", setup=seed_task_dated,
+     bound_task="latest", tools=("task_complete",),
+     not_tools=("task_list", "task_update", "task_postpone", "task_cancel"),
+     type="chat", check=_task_status("done"), lacks=("没有找到",))
+case("提醒：点开改到后天", "改到后天吧", setup=seed_task_dated,
+     bound_task="latest", any_tools=("task_postpone", "task_update"),
+     not_tools=("task_list",), check=_task_due(DAY_AFTER.isoformat() + "T15:00:00"))
+case("提醒：旧通知不乱改", "这条完成了", setup=seed_task_dated,
+     bound_task=999999, type="chat",
+     not_tools=("task_complete", "task_update", "task_postpone", "task_cancel"),
+     check=_task_status("pending"), has=("不在",))
 
 # ---------- 事实 ----------
 case("事实：存户号", "水费户号是12345678",
@@ -361,8 +379,14 @@ def run(only=None):
         try:
             if item["setup"]:
                 item["setup"](assistant)
+            bound_task = item["bound_task"]
+            if bound_task == "latest":
+                # 点开提醒：setup 造出来的那条就是「当前任务」
+                rows = assistant.tasks.list_all() or []
+                bound_task = rows[0]["id"] if rows else None
             result = assistant.process_text(
-                item["text"], "eval", device_camera=item["device_camera"]
+                item["text"], "eval", device_camera=item["device_camera"],
+                task_id=bound_task,
             )
             elapsed = time.time() - started
             reply = str(result.get("reply") or "")
@@ -379,6 +403,10 @@ def run(only=None):
                 problems.append("工具 %s（应为 %s 之一）" % (
                     ",".join(sorted(used)) or "无",
                     "/".join(sorted(item["any_tools"])),
+                ))
+            if item["not_tools"] & used:
+                problems.append("不该用 %s（点开提醒时目标已确定）" % (
+                    ",".join(sorted(item["not_tools"] & used)),
                 ))
             for needle in item["has"]:
                 if needle not in reply:

@@ -365,7 +365,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ├── static/index.html # Web 客户端
 ├── scripts/
 │   ├── backup.py             # 数据备份 / 校验 / 恢复（见 docs/backup.md）
-│   ├── eval_accuracy.py      # 38 条固定评测集（真模型，不进 pytest）
+│   ├── eval_accuracy.py      # 41 条固定评测集（真模型，不进 pytest）
 │   ├── fake_camera_device.py # 假设备：无硬件验摄像头整条链
 │   └── record_diagnostic.py  # 手工录音/播放诊断（不参与 pytest）
 ├── tests/           # pytest 自动化测试

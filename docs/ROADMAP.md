@@ -38,7 +38,7 @@
 - 小智接入：MCP 端点 `ask_xiaoma`、声纹 `_meta` 分会话、单张拍照问答（模拟设备整链验证）。
 - 小米生态：Home Assistant + 官方集成，`home_query` / `home_control`（白名单 + 回读确认）、
   `home_watch` 健康巡检与 WebSocket 事件。
-- 评测与回归：439 条 pytest；`scripts/eval_accuracy.py` 38 条真模型用例（当前 38/38）。
+- 评测与回归：439 条 pytest；`scripts/eval_accuracy.py` 41 条真模型用例（当前 41/41）。
 
 ### 主要差距
 
@@ -396,7 +396,7 @@ POST /v1/actions/act-1/confirm
 当前进展（2026-11-24 校对）：阶段 0–2 的主体与 Web 控制台已落地，并已越过分阶段计划走进设备接入：
 实体/事实/任务/提案/澄清/确认、旧数据迁移、Web Push、小智 MCP 接入点、单张拍照问答、
 周期提醒、Home Assistant 接入（只读 + 白名单控制 + 事件订阅）。测试 **439** 条；
-`scripts/eval_accuracy.py` **38** 条真模型用例（38/38）。下一阶段主线是**设备真机验收**，
+`scripts/eval_accuracy.py` **41** 条真模型用例（41/41）。下一阶段主线是**设备真机验收**，
 不是 Android App（见 §17–§19 的调整）。
 
 分层现状：`domain/` 与 `agent/` 已拆干净；`adapters/` 只落了 `home.py`、`home_ws.py`、
@@ -540,7 +540,7 @@ CLI/Web/API 仍是 `main.py` / `server.py`，**没有全部迁进 `adapters/`**�
 
 ### 阶段 6：Agent 化增强与评测
 
-状态（2026-11-24）：**评测已落地**（38 条真模型用例 + 439 条 pytest）；多步任务、主动建议、
+状态（2026-11-24）：**评测已落地**（41 条真模型用例 + 439 条 pytest）；多步任务、主动建议、
 tracing、成本统计仍未做，也还没评估第三方框架。
 
 目标：多步任务、主动建议、可持续迭代。
@@ -564,7 +564,7 @@ tracing、成本统计仍未做，也还没评估第三方框架。
 
 - **歧义/澄清**：`tests/test_clarify.py` + 评测集里的两轮澄清用例（电费、牛奶）。
 - **工具与护栏**：`tests/test_guard.py`、`test_confirm.py`、`test_propose.py`、`test_verify.py`。
-- **回归**：439 条 pytest；正确率基线 `scripts/eval_accuracy.py` 38 条真模型用例（38/38，
+- **回归**：439 条 pytest；正确率基线 `scripts/eval_accuracy.py` 41 条真模型用例（41/41，
   平均 4.7 s/条），直接跑 `pytest tests -q` 即可，评测另行手动跑。
 - **端到端**：`scripts/xiaozhi_probe.py`（小智协议）、`scripts/fake_camera_device.py`（拍照整链）。
 
