@@ -1199,6 +1199,10 @@ D46 落地了「拆二字组、逐词 AND」，但把说法差异留在了外面
 - 单测 442 → 448：`/healthz` 不鉴权且未就绪时 503、`STT_ENABLED=0` 时 `/api/voice` 503、
   非本机监听 + 空 token 拒绝启动、访问日志里的 token 被抹掉（`monkey=1` 这种子串不受影响）。
 - 干净 venv（只装 `requirements-ci.txt`）跑 `pytest tests -q`：448 passed。
+- CI 首跑抓到两件事：① `ubuntu-latest` 已切到 26.04，不再提供 Python 3.9 解释器，3.9 矩阵固定到
+  `ubuntu-22.04`；② `test_home_watch` 把门铃时间写死成 `+08:00`，在 UTC 的 runner 上被当成 8 小时前的
+  旧事件——生产逻辑没错（`datetime.now()` 与 HA 时间戳都在本机时区换算），是测试依赖了开发机时区，
+  改成按本机时区倒推 10 秒。失败用例名也已输出成 check 注解，不用登录看日志就知道挂了哪条。
 - 真服务重启后：`GET /healthz` 无 token 返回 `{"ok": true}`；带假 token 的 MCP 请求在日志里显示
   `token=***`。
 - 默认配置（127.0.0.1 + 空 token）行为不变；只有主动改成局域网监听才会被拦。

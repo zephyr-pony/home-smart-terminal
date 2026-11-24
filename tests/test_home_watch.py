@@ -164,12 +164,15 @@ def test_parse_event_ids():
 
 def test_fresh_first_event_is_announced(monkeypatch):
     """门铃第一次响就该提醒，不能当成「历史事件」吞掉。"""
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timedelta
 
     now = _dt(2026, 11, 22, 21, 0, 0)
+    # HA 发的是带时区的时间；按本机时区倒推 10 秒，测试才不依赖 CI 跑在哪个时区。
+    # 写死 +08:00 的话，UTC 的 runner 会把它当成 8 小时前的旧事件。
+    stamp = (now - timedelta(seconds=10)).astimezone().isoformat()
     event = {
         "entity_id": "event.doorbell",
-        "state": "2026-11-22T20:59:50+08:00",   # 10 秒前
+        "state": stamp,   # 10 秒前
         "attributes": {"friendly_name": "门铃响了"},
     }
     watcher, _ = make(

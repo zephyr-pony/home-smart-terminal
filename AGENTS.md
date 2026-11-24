@@ -105,6 +105,7 @@ pytest tests -q
 ```
 
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
+- 不要把时区写死（比如 `+08:00`）：CI 在 UTC 跑，涉及时刻的断言用「本机时区」倒推（见 `test_home_watch`）。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
 - 正确率基线在 `scripts/eval_accuracy.py`：41 条固定输入（含摄像头决策 2 条、周期提醒 4 条、同义检索 2 条、提醒绑定 3 条）、真模型、每个用例独立内存库，
   卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
