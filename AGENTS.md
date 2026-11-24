@@ -80,12 +80,16 @@
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-server.txt   # 网页/API/提醒/推送
+pip install -r requirements-stt.txt      # 语音识别（约 2GB，可不装）
+pip install -r requirements-cli.txt      # CLI 录音/播放（可不装）
+# 或者一次装全：pip install -r requirements.txt
 
 cp .env.example .env   # 填入 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 ```
 
 ```bash
+python scripts/doctor.py   # 启动前自检：配置 / 数据目录 / 端口 / 可选模块
 python server.py       # Web 服务端，http://127.0.0.1:8000
 start.bat              # Windows 一键启动服务端
 start.bat cli          # Windows 启动 CLI
@@ -96,6 +100,10 @@ python main.py wake    # 常驻监听唤醒词「小马」
 
 首次启动会下载 FunASR 模型（约 900MB），服务端启动时同步加载，属正常现象。
 只想文字调试时设 `STT_ENABLED=0`：不加载模型，`/api/voice` 返回 503，其它入口不受影响。
+
+Docker：`Dockerfile` 默认 `INSTALL_STT=0`（只装 `requirements-server.txt`），
+`--build-arg INSTALL_STT=1` 才装 CPU 版 torch 与 FunASR；容器内 `SERVER_HOST=0.0.0.0`，
+所以 `API_TOKEN` 必填，否则 `_check_exposure()` 拒绝启动。数据在 `/data`（`DATA_DIR`）。
 
 ## 测试
 
@@ -258,8 +266,13 @@ pytest tests -q
 ### 配置与隐私
 
 - 所有可调参数走 `config.py` + `.env`；新增配置项要同步 `.env.example` 和 README 配置表。
+- 数据库路径统一由 `DATA_DIR` 决定，新增库用 `config._db_path("<name>.db", "<NAME>_DB_PATH")`，
+  不要直接拼 `"./data/..."`：单独覆盖优先，但默认必须跟着 `DATA_DIR` 走。
+  `scripts/backup.py` 仍只扫仓库下的 `data/`，`DATA_DIR` 指到别处时靠 `doctor.py` 提醒。
 - 不提交 `data/`、`.env`、音频文件；日志里不要输出密钥。
-- 新增依赖需固定版本（见 `requirements.txt`）；CI 只装 `requirements-ci.txt`，给服务端/适配器加顶层 import 时要同步它。
+- 依赖按用途分层：`requirements-server.txt`（服务端，必装）/ `requirements-stt.txt`（语音）/
+  `requirements-cli.txt`（CLI 音频）；`requirements.txt` 只是三者组合，`requirements-ci.txt`
+  引用 server 并加 pytest。新增依赖要放对文件并固定版本，别只加进 `requirements.txt`。
 - 监听非本机（`SERVER_HOST` 不是 127.0.0.1/localhost）且 `API_TOKEN` 为空时，`_check_exposure()` 会拒绝启动；不要为了“方便”去掉这道检查。
 - MCP token 只能走查询参数（上游小智就是这么连的），`uvicorn.access` 上的 `_TokenRedactingFilter` 负责把 `token=` 打码；不要移除这个过滤器，也不要把完整 URL 打进自己的日志。
 - `/healthz` 不鉴权、只回 `{"ok": true}`；不要往里加统计、配置或任何用户数据。

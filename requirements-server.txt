@@ -1,0 +1,12 @@
+# 服务端与外部服务（网页、API、提醒、推送、智能家居）。
+# 只跑网页/文字：装这个 + 设 STT_ENABLED=0 即可，不需要 torch/funasr。
+fastapi==0.128.8
+uvicorn==0.39.0
+python-multipart==0.0.20
+python-dotenv==1.0.1
+requests==2.31.0
+edge-tts==7.3.1
+aiohttp==3.13.5
+# MCP 接入点的 WebSocket 由 uvicorn 交给它实现；探针脚本也用它当客户端
+websockets==15.0.1
+pywebpush==2.1.2

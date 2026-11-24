@@ -1,3 +1,7 @@
-pytest==8.3.5
-httpx==0.28.1
-websockets==15.0.1
+# 开发/测试依赖：服务端那套 + pytest。
+# 不装 torch/funasr/pyaudio（单测不加载 STT，也不碰音频设备），省 2GB。
+-r requirements-ci.txt
+
+# 需要本机跑语音/CLI 时再补：
+#   pip install -r requirements-stt.txt
+#   pip install -r requirements-cli.txt

@@ -11,7 +11,9 @@
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 source .venv/bin/activate
-pip install -r requirements.txt        # CLI/语音需要；只做网页可看下面的提示
+pip install -r requirements-server.txt   # 网页 / API / 提醒 / 推送，开发必装
+pip install -r requirements-stt.txt      # 要跑语音识别才装（约 2GB）
+pip install -r requirements-cli.txt      # 要跑 CLI 录音/播放才装
 cp .env.example .env
 ```
 
@@ -24,14 +26,21 @@ LLM_MODEL=你的模型名
 ```
 
 ```bash
-python server.py      # http://127.0.0.1:8000
-python main.py        # CLI
-python main.py wake   # 唤醒词常驻
+python scripts/doctor.py   # 启动前自检：配置 / 数据目录 / 端口 / 可选模块
+python server.py           # http://127.0.0.1:8000
+python main.py             # CLI
+python main.py wake        # 唤醒词常驻
 ```
 
 只想调试文字/网页、不想下 900MB 语音模型：在 `.env` 里设 `STT_ENABLED=0`，
 `/api/voice` 会返回 503，其它功能不受影响。Linux 上 `pip install pyaudio` 需要先装
 `portaudio19-dev`；只做网页开发可以不装 `pyaudio` / `pygame`。
+
+所有数据库默认在 `DATA_DIR`（默认 `./data`）下；要换位置就改这一项，
+单独的 `MEMORY_DB_PATH` 等只在迁移/测试时用。注意 `scripts/backup.py` 只扫仓库下的
+`data/`，`DATA_DIR` 指到别处时 `doctor.py` 会提醒。
+
+Docker 部署见 README 的「Docker」一节；镜像默认不带语音识别，`INSTALL_STT=1` 才装。
 
 ## 测试
 
@@ -46,8 +55,10 @@ pytest tests -q
   python scripts/eval_accuracy.py --only 提醒
   ```
 - 提交前至少跑一遍 `pytest tests -q` 和 `python -m py_compile *.py tests/*.py`。
-- CI 只装 `requirements-ci.txt`（不含 torch/funasr/pyaudio）；如果你给服务端或适配器
-  加了顶层 import，记得同步这个文件。
+- CI 只装 `requirements-ci.txt`（内部引用 `requirements-server.txt`，不含 torch/funasr/pyaudio）；
+  如果你给服务端或适配器加了顶层 import，记得同步这个文件。
+- 测试用 `Memory(":memory:")` 之类的内存库，不要碰 `data/`，也别把时区写死成 `+08:00`
+  （CI 在 UTC 跑）。
 
 ## 代码约定（摘要）
 

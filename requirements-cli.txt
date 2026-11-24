@@ -1,0 +1,4 @@
+# 命令行语音（python main.py / main.py wake）。
+# 网页端按住说话走浏览器录音，不需要这两个：Linux 上装 pyaudio 还要先装 portaudio19-dev。
+pyaudio==0.2.14
+pygame-ce==2.5.6

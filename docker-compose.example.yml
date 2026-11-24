@@ -1,0 +1,49 @@
+# 用法：
+#   cp docker-compose.example.yml docker-compose.yml
+#   cp .env.example .env      # 至少填 LLM 三项，并且必须设 API_TOKEN
+#   docker compose up -d --build
+#
+# 需要语音识别（镜像会大 2GB 以上）：
+#   docker compose build --build-arg INSTALL_STT=1
+#   同时在 .env 里设 STT_ENABLED=1，否则镜像装了模型也不会加载。
+services:
+  xiaoma:
+    build:
+      context: .
+      args:
+        INSTALL_STT: "0"
+    image: xiaoma:local
+    container_name: xiaoma
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 容器里必须监听 0.0.0.0；访问控制靠 API_TOKEN 与端口映射，
+      # 别把 SERVER_HOST 改回 127.0.0.1（那样宿主机也连不上）。
+      SERVER_HOST: "0.0.0.0"
+      SERVER_PORT: "8000"
+      DATA_DIR: /data
+      # 镜像默认没装 funasr；这里盖掉 .env 里的 STT_ENABLED=1，避免启动即崩。
+      # 用 --build-arg INSTALL_STT=1 构建后，再把这一行改成 "1"。
+      STT_ENABLED: "0"
+    volumes:
+      # 用命名卷：Linux 上换成 bind mount（./data:/data）会撞上容器内 uid 10001
+      # 没有写权限的问题。要 bind mount 就先 chown 10001:10001 ./data。
+      - xiaoma-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  xiaoma-data:

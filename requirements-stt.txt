@@ -1,0 +1,13 @@
+# 语音识别（FunASR / SenseVoice）。
+# 只做网页文字聊天可以不装：设 STT_ENABLED=0，/api/voice 会返回 503。
+# 首次加载会下载约 900MB 模型。
+#
+# 想用 CPU 版 torch 省下载体积：
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.8.0 torchaudio==2.8.0
+#   pip install -r requirements-stt.txt
+funasr==1.2.6
+modelscope==1.20.1
+torch==2.8.0
+torchaudio==2.8.0
+numpy==1.26.4
+soundfile==0.13.1

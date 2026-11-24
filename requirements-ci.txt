@@ -1,18 +1,10 @@
 # CI 用依赖：只装单测真正 import 的东西。
 #
-# 为什么不直接 `pip install -r requirements.txt`：
-#   - torch + funasr 有 2GB+，CI 每次跑几分钟；单测不加载 STT（stt.py 里才 import funasr）
-#   - pyaudio 在 Ubuntu 上要先装 portaudio19-dev，网页/服务端测试用不到（CLI 才用）
-# 改服务端/适配器的顶层 import 时，记得同步这里，否则只在 CI 挂、本地发现不了。
-
-fastapi==0.128.8
-uvicorn==0.39.0
-python-multipart==0.0.20
-python-dotenv==1.0.1
-requests==2.31.0
-edge-tts==7.3.1
-aiohttp==3.13.5
-pywebpush==2.1.2
+# 为什么不是 requirements.txt：
+#   - torch + funasr 有 2GB+，单测不加载 STT（funasr 只在 STT() 里 import）
+#   - pyaudio 在 Ubuntu 上要先装 portaudio19-dev，网页/服务端测试用不到
+# 直接引用 server 依赖，避免两处版本漂移。
+-r requirements-server.txt
 
 pytest==8.3.5
 httpx==0.28.1

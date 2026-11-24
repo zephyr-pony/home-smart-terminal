@@ -1206,3 +1206,48 @@ D46 落地了「拆二字组、逐词 AND」，但把说法差异留在了外面
 - 真服务重启后：`GET /healthz` 无 token 返回 `{"ok": true}`；带假 token 的 MCP 请求在日志里显示
   `token=***`。
 - 默认配置（127.0.0.1 + 空 token）行为不变；只有主动改成局域网监听才会被拦。
+
+## 三十九、2026-11-24：开源配套第二批（数据目录、自检、依赖分层、Docker）
+
+第一批解决的是「别人敢不敢用」，这一批解决「装上之后能不能一次跑起来」。
+仍然只动工程配套，不改业务行为。
+
+### 补了什么
+
+| 项 | 结果 |
+|---|---|
+| 数据目录 | `config.py` 新增 `DATA_DIR`（默认 `./data`）和 `_db_path()`：6 个库默认都跟着它走；单独设 `MEMORY_DB_PATH` 等仍然优先，留给迁移和测试 |
+| 启动前自检 | 新增 `scripts/doctor.py`：Python 版本、`.env`、LLM 三项、暴露检查、数据目录可写、端口占用、可选模块自相矛盾、STT 开了但没装 funasr、备份范围；`--json` 给脚本用，退出码 1 表示有错误 |
+| 配置模板 | `.env.example` 从平铺清单改成「最小配置 / 常用 / 可选模块 / 高级」四段；必填只有 LLM 三项，`*_DB_PATH` 改成注释掉的覆盖项 |
+| 依赖分层 | `requirements-server.txt`（网页/API/提醒/推送）、`requirements-stt.txt`（torch + FunASR）、`requirements-cli.txt`（pyaudio/pygame）；`requirements.txt` 变成三者的组合，`requirements-dev.txt` 引用 CI 那套 |
+| Docker | `Dockerfile` 默认 `INSTALL_STT=0`，只装服务端依赖；`--build-arg INSTALL_STT=1` 才先装 CPU 版 torch 再装 FunASR。非 root（uid 10001）运行，`/data` 是数据卷，健康检查打 `/healthz` |
+| Compose 示例 | `docker-compose.example.yml`：容器内 `SERVER_HOST=0.0.0.0`，必须配 `API_TOKEN`；数据用命名卷，避免 bind mount 撞上 uid 权限 |
+| 文档 | README 增加 Docker 一节、安装按用途拆分、配置表补 `DATA_DIR`；CONTRIBUTING 与 AGENTS 同步依赖分层、doctor 和 `DATA_DIR` 约定 |
+
+### 为什么 DATA_DIR 要单独抽出来
+
+Docker 和非仓库目录部署都需要把「数据放哪」和「代码放哪」分开。原来 6 个路径各自
+写死 `./data/xxx.db`，改一处就要改六处，还容易漏掉 `push.db`。现在默认值从
+`DATA_DIR` 推出来，单独覆盖的语义没变——测试和迁移脚本仍可以只改一个库的路径。
+
+没有顺手改 `scripts/backup.py`：它扫的是仓库下的 `data/`，跟着 `DATA_DIR` 派生会让
+「备份哪个目录」和「恢复回哪个目录」两套逻辑缠在一起。当前折中是 `doctor.py` 在
+`DATA_DIR` 不在仓库 `data/` 下时给出明确提醒，等真有人这么部署再改备份脚本。
+
+### 为什么默认镜像不带语音识别
+
+torch + FunASR 会把镜像从 ~200MB 抬到 2GB 以上，而网页文字、API、提醒这些功能
+完全用不到它。默认不带，`/api/voice` 返回 503（与 `STT_ENABLED=0` 的行为一致），
+要用再加构建参数。这么做的代价是「语音识别不是开箱即用」，所以在 README、
+compose 注释和 doctor 的提示里都写明了怎么开。
+
+### 验收
+
+- 单测 448 → 457：`DATA_DIR` 跟随与显式覆盖优先（2 条）、doctor 的 LLM/暴露/目录/
+  可选模块/STT 缺依赖/最小配置/文本汇总（7 条）。
+- 本机 `python scripts/doctor.py` 输出 11 项：所有配置项通过，只有「8200 端口已被占用」
+  一条提醒（正是本地在跑的服务）。
+- `python -m py_compile` 覆盖 79 个文件，无语法错误。
+- **未验证**：本机 Docker daemon 没启动，`docker build` 没真跑过；Dockerfile 与
+  compose 文件只做了静态检查（基础镜像、依赖文件名、健康检查命令、卷路径）。第一次
+  在有 Docker 的机器上构建时，重点看 `INSTALL_STT=1` 那条分支的 torch 索引是否生效。

@@ -66,12 +66,21 @@ STT_ENABLED = _get_bool("STT_ENABLED", True)
 STT_MODEL = _get("STT_MODEL", "iic/SenseVoiceSmall")
 STT_LANGUAGE = _get("STT_LANGUAGE", "zh")
 
+# ---- 数据目录 ----
+# 所有库默认都在 DATA_DIR 下；单独设 *_DB_PATH 的仍以它为优先（迁移/测试用）
+DATA_DIR = _get("DATA_DIR", "./data")
+
+
+def _db_path(filename, key):
+    return _get(key, os.path.join(DATA_DIR, filename))
+
+
 # ---- 记忆存储 ----
-MEMORY_DB_PATH = _get("MEMORY_DB_PATH", "./data/memory.db")
-ITEMS_DB_PATH = _get("ITEMS_DB_PATH", "./data/items.db")
+MEMORY_DB_PATH = _db_path("memory.db", "MEMORY_DB_PATH")
+ITEMS_DB_PATH = _db_path("items.db", "ITEMS_DB_PATH")
 
 # ---- Agent 状态（实体 / 待澄清动作）----
-AGENT_DB_PATH = _get("AGENT_DB_PATH", "./data/agent.db")
+AGENT_DB_PATH = _db_path("agent.db", "AGENT_DB_PATH")
 PENDING_ACTION_TTL_SECONDS = _get_int("PENDING_ACTION_TTL_SECONDS", 30 * 60)
 PROPOSAL_DEDUPE_SECONDS = _get_int("PROPOSAL_DEDUPE_SECONDS", 5 * 60)
 # 弱模型模式：写操作是否先复述参数等确认
@@ -81,8 +90,8 @@ PROPOSAL_DEDUPE_SECONDS = _get_int("PROPOSAL_DEDUPE_SECONDS", 5 * 60)
 CONFIRM_WRITE_ACTIONS = _get("CONFIRM_WRITE_ACTIONS", "0")
 
 # ---- 通用任务与结构化事实 ----
-TASKS_DB_PATH = _get("TASKS_DB_PATH", "./data/tasks.db")
-FACTS_DB_PATH = _get("FACTS_DB_PATH", "./data/facts.db")
+TASKS_DB_PATH = _db_path("tasks.db", "TASKS_DB_PATH")
+FACTS_DB_PATH = _db_path("facts.db", "FACTS_DB_PATH")
 
 # ---- 音频录制 ----
 SAMPLE_RATE = _get_int("SAMPLE_RATE", 16000)
@@ -145,7 +154,7 @@ REMINDER_COOLDOWN_HOURS = _get_int("REMINDER_COOLDOWN_HOURS", 24)      # 同一�
 # ---- Web Push（页面关闭时的到期提醒）----
 # 私钥用 base64(PEM) 单行存放，.env 里不能有多行值；用 scripts/gen_vapid.py 生成。
 PUSH_ENABLED = _get_bool("PUSH_ENABLED", False)
-PUSH_DB_PATH = _get("PUSH_DB_PATH", "./data/push.db")
+PUSH_DB_PATH = _db_path("push.db", "PUSH_DB_PATH")
 VAPID_PUBLIC_KEY = _get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = _get("VAPID_PRIVATE_KEY", "")
 VAPID_SUBJECT = _get("VAPID_SUBJECT", "mailto:noreply@example.com")

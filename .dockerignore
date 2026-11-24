@@ -1,0 +1,23 @@
+# 构建上下文只留运行需要的东西；data/ 和 .env 绝不进镜像。
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+data
+backups
+.env
+.env.*
+!.env.example
+tests
+infra
+.playwright-mcp
+.commandcode
+.openchamber
+.sisyphus
+*.wav
+*.mp3
+*.log
+Thumbs.db
+.DS_Store

@@ -67,11 +67,17 @@ Agent：LLM 按 function calling 自主决策调哪个工具
 git clone <你的仓库地址>
 cd 家庭智能终端
 
-# 2. 创建虚拟环境并安装依赖
+# 2. 创建虚拟环境，按需要装依赖（三份可以叠加，也可以一次装全）
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Linux/macOS
-pip install -r requirements.txt
+
+pip install -r requirements-server.txt   # 网页 / API / 提醒 / 推送（必装）
+pip install -r requirements-stt.txt      # 语音识别：约 2GB，首跑再下 900MB 模型
+pip install -r requirements-cli.txt      # CLI 录音与播放；Linux 先装 portaudio19-dev
+# 一次装全：pip install -r requirements.txt
+#
+# 只想用文字聊天：只装 server，并在 .env 设 STT_ENABLED=0。
 
 # 3. 配置 LLM 服务（OpenAI 兼容接口，如 llama.cpp / LM Studio / OneAPI 网关）
 #    只有这三项是必填的，其余都有默认值
@@ -86,7 +92,11 @@ EOF
 #   copy .env.example .env      # Windows
 #   cp .env.example .env        # Linux/macOS
 
-# 4. 运行
+# 4. 启动前自检：不加载模型、不发网络请求，几秒钟把配置/目录/端口问题一次说完
+python scripts/doctor.py
+```
+
+接下来按需要选一种运行方式：
 
 **Web 服务端（手机/平板访问，推荐）**
 ```bash
@@ -124,6 +134,23 @@ start.bat wake       # 或 python main.py wake
 
 > 首次运行会自动下载 FunASR 语音识别模型（约 900MB），需要一些时间。
 > 只想用文字聊天/调网页：在 `.env` 设 `STT_ENABLED=0`，跳过模型下载，`/api/voice` 返回 503。
+
+**Docker（可选，适合长期跑在 NAS / 小主机上）**
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+cp .env.example .env          # 至少填 LLM 三项；容器里必须设 API_TOKEN
+docker compose up -d --build
+```
+
+- 镜像默认**不带语音识别**（compose 里把 `STT_ENABLED` 固定为 `0`）：网页文字、API、
+  到期提醒都能用，只有 `/api/voice` 返回 503。需要语音识别：`docker compose build --build-arg INSTALL_STT=1`
+  （先装 CPU 版 torch，镜像会大 2GB 以上），再把 compose 里的 `STT_ENABLED` 改成 `"1"`；
+  只改 `.env` 不改这里不会生效，`doctor.py` 也会在缺依赖时报错。
+- 容器里 `SERVER_HOST` 固定 `0.0.0.0`，**必须设 `API_TOKEN`**，否则 `_check_exposure()`
+  会直接拒绝启动——这是刻意的，别为了省事关掉。
+- 数据放在命名卷 `xiaoma-data`（容器内 `/data`，对应 `DATA_DIR`）。换机器/搬家优先用
+  `python scripts/backup.py` 导出，命名卷直接拷文件容易漏掉正在写的库。
 
 ## 服务端 API
 
@@ -261,7 +288,8 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 |---|---|---|
 | `LLM_BASE_URL` | （必填） | LLM 服务地址，如 `http://127.0.0.1:8081/v1` |
 | `LLM_API_KEY` | （必填） | API 密钥 |
-| `LLM_MODEL` | （可选） | 模型名 |
+| `LLM_MODEL` | （必填） | 模型名 |
+| `LLM_MODEL_DECISION` | 空 | 第一轮（挑工具）单独用更快的模型；留空 = 两轮都用 `LLM_MODEL` |
 | `LLM_REASONING_EFFORT` | `off` | 思考模式，值原样传给网关：commandcode 用 `off` 关，aisp 用 `none` 关；留空表示不传该参数 |
 | `LLM_PROXY` | 空 | 访问网关走本机代理（如 `http://127.0.0.1:10808`）。直连很慢时配它；留空交给 requests 默认行为 |
 | `VISION_CONTEXT_SECONDS` | `180` | 拍照后「刚才看到什么」在会话里保留多久；只在内存，不进记忆库 |
@@ -270,11 +298,12 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `STT_ENABLED` | `1` | 设 `0` 不加载 FunASR（首跑省 900MB），仅保留文字入口，`/api/voice` 返回 503 |
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |
 | `STT_LANGUAGE` | `zh` | 识别语言 |
-| `MEMORY_DB_PATH` | `./data/memory.db` | 记忆库位置 |
-| `ITEMS_DB_PATH` | `./data/items.db` | 物品库位置 |
-| `AGENT_DB_PATH` | `./data/agent.db` | 实体 / 待澄清动作 / 提案库位置 |
-| `TASKS_DB_PATH` | `./data/tasks.db` | 任务 / 提醒库位置 |
-| `FACTS_DB_PATH` | `./data/facts.db` | 结构化事实库位置 |
+| `DATA_DIR` | `./data` | 所有数据库的默认目录；单独设下面 `*_DB_PATH` 的仍以它为优先 |
+| `MEMORY_DB_PATH` | `<DATA_DIR>/memory.db` | 记忆库位置（一般不用改） |
+| `ITEMS_DB_PATH` | `<DATA_DIR>/items.db` | 物品库位置 |
+| `AGENT_DB_PATH` | `<DATA_DIR>/agent.db` | 实体 / 待澄清动作 / 提案库位置 |
+| `TASKS_DB_PATH` | `<DATA_DIR>/tasks.db` | 任务 / 提醒库位置 |
+| `FACTS_DB_PATH` | `<DATA_DIR>/facts.db` | 结构化事实库位置 |
 | `PENDING_ACTION_TTL_SECONDS` | `1800` | 待澄清动作过期时间（秒） |
 | `PROPOSAL_DEDUPE_SECONDS` | `300` | 相同写提案的去重窗口（秒） |
 | `CONFIRM_WRITE_ACTIONS` | `0` | 弱模型模式：`0` 关闭 / `1` 所有写操作先确认 / `tasks` 只确认任务。开启后同时拦下「没调工具却说已记好」 |
@@ -302,7 +331,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `REMINDER_INTERVAL_SECONDS` | `60` | 后台到期扫描间隔（秒） |
 | `REMINDER_COOLDOWN_HOURS` | `24` | 同一物品再次提醒的冷却（小时，0 = 只提醒一次） |
 | `PUSH_ENABLED` | `0` | 是否启用 Web Push 系统通知（页面关闭时也能收到） |
-| `PUSH_DB_PATH` | `./data/push.db` | 推送订阅库位置 |
+| `PUSH_DB_PATH` | `<DATA_DIR>/push.db` | 推送订阅库位置 |
 | `VAPID_PUBLIC_KEY` | 空 | 推送公钥（`scripts/gen_vapid.py` 生成） |
 | `VAPID_PRIVATE_KEY` | 空 | 推送私钥，base64(PEM) 单行；绝不返回前端 |
 | `VAPID_SUBJECT` | `mailto:noreply@example.com` | VAPID 联系地址 |
@@ -384,17 +413,23 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ├── static/index.html # Web 客户端
 ├── scripts/
 │   ├── backup.py             # 数据备份 / 校验 / 恢复（见 docs/backup.md）
+│   ├── doctor.py             # 启动前自检（配置 / 目录 / 端口 / 可选模块）
 │   ├── eval_accuracy.py      # 41 条固定评测集（真模型，不进 pytest）
 │   ├── fake_camera_device.py # 假设备：无硬件验摄像头整条链
 │   └── record_diagnostic.py  # 手工录音/播放诊断（不参与 pytest）
 ├── tests/           # pytest 自动化测试
-├── requirements.txt
+├── requirements-server.txt  # 网页 / API / 提醒 / 推送
+├── requirements-stt.txt     # 语音识别（torch + FunASR）
+├── requirements-cli.txt     # CLI 录音与播放（pyaudio / pygame）
+├── requirements.txt         # 上面三份的组合
 ├── requirements-dev.txt
-├── requirements-ci.txt   # CI 用的最小依赖（不含 torch/funasr/pyaudio）
+├── requirements-ci.txt      # CI 用：server + pytest，不含 torch/funasr/pyaudio
+├── Dockerfile               # 服务端镜像，默认不含语音识别
+├── docker-compose.example.yml
 ├── .env.example     # 配置模板（复制为 .env）
 ├── LICENSE          # MIT
 ├── CONTRIBUTING.md  # 开发说明
-└── data/            # 数据库（已 gitignore，不入库）
+└── data/            # 数据库（已 gitignore，不入库；可用 DATA_DIR 改位置）
 ```
 
 ## 技术栈
@@ -407,7 +442,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 
 ## 隐私说明
 
-- 记忆与物品数据仅保存在本地 `data/`（`memory.db` / `items.db` / `tasks.db` / `facts.db` / `agent.db` / `push.db`），不会上传
+- 记忆与物品数据仅保存在本地 `DATA_DIR`（默认 `data/`，含 `memory.db` / `items.db` / `tasks.db` / `facts.db` / `agent.db` / `push.db`），不会上传
 - API 密钥仅存于本地 `.env`（已被 `.gitignore` 排除）
 - 语音音频为临时文件，处理完即删除
 
