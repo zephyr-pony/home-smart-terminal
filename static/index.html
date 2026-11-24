@@ -1178,6 +1178,7 @@ html, body {
   // ---- 当前绑定的提醒任务：从通知/卡片点进来后，下一轮对话带上 task_id ----
   var activeTask = null;
   var activeTaskTimer = null;
+  var taskCards = {};
   var TASK_BIND_MS = 10 * 60 * 1000;
 
   function bindTask(id, title) {
@@ -1197,6 +1198,26 @@ html, body {
   }
 
   taskChipClose.addEventListener('click', clearTask);
+
+  // 说话/打字把任务处理完之后，卡片和绑定条要跟着更新——不靠猜模型说了什么，
+  // 而是回查一次任务列表，以库里的状态为准（查不到就不动，避免误标）。
+  function refreshBoundTask() {
+    if (!activeTask) return;
+    var id = activeTask.id;
+    apiFetch('/api/tasks?limit=100').then(function(res) {
+      var rows = (res && res.tasks) || [];
+      var found = null;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].id === id) { found = rows[i]; break; }
+      }
+      if (!found) return;
+      if (found.status === 'done' || found.status === 'cancelled') {
+        var card = taskCards[id];
+        if (card) card.finish(found.status === 'done' ? '已完成' : '已取消');
+        clearTask();
+      }
+    }).catch(function() { /* 查不到状态就先留着绑定 */ });
+  }
 
   function showLastReminder(force) {
     return pushIdbOpen().then(function(db) {
@@ -1648,6 +1669,9 @@ html, body {
           } else {
             finish('已取消');
           }
+          if (spec.action !== 'postpone' && activeTask && activeTask.id === task.id) {
+            clearTask();
+          }
           pollStatus();
         }).catch(function(err) {
           b.disabled = false;
@@ -1661,6 +1685,8 @@ html, body {
     row.appendChild(bubble);
     msgBox.appendChild(row);
     scrollBottom();
+    // 让「说话处理完了」也能更新这张卡片
+    taskCards[task.id] = { finish: finish };
 
     // 按钮不能持久化，历史里只保留文字
     chatHistory.push({ text: text, type: 'bot', reminder: true, at: Date.now() });
@@ -1828,6 +1854,7 @@ html, body {
     .then(function(d) {
       removeTyping();
       addMsg(d.reply || '（空回复）', 'bot', d.audio || null);
+      refreshBoundTask();
     })
     .catch(function(err) {
       removeTyping();
@@ -2002,6 +2029,7 @@ html, body {
       removeTyping();
       addMsg(d.text || '（语音）', 'user');
       addMsg(d.reply || '（空回复）', 'bot', d.audio || null);
+      refreshBoundTask();
     })
     .catch(function(err) {
       removeTyping();
