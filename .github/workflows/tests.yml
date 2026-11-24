@@ -7,11 +7,16 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12"]
+        include:
+          # ubuntu-latest 已经不带 3.9 的解释器清单（26.04），固定到 22.04
+          - python-version: "3.9"
+            os: ubuntu-22.04
+          - python-version: "3.12"
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -30,4 +35,12 @@ jobs:
           python -m py_compile *.py agent/*.py domain/*.py adapters/*.py scripts/*.py tests/*.py
 
       - name: Pytest
-        run: pytest tests -q
+        run: |
+          set -o pipefail
+          pytest tests -q --tb=short 2>&1 | tee pytest.log
+
+      - name: Annotate failures
+        if: failure()
+        run: |
+          # 把失败用例名变成 check 注解，不用登录也能在 commit 页面看到挂了哪条
+          grep -E '^(FAILED|ERROR) ' pytest.log | sed 's/^/::error::/' || true
