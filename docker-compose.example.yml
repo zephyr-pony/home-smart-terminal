@@ -32,6 +32,8 @@ services:
       # 用命名卷：Linux 上换成 bind mount（./data:/data）会撞上容器内 uid 10001
       # 没有写权限的问题。要 bind mount 就先 chown 10001:10001 ./data。
       - xiaoma-data:/data
+      # FunASR / torch 的模型缓存放这里：重建容器不用重新下 900MB
+      - xiaoma-cache:/home/xiaoma/.cache
     healthcheck:
       test:
         - CMD
@@ -47,3 +49,4 @@ services:
 
 volumes:
   xiaoma-data:
+  xiaoma-cache:

@@ -1248,12 +1248,16 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 - 本机 `python scripts/doctor.py` 输出 11 项：所有配置项通过，只有「8200 端口已被占用」
   一条提醒（正是本地在跑的服务）。
 - `python -m py_compile` 覆盖 79 个文件，无语法错误。
-- Docker 默认镜像真构建并跑通：`docker compose ... config --quiet` 通过；`docker build` 成功，
-  容器 8 秒内 healthy。容器内验证：`/healthz` 回 `{"ok":true}`、无 token 的 `/api/status` 401、
-  带 token 200、首页 200、`/api/voice` 503（`STT_ENABLED=0`）、6 个库都落在 `/data` 且属主
-  uid 10001；容器里跑 `doctor.py` 也通过（3 条提醒：无 `.env`、端口被自己占用、`DATA_DIR`
-  不在仓库 `data/` 下）。本机访问 docker.io 不通，构建时改用镜像源拉了同一份
+- Docker 两种镜像都真构建并跑通。默认镜像：`docker compose ... config --quiet` 通过，
+  `docker build` 成功，容器 8 秒内 healthy；容器内 `/healthz` 回 `{"ok":true}`、无 token 的
+  `/api/status` 401、带 token 200、首页 200、`/api/voice` 503（`STT_ENABLED=0`）、6 个库都落在
+  `/data` 且属主 uid 10001；容器里跑 `doctor.py` 也通过（3 条提醒：无 `.env`、端口被自己占用、
+  `DATA_DIR` 不在仓库 `data/` 下）。本机访问 docker.io 不通，构建时改用镜像源拉了同一份
   `python:3.12-slim` 当基础镜像，Dockerfile 里仍是官方镜像名。
-- **未验证**：`INSTALL_STT=1` 分支（要下约 300MB CPU 版 torch）构建没跑完，只确认了命令顺序。
-  第一次在有网络的地方构建时，重点看 torch 是否命中 CPU 索引、后面装 `requirements-stt.txt`
-  时不会重复拉 CUDA 版。
+- `INSTALL_STT=1`：镜像 2.25GB；`torch` / `torchaudio` 都是 `2.8.0+cpu`、`torch.version.cuda`
+  为 `None`（没有被后面的 `requirements-stt.txt` 拉回 CUDA 版），`funasr 1.2.6` 可 import，
+  `pip check` 无冲突。torchaudio 启动时提示没装 ffmpeg，但小马只喂 16kHz WAV、走 soundfile，
+  不需要它。
+- 验证时发现一个会反复咬人的点：容器重建会丢掉 `/home/xiaoma/.cache` 里的模型，
+  每次重下 900MB。compose 因此加了 `xiaoma-cache` 卷，Dockerfile 里先把该目录建好并
+  交给 uid 10001——否则命名卷挂上来会变成 root 属主，非 root 进程写不进去。

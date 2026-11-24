@@ -31,8 +31,8 @@ COPY . .
 # 容器里不要用 root 跑；/data 提前建好并交给运行用户，
 # 这样命名卷第一次挂载时继承的是可写权限。
 RUN useradd --create-home --uid 10001 xiaoma \
-    && mkdir -p /data \
-    && chown -R xiaoma:xiaoma /data /app
+    && mkdir -p /data /home/xiaoma/.cache \
+    && chown -R xiaoma:xiaoma /data /app /home/xiaoma
 USER xiaoma
 
 VOLUME ["/data"]

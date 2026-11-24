@@ -151,6 +151,7 @@ docker compose up -d --build
   会直接拒绝启动——这是刻意的，别为了省事关掉。
 - 数据放在命名卷 `xiaoma-data`（容器内 `/data`，对应 `DATA_DIR`）。换机器/搬家优先用
   `python scripts/backup.py` 导出，命名卷直接拷文件容易漏掉正在写的库。
+- 语音模型缓存在 `xiaoma-cache` 卷（`/home/xiaoma/.cache`），重建容器不用重下 900MB 模型。
 - 拉不到 `docker.io` 时（国内网络常见）先给 Docker 配镜像加速器或改用可访问的镜像源拉
   `python:3.12-slim` 并打回同名标签，Dockerfile 本身不用改。
 
