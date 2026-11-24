@@ -43,7 +43,7 @@
 
 ## 演进路线与架构约束
 
-当前优先 Web 控制台：聊天之外增加统计、列表、系统配置；随后 Android App；RAG 延后。CLI 和现有服务端能力保留。
+当前优先语音设备真机（小智 + ESP32）与真机验收；Web 控制台、CLI 和既有服务端能力继续维护；Android App 与 RAG 延后。
 
 ### 开发顺序
 
@@ -95,6 +95,7 @@ python main.py wake    # 常驻监听唤醒词「小马」
 ```
 
 首次启动会下载 FunASR 模型（约 900MB），服务端启动时同步加载，属正常现象。
+只想文字调试时设 `STT_ENABLED=0`：不加载模型，`/api/voice` 返回 503，其它入口不受影响。
 
 ## 测试
 
@@ -257,7 +258,10 @@ pytest tests -q
 
 - 所有可调参数走 `config.py` + `.env`；新增配置项要同步 `.env.example` 和 README 配置表。
 - 不提交 `data/`、`.env`、音频文件；日志里不要输出密钥。
-- 新增依赖需固定版本（见 `requirements.txt`）。
+- 新增依赖需固定版本（见 `requirements.txt`）；CI 只装 `requirements-ci.txt`，给服务端/适配器加顶层 import 时要同步它。
+- 监听非本机（`SERVER_HOST` 不是 127.0.0.1/localhost）且 `API_TOKEN` 为空时，`_check_exposure()` 会拒绝启动；不要为了“方便”去掉这道检查。
+- MCP token 只能走查询参数（上游小智就是这么连的），`uvicorn.access` 上的 `_TokenRedactingFilter` 负责把 `token=` 打码；不要移除这个过滤器，也不要把完整 URL 打进自己的日志。
+- `/healthz` 不鉴权、只回 `{"ok": true}`；不要往里加统计、配置或任何用户数据。
 
 ## 代码风格
 

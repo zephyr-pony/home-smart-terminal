@@ -12,6 +12,7 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import secrets
@@ -49,6 +50,7 @@ from config import (
     REMINDER_INTERVAL_SECONDS,
     SERVER_HOST,
     SERVER_PORT,
+    STT_ENABLED,
     VAPID_PRIVATE_KEY,
     VAPID_PUBLIC_KEY,
     VAPID_SUBJECT,
@@ -65,6 +67,64 @@ from llm import LLM, build_decision_llm
 from memory import Memory
 from items import Items
 from tts import TTS
+
+
+# ---------- 启动前的安全检查 ----------
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
+
+
+def _check_exposure(host=None, token=None):
+    """监听非本机又没设 API_TOKEN 时拒绝启动。
+
+    默认 127.0.0.1 不会被拦；一旦为了局域网把 SERVER_HOST 改成 0.0.0.0，
+    必须同时设 Token——否则记忆、任务、删除接口对同网段所有人开放。
+    """
+    host = (SERVER_HOST if host is None else host) or ""
+    token = API_TOKEN if token is None else token
+    if token:
+        return
+    if host.strip().lower() in _LOOPBACK_HOSTS:
+        return
+    raise RuntimeError(
+        "SERVER_HOST=%s 且 API_TOKEN 为空：这会把家庭记忆和任务接口暴露给"
+        "同网段所有人。请在 .env 设置 API_TOKEN，或改回 127.0.0.1。" % host
+    )
+
+
+# ---------- 访问日志脱敏 ----------
+# 小智的 MCP 接入点只能用查询参数带 token（上游就是这么连的），uvicorn 的
+# 访问日志会原样打印完整 URL。日志被贴到 issue 里就等于泄露 token，落地前抹掉。
+
+_TOKEN_IN_QUERY_RE = re.compile(
+    r"((?:[?&;]|^)(?:token|access_token|key)=)[^&\s\"']+", re.I
+)
+
+
+class _TokenRedactingFilter(logging.Filter):
+    @staticmethod
+    def _clean(value):
+        if not isinstance(value, str):
+            return value
+        return _TOKEN_IN_QUERY_RE.sub(r"\1***", value)
+
+    def filter(self, record):
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._clean(arg) for arg in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: self._clean(v) for k, v in record.args.items()}
+        if isinstance(record.msg, str):
+            record.msg = self._clean(record.msg)
+        return True
+
+
+def _install_log_redaction():
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _TokenRedactingFilter) for f in access.filters):
+        access.addFilter(_TokenRedactingFilter())
+
+
+_install_log_redaction()
 
 
 # ---------- 全局单例（lifespan 中初始化，避免 import 即加载模型） ----------
@@ -525,6 +585,7 @@ async def reminder_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global stt, tts, assistant, _tmp_dir, push_store, push_sender
+    _check_exposure()
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
     tts = TTS()
@@ -532,7 +593,10 @@ async def lifespan(app: FastAPI):
     assistant = Assistant(memory=Memory(), llm=LLM(), items=Items(),
                           decision_llm=decision_llm)
     print("🧠 决策轮模型：%s" % (decision_llm.model_name if decision_llm else "同回答轮"))
-    stt = STT()  # 预热 FunASR
+    if STT_ENABLED:
+        stt = STT()  # 预热 FunASR
+    else:
+        print("🔇 语音识别已关闭（STT_ENABLED=0），只提供文字入口", flush=True)
     # Web Push：没有密钥就整体降级为纯 SSE，不影响其他功能
     push_store = PushStore()
     push_sender = None
@@ -958,6 +1022,17 @@ async def mcp_endpoint_ws(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await mcp_endpoint.handle_ws(websocket)
+
+
+@app.get("/healthz")
+async def healthz():
+    """容器/反代探活：不鉴权、不带数据，只回答“进程起没起来”。
+
+    别往这里加统计或配置——这个地址通常会对整条反代链路开放。
+    """
+    if assistant is None:
+        raise HTTPException(status_code=503, detail="尚未就绪")
+    return {"ok": True}
 
 
 @app.get("/api/status")
@@ -1577,6 +1652,10 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
 async def api_voice(file: UploadFile = File(...), client_id: str = Form(""),
                     task_id: Optional[int] = Form(None),
                     _auth=Depends(require_api_token)):
+    if stt is None:
+        raise HTTPException(
+            status_code=503, detail="语音识别未启用（STT_ENABLED=0）"
+        )
     if len(client_id) > MAX_CLIENT_ID_CHARS:
         raise HTTPException(status_code=422, detail="client_id 过长")
     if task_id is not None and task_id < 0:
@@ -1650,4 +1729,5 @@ async def service_worker():
 if __name__ == "__main__":
     import uvicorn
 
+    _check_exposure()
     uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT, log_level="info")

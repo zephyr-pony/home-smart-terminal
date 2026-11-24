@@ -1,7 +1,9 @@
 import io
 import json
+import logging
 import wave
 
+import pytest
 from fastapi.testclient import TestClient
 
 import server
@@ -1464,3 +1466,80 @@ def test_push_payload_without_task_has_zero_id(monkeypatch, tmp_path):
     payload = sender.sent[0][1]
     assert payload["task_id"] == 0
     assert payload["kind"] == "item"
+
+
+# ---------- 开源工程的启动底线 ----------
+
+def test_healthz_needs_no_token(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    client = TestClient(server.app)
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_healthz_reports_not_ready(monkeypatch):
+    monkeypatch.setattr(server, "assistant", None)
+    client = TestClient(server.app)
+
+    assert client.get("/healthz").status_code == 503
+
+
+def test_voice_reports_disabled_stt(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "stt", None)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/voice",
+        headers={"Authorization": "Bearer secret"},
+        files={"file": ("v.wav", wav_bytes(1), "audio/wav")},
+    )
+
+    assert response.status_code == 503
+    assert "STT_ENABLED" in response.json()["detail"]
+
+
+def test_exposure_check_blocks_lan_without_token():
+    with pytest.raises(RuntimeError, match="API_TOKEN"):
+        server._check_exposure(host="0.0.0.0", token="")
+    with pytest.raises(RuntimeError, match="API_TOKEN"):
+        server._check_exposure(host="192.168.0.10", token="")
+    with pytest.raises(RuntimeError, match="API_TOKEN"):
+        server._check_exposure(host="", token="")
+
+    server._check_exposure(host="127.0.0.1", token="")
+    server._check_exposure(host="localhost", token="")
+    server._check_exposure(host="0.0.0.0", token="secret")
+
+
+def test_access_log_redacts_query_token():
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1234", "GET", "/mcp_endpoint/mcp/?token=secret-123&x=1", "1.1", 200),
+        None,
+    )
+
+    server._TokenRedactingFilter().filter(record)
+
+    rendered = record.getMessage()
+    assert "secret-123" not in rendered
+    assert "token=***" in rendered
+
+
+def test_access_log_redaction_keeps_substrings():
+    """`monkey=` 不是 token，别把正常参数也吃掉。"""
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1234", "GET", "/x?monkey=1", "1.1", 200),
+        None,
+    )
+
+    server._TokenRedactingFilter().filter(record)
+
+    assert "monkey=1" in record.getMessage()

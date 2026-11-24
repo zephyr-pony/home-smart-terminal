@@ -61,6 +61,8 @@ VISION_CONTEXT_SECONDS = _get_int("VISION_CONTEXT_SECONDS", 180)
 TTS_VOICE = _get("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 
 # ---- STT 语音识别 ----
+# 关掉后服务端不加载 FunASR（首跑省 900MB 下载），/api/voice 返回 503；文字入口不受影响
+STT_ENABLED = _get_bool("STT_ENABLED", True)
 STT_MODEL = _get("STT_MODEL", "iic/SenseVoiceSmall")
 STT_LANGUAGE = _get("STT_LANGUAGE", "zh")
 

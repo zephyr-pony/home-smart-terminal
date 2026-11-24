@@ -1,5 +1,7 @@
 # 家庭智能终端
 
+[![tests](https://github.com/zephyr-pony/home-smart-terminal/actions/workflows/tests.yml/badge.svg)](https://github.com/zephyr-pony/home-smart-terminal/actions/workflows/tests.yml)
+
 以**记忆**为核心的家庭 AI 助手。通过语音记录家庭琐事（"酸奶 8 月 5 号过期"、"明天交电费"），之后随时语音提问（"酸奶还有几天过期？"），系统自动检索并回答。
 
 ## 功能特性
@@ -34,7 +36,7 @@
 3. RAG + 地图、公交、天气等本地生活工具
 4. 统一网关与多渠道接入
 
-> 当前优先：Web 控制台（聊天 + 统计 + 列表 + 系统配置）；随后 Android App；RAG 延后。
+> 当前优先：语音设备真机（小智 + ESP32）与真机验收；Web 控制台与 CLI 已落地并继续维护；Android App 与 RAG 延后。
 > 配置页只允许白名单字段写入本地 `.env`，密钥不会返回前端；保存后重启服务端生效。
 
 ## 工作流程
@@ -72,9 +74,17 @@ source .venv/bin/activate     # Linux/macOS
 pip install -r requirements.txt
 
 # 3. 配置 LLM 服务（OpenAI 兼容接口，如 llama.cpp / LM Studio / OneAPI 网关）
-copy .env.example .env        # Windows
-# cp .env.example .env        # Linux/macOS
-# 编辑 .env，填入 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+#    只有这三项是必填的，其余都有默认值
+cat > .env <<'EOF'
+LLM_BASE_URL=https://你的网关/v1
+LLM_API_KEY=sk-...
+LLM_MODEL=你的模型名
+EOF
+# Windows 用记事本 / VS Code 新建 .env，写同样三行即可
+#
+# 想调端口、语音、Web Push、智能家居，再复制完整模板：
+#   copy .env.example .env      # Windows
+#   cp .env.example .env        # Linux/macOS
 
 # 4. 运行
 
@@ -96,6 +106,9 @@ start.bat            # Windows 一键启动
 
 > 若 `8000` 端口被占用或被系统保留（Windows 上可用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查看），改 `.env` 的 `SERVER_PORT` 即可。
 
+> **安全**：`SERVER_HOST` 不是 `127.0.0.1` 又没设 `API_TOKEN` 时，服务端会拒绝启动。
+> 如果改用 `uvicorn server:app --host 0.0.0.0` 启动，应用看不到命令行里的地址，请自己确保已设 token。
+
 **命令行模式（本机语音交互）**
 ```bash
 start.bat cli        # 或 python main.py
@@ -110,11 +123,13 @@ start.bat wake       # 或 python main.py wake
 > 唤醒后可以直接说指令，也可以只喊「小马」等回应后再说。说「退出」或按 Ctrl+C 结束。
 
 > 首次运行会自动下载 FunASR 语音识别模型（约 900MB），需要一些时间。
+> 只想用文字聊天/调网页：在 `.env` 设 `STT_ENABLED=0`，跳过模型下载，`/api/voice` 返回 503。
 
 ## 服务端 API
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
+| `/healthz` | GET | 探活，**不需要鉴权**，只回 `{"ok": true}`（容器/反代用） |
 | `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`） |
 | `/api/stats` | GET | 概览统计：数量、任务状态、到期物品/任务 |
 | `/api/memories` | GET | 记忆列表，支持 `q` / `limit` / `offset` |
@@ -252,6 +267,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `VISION_CONTEXT_SECONDS` | `180` | 拍照后「刚才看到什么」在会话里保留多久；只在内存，不进记忆库 |
 | `LLM_CHAT_TEMPLATE_KWARGS` | 空 | 本地 llama.cpp/vLLM 关思考用，JSON，如 `{"enable_thinking": false}` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 语音角色（女声）；男声用 `zh-CN-YunxiNeural` |
+| `STT_ENABLED` | `1` | 设 `0` 不加载 FunASR（首跑省 900MB），仅保留文字入口，`/api/voice` 返回 503 |
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |
 | `STT_LANGUAGE` | `zh` | 识别语言 |
 | `MEMORY_DB_PATH` | `./data/memory.db` | 记忆库位置 |
@@ -374,7 +390,10 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ├── tests/           # pytest 自动化测试
 ├── requirements.txt
 ├── requirements-dev.txt
+├── requirements-ci.txt   # CI 用的最小依赖（不含 torch/funasr/pyaudio）
 ├── .env.example     # 配置模板（复制为 .env）
+├── LICENSE          # MIT
+├── CONTRIBUTING.md  # 开发说明
 └── data/            # 数据库（已 gitignore，不入库）
 ```
 
@@ -388,7 +407,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 
 ## 隐私说明
 
-- 记忆与物品数据仅保存在本地 `data/`（`memory.db` / `items.db`），不会上传
+- 记忆与物品数据仅保存在本地 `data/`（`memory.db` / `items.db` / `tasks.db` / `facts.db` / `agent.db` / `push.db`），不会上传
 - API 密钥仅存于本地 `.env`（已被 `.gitignore` 排除）
 - 语音音频为临时文件，处理完即删除
 
@@ -399,23 +418,25 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - [x] 阶段 1：本地语音 MVP
 - [x] 阶段 2：FastAPI 服务端 + Web 客户端
 - [x] 阶段 3：Agent 化（function calling）+ 物品管理 + 到期提醒
-- [x] 增强：多轮对话上下文、SSE 主动推送提醒（落库去重）、API Token、输入边界、资源清理、自动化测试
+- [x] 增强：多轮对话上下文、SSE 主动推送、API Token、输入边界、自动化测试与评测集
 - [x] 唤醒词「小马」（CLI 常驻监听）
-
-下一步（详见 [docs/ROADMAP.md](docs/ROADMAP.md)）：
-
-- [x] 实体消歧与两阶段提交（基础版：电费 / 牛奶）
-- [x] 删除类动作二次确认
-- [x] 实体管理（新增 / 改名 / 别名 / 查看）
-- [x] 通用任务 / 结构化事实 + 提醒扩展
+- [x] 实体消歧与两阶段提交、删除确认、实体管理、通用任务/结构化事实
 - [x] Web 控制台（聊天 / 统计 / 列表 / 搜索筛选 / 分页 / 任务编辑 / 删除确认 / 配置）
-- [ ] Android App
+- [x] 周期提醒（每天 / 每周 / 每月）、Web Push、设备反向提醒
+- [x] 小智设备接入（MCP `ask_xiaoma`）、单张拍照问答
+- [x] 家庭设备：Home Assistant 只读 + 白名单控制 + 事件订阅
+- [x] 提醒点开处理（任务绑定、完成 / 延期 / 取消，详见 [docs/ROADMAP.md](docs/ROADMAP.md) §16）
+
+下一步：
+
+- [ ] 设备真机验收（唤醒词、反向提醒、拍照、延迟）
+- [ ] 传感器事件（水浸 / 烟感 / 门磁）真机验证
+- [ ] facts 与 entities 关联（结构化事实按实体查）
+- [ ] Android App / 小程序
 - [ ] 记忆分层 + RAG + 本地生活工具（延后）
-- [ ] 多渠道网关（小程序 / App）
-- [ ] ESP32 与语音终端
-- [ ] 提醒确认/静音、物品数量/位置/消耗管理
-- [ ] 更远：菜谱推荐、蓝牙音箱联动、视觉能力
+- [ ] 多空间 `space_id`（多家庭/多成员隔离）
+- [ ] 更远：菜谱推荐、蓝牙音箱联动、图像连续理解（单张已支持）
 
 ## License
 
-MIT
+MIT，见 [LICENSE](LICENSE)。参与开发见 [CONTRIBUTING.md](CONTRIBUTING.md)。

@@ -1164,3 +1164,41 @@ D46 落地了「拆二字组、逐词 AND」，但把说法差异留在了外面
 - 单测 439 → 442：三个候选都保留 15:00、未知 preset 400、`due_at` 绝对日期保留时刻。
 - 评测不变（41/41）：这条是点按路径，不进模型。
 - 真机：手机上点「延期 → 下周一」，卡片应显示「已延期到 …」，库里 `due_at` 是下周一 15:00。
+
+## 三十八、2026-11-24：按开源项目补第一批工程配套
+
+功能已经不少，但站在「别人 clone 下来敢不敢用/敢不敢改」的角度看，缺的是另一类东西。
+这一批只做对外门槛和安全底线，不改业务行为。
+
+### 补了什么
+
+| 项 | 结果 |
+|---|---|
+| 许可证 | README 早就写 MIT，但仓库没有 `LICENSE`；补上 `Copyright (c) 2026 zephyr-pony and contributors`，正文链接过去 |
+| CI | `.github/workflows/tests.yml`：Python 3.9 / 3.12，`py_compile` + `pytest tests -q`；徽章加在 README 顶部 |
+| CI 依赖 | 新增 `requirements-ci.txt`：**不装** torch/funasr/pyaudio（单测不需要），在干净 venv 里验过 448 条全绿 |
+| 贡献说明 | `CONTRIBUTING.md`：最小三行配置、测试/评测、代码约定、加工具清单、不要提交什么 |
+| Issue 模板 | bug 报告 / 功能建议两份，bug 模板提醒脱敏户号地址 |
+| 访问日志脱敏 | 小智只能用 `?token=` 连接，uvicorn 访问日志会原样打印完整 URL（实测会把 token 写进日志）。`_TokenRedactingFilter` 在落地前把 `token=...` 替换成 `token=***` |
+| 暴露检查 | `SERVER_HOST` 不是 127.0.0.1/localhost 且 `API_TOKEN` 为空时，`_check_exposure()` 直接拒绝启动——否则同网段任何人都能读记忆、删任务 |
+| 文字-only 模式 | `STT_ENABLED=0` 时不加载 FunASR（首跑省 900MB），`/api/voice` 返回 503，其它入口不受影响 |
+| 探活 | `/healthz` 不鉴权、只回 `{"ok": true}`，给容器/反代用；不放任何数据 |
+| README | 快速开始改成「只写三行 `.env`」；修掉“Web 控制台优先”的旧话术；路线图补上周期提醒 / Push / 小智 / 拍照 / HA / 任务绑定 |
+| 旧设计稿 | `家庭智能终端.md` → `docs/archive/2026-09-13-设计初稿.md`，顶部注明“历史快照，不代表现状”。**没有删**：里面记着 FunASR/Edge TTS/ChromaDB 的取舍 |
+
+### 为什么日志脱敏要单独写一层
+
+`/api/*` 的 token 在请求头里，日志本来就不打印；但 MCP 接入点是**查询参数**，
+这是上游小智的连接方式决定的，改不了。uvicorn 的 access log 默认打印 `full_path`，
+所以不处理的话，任何人贴一段日志求助都会把家里设备的接入令牌一起贴出去。
+过滤器放在 `uvicorn.access` logger 上，把 `token=` / `access_token=` / `key=` 的值
+统一替换成 `***`，访问日志本身仍保留，排障不受影响。
+
+### 验收
+
+- 单测 442 → 448：`/healthz` 不鉴权且未就绪时 503、`STT_ENABLED=0` 时 `/api/voice` 503、
+  非本机监听 + 空 token 拒绝启动、访问日志里的 token 被抹掉（`monkey=1` 这种子串不受影响）。
+- 干净 venv（只装 `requirements-ci.txt`）跑 `pytest tests -q`：448 passed。
+- 真服务重启后：`GET /healthz` 无 token 返回 `{"ok": true}`；带假 token 的 MCP 请求在日志里显示
+  `token=***`。
+- 默认配置（127.0.0.1 + 空 token）行为不变；只有主动改成局域网监听才会被拦。
