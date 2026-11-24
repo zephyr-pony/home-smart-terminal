@@ -66,9 +66,10 @@
 - 多终端阶段引入 `space_id`，为多家庭/多设备预留隔离；当前单家庭版本先集中在默认空间。
 - 新增产品决策先写入 `docs/ROADMAP.md` 的「待决策」，不要擅自定。
 
-### 规划中的模块（尚未实现）
+### 规划中的模块
 
-- `adapters/`：CLI、Web、API、MQTT/设备。
+- `adapters/`：已有 `home.py` / `home_ws.py`（Home Assistant）、`mcp_endpoint.py`（小智）；
+  CLI 入口仍在 `main.py`、Web/API 在 `server.py`，尚未迁进 `adapters/`；MQTT 未做。
 - `rag/`：文档接入、分块、embedding、检索。
 
 ## 运行
