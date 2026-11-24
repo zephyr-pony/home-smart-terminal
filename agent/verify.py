@@ -164,7 +164,7 @@ def verify_reply(reply, executed, user_text=None, today=None):
 
     if not bad:
         return reply, False
-    template = wording.written_sentence(executed)
+    template = wording.written_sentence(executed, today)
     if not template:
         return reply, False
     return template, True

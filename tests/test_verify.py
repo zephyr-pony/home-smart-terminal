@@ -1,6 +1,6 @@
 """口播句事实校验：日期、星期、名字必须和工具写进去的一致。"""
 import json
-from datetime import date
+from datetime import date, timedelta
 
 from agent import wording
 from agent.clarify import Clarifier
@@ -12,17 +12,21 @@ from domain.tasks import Tasks
 from items import Items
 from memory import Memory
 
+# 固定「今天」：校验与模板句都以它为准，测试才不会因为跨过午夜而变
 TODAY = date(2026, 11, 23)  # 周一
+TOMORROW = TODAY + timedelta(days=1)
+TOMORROW_AT_15 = TOMORROW.isoformat() + "T15:00:00"
+TOMORROW_ISO = TOMORROW.isoformat()
 
 
 def test_written_days_reads_expiry_and_due():
     executed = [
         ("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
-        ("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"}),
+        ("task_add", {"title": "取快递", "due_at": TOMORROW_AT_15}),
         ("memory_store", {"text": "冰箱里有鸡蛋"}),
     ]
 
-    assert written_days(executed) == [date(2026, 12, 2), date(2026, 11, 24)]
+    assert written_days(executed) == [date(2026, 12, 2), TOMORROW]
 
 
 def test_correct_date_is_kept():
@@ -73,7 +77,7 @@ def test_qualified_weekday_must_match_the_date():
 
 
 def test_relative_day_is_resolved_and_compared():
-    executed = [("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"})]
+    executed = [("task_add", {"title": "取快递", "due_at": TOMORROW_AT_15})]
 
     _text, replaced = verify_reply("明天下午3点提醒你", executed, today=TODAY)
     assert replaced is False
@@ -128,7 +132,7 @@ def test_no_dated_write_means_nothing_to_verify():
 def test_multiple_writes_accept_any_of_their_dates():
     executed = [
         ("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
-        ("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"}),
+        ("task_add", {"title": "取快递", "due_at": TOMORROW_AT_15}),
     ]
 
     _text, replaced = verify_reply(
@@ -141,7 +145,7 @@ def test_multiple_writes_accept_any_of_their_dates():
 def test_written_times_reads_due_and_skips_date_only_writes():
     executed = [
         ("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"}),
-        ("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"}),
+        ("task_add", {"title": "取快递", "due_at": TOMORROW_AT_15}),
         ("task_add", {"title": "交电费", "due_at": "2026-11-25"}),
     ]
 
@@ -150,7 +154,7 @@ def test_written_times_reads_due_and_skips_date_only_writes():
 
 def test_wrong_clock_is_replaced_by_template():
     """日期全对、时间说错，也必须拦下：语音里用户按听到的记。"""
-    executed = [("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"})]
+    executed = [("task_add", {"title": "取快递", "due_at": TOMORROW_AT_15})]
 
     text, replaced = verify_reply("好，明天晚上8点提醒你取快递。", executed, today=TODAY)
 
@@ -160,7 +164,7 @@ def test_wrong_clock_is_replaced_by_template():
 
 
 def test_correct_clock_is_kept_in_either_form():
-    executed = [("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"})]
+    executed = [("task_add", {"title": "取快递", "due_at": TOMORROW_AT_15})]
 
     for reply in ("好，明天下午3点提醒你取快递。", "明天15:00提醒你取快递。"):
         text, replaced = verify_reply(reply, executed, today=TODAY)
@@ -170,7 +174,7 @@ def test_correct_clock_is_kept_in_either_form():
 
 def test_bare_yidian_is_not_mistaken_for_one_oclock():
     """「快一点」不是 1 点，不能因此把整句换掉。"""
-    executed = [("task_add", {"title": "取快递", "due_at": "2026-11-24T15:00:00"})]
+    executed = [("task_add", {"title": "取快递", "due_at": TOMORROW_AT_15})]
 
     text, replaced = verify_reply(
         "好，明天下午3点提醒你取快递，我会快一点。", executed, today=TODAY,
@@ -259,8 +263,8 @@ def test_agent_loop_does_not_stream_the_turn_after_a_write():
 
 def test_written_sentence_covers_postpone():
     assert wording.written_sentence([
-        ("task_postpone", {"title": "取快递", "due_at": "2026-11-24"}),
-    ]) == "已记好：取快递，改到明天。"
+        ("task_postpone", {"title": "取快递", "due_at": TOMORROW_ISO}),
+    ], today=TODAY) == "已记好：取快递，改到明天。"
 
 
 def test_looks_written_accepts_postpone_and_update_results():

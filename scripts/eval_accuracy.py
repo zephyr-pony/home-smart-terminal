@@ -206,6 +206,12 @@ case("事实：查户号不串家", "爸妈家的水费户号是多少",
      setup=seed_fact_bare_subject,
      any_tools=("fact_search", "fact_list"), has=("12345678",),
      lacks=("11112222",))
+case("同义：账号查户号", "宽带账号是多少",
+     setup=lambda a: a.facts.store("宽带", "户号", "88889999"),
+     any_tools=("fact_search", "fact_list"), has=("88889999",))
+case("同义：煤气查燃气", "煤气户号是多少",
+     setup=lambda a: a.facts.store("燃气", "户号", "87654321"),
+     any_tools=("fact_search", "fact_list"), has=("87654321",))
 
 # ---------- 家居（只读） ----------
 case("家居：查询开关状态", "客厅灯开着吗", tools=("home_query",),

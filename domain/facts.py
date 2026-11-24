@@ -9,6 +9,7 @@ import threading
 from datetime import datetime
 
 from config import FACTS_DB_PATH
+from agent.synonyms import canonicalize, variants
 
 # 查询拆词：空白和常见标点都当分隔符
 _SPLIT_RE = re.compile(r"[\s,，。、;；:：/]+")
@@ -19,6 +20,24 @@ def _escape_like(text):
     return (
         str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     )
+
+
+def _like_any(column, term):
+    """同义词之间 OR，不同检索词之间 AND（后者由调用方拼）。
+
+    「水费账号」拆成「水费」「账号」后，「账号」这一条要能匹配存成「户号」的行；
+    但「水费」仍然必须命中，所以不能把整条查询放松成「命中任一」。
+    """
+    group = variants(term)
+    clause = "(" + " OR ".join(
+        column + " LIKE ? ESCAPE '\\'" for _ in group
+    ) + ")"
+    return clause, ["%" + _escape_like(word) + "%" for word in group]
+
+
+def _haystack(row):
+    """一行事实参与检索的文本：主体 + 属性 + 值。"""
+    return "%s%s%s" % (row[1] or "", row[2] or "", row[3] or "")
 
 
 def _query_terms(query):
@@ -176,20 +195,21 @@ class Facts:
         if not include_history:
             clauses.append("valid_to IS NULL")
         if subject:
-            clauses.append("subject LIKE ?")
-            params.append(f"%{subject}%")
+            clause, values = _like_any("subject", subject)
+            clauses.append(clause)
+            params.extend(values)
         if predicate:
-            clauses.append("predicate LIKE ?")
-            params.append(f"%{predicate}%")
+            clause, values = _like_any("predicate", predicate)
+            clauses.append(clause)
+            params.extend(values)
         if query:
-            # 逐词匹配「主体+属性+值」拼起来的文本：拆词的理由见 _query_terms
-            combined = (
-                "(COALESCE(subject, '') || COALESCE(predicate, '') "
-                "|| COALESCE(value, ''))"
-            )
-            for term in _query_terms(query):
-                clauses.append(combined + " LIKE ? ESCAPE '\\'")
-                params.append("%" + _escape_like(term) + "%")
+            # 先把整句里的同义说法归一，再拆词：「水费账号」→「水费户号」，
+            # 拆出来的二字组才和库里的「水费户号」对得上。
+            terms = _query_terms(canonicalize(query))
+            if not terms:
+                return []
+        else:
+            terms = []
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._lock:
@@ -197,10 +217,18 @@ class Facts:
                 "SELECT id, subject, predicate, value, source, valid_from, "
                 "       valid_to, created_at FROM facts"
                 + where
-                + " ORDER BY id DESC LIMIT ?",
-                params + [n_results],
+                + " ORDER BY id DESC",
+                params,
             ).fetchall()
-        return [self._row_to_dict(row) for row in rows]
+
+        # 同义词要把库里存的文本也归一之后才比，否则「存账号、问户号」对不上。
+        # 家庭事实表只有几十行，一次取回来在内存里过滤，比在 SQL 里拼 REPLACE 清楚。
+        if terms:
+            rows = [
+                row for row in rows
+                if all(term in canonicalize(_haystack(row)) for term in terms)
+            ]
+        return [self._row_to_dict(row) for row in rows[:n_results]]
 
     def list_all(self, n_results=10):
         return self.search(n_results=n_results)

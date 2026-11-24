@@ -26,6 +26,7 @@
 | `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
 | `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
+| `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
 | `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
 | `assistant.py` | 核心编排 + 手写 Agent loop；CLI 与服务端共用 |
@@ -103,7 +104,7 @@ pytest tests -q
 
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
-- 正确率基线在 `scripts/eval_accuracy.py`：36 条固定输入（含摄像头决策 2 条、周期提醒 4 条）、真模型、每个用例独立内存库，
+- 正确率基线在 `scripts/eval_accuracy.py`：38 条固定输入（含摄像头决策 2 条、周期提醒 4 条、同义检索 2 条）、真模型、每个用例独立内存库，
   卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
   已知问题的用例标 `known=True`，不计入失败。`case()` 的 `device_camera=True` 走「终端带摄像头」分支。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
@@ -152,7 +153,8 @@ pytest tests -q
 - 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
 - 同名物品在 `ProposalService.add_item` 里合并：带新日期就更新到期日（清 `reminded_at`、状态退回 `active`），不带日期就保留原值，避免清单出现两条同名物品、提醒两次。
 - `Facts.store` 同一「主体 + 属性」再次保存会把旧行标 `valid_to`、新行记 `valid_from`，返回值带 `replaced`；检索默认只返回当前有效的，看历史用 `include_history=True` / `history()`。不要改回直接覆盖（丢历史）或只插新行（模型会拿到过期值）。
-- `Facts.search` 的 `query` 会拆成二字组、逐词 AND 匹配「主体+属性+值」拼接文本（D46）：整串连续子串的要求太脆，「水费户号」跨 subject/predicate 就查不到。拆词不放松到「命中任一」，否则「自己家电费户号」会把水费那条也捞出来；不做同义改写（「账号」对「户号」仍查不到）。
+- `Facts.search` 的 `query` 会拆成二字组、逐词 AND 匹配「主体+属性+值」拼接文本（D46）：整串连续子串的要求太脆，「水费户号」跨 subject/predicate 就查不到。拆词不放松到「命中任一」，否则「自己家电费户号」会把水费那条也捞出来。
+- 同义说法在**检索侧**归一（`agent/synonyms.py`：户号/账号、燃气/煤气/天然气、宽带/网费……）：查询串和库里的文本都 `canonicalize` 之后再比，所以存「户号」、问「账号」也能命中，两个方向都通。只收真正可互换的词，不做单字替换，也不收「水费/水表」这类相关但不同的说法——放宽一个词不会放松同一查询里的其它词（「电费账号」不会捞出「水费户号」），宁可查不到也不查错。写入内容不受影响，用户原话照存。
 - 删除类动作（`memory_delete` / `item_delete`）不直接执行，先经 `ConfirmationManager` 请求确认。
 - 写工具参数在 agent loop 里先过 `agent/guard.py`：日期一律以 `agent/dates.py` 从用户原话解析的结果为准，句子里没有日期线索就把日期留空；`task_add` 的标题在原话里找不到依据时整次调用不执行。
 - 所有「念给用户听」的写操作文案统一走 `agent/wording.py`：日期说成「11月25日（周三）」或「明天」，确认句引用用户原话，执行后只补模型没说到的日期。不要在工具或编排里自己拼句子——三处各写一遍，日期格式就会三处不一致，而语音里念成「二零二六 杠 十一 杠 二五」用户根本听不出对错。

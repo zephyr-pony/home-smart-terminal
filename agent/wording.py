@@ -116,24 +116,28 @@ def speak_clock_from_iso(value):
     return speak_clock(head, minute)
 
 
-def summary(tool_name, args):
-    """一条写入的参数摘要，不带动词。"""
+def summary(tool_name, args, today=None):
+    """一条写入的参数摘要，不带动词。
+
+    `today` 只是为测试固定「今天」；不传就用真实日期。相对说法（明天/后天）
+    必须和调用方认定的是同一天，否则跨过午夜时同一句话在两处会算出不同日期。
+    """
     args = args or {}
     if tool_name == "item_add":
         name = str(args.get("name") or "").strip() or "这个物品"
         expiry = str(args.get("expiry_date") or "").strip()
-        return "%s，%s到期" % (name, speak_date(expiry)) if expiry else "%s，没有到期日" % name
+        return "%s，%s到期" % (name, speak_date(expiry, today)) if expiry else "%s，没有到期日" % name
     if tool_name == "task_add":
         title = str(args.get("title") or "").strip() or "这件事"
         due = str(args.get("due_at") or "").strip()
         label = recur_label(args.get("recur"), due)
         if label:
             return "%s，%s%s" % (title, label, speak_clock_from_iso(due))
-        return "%s，%s" % (title, speak_datetime(due)) if due else "%s，没定时间" % title
+        return "%s，%s" % (title, speak_datetime(due, today)) if due else "%s，没定时间" % title
     if tool_name in ("task_update", "task_postpone"):
         title = str(args.get("title") or "").strip() or "这个提醒"
         due = str(args.get("due_at") or "").strip()
-        return "%s，改到%s" % (title, speak_datetime(due)) if due else "%s，已改期" % title
+        return "%s，改到%s" % (title, speak_datetime(due, today)) if due else "%s，已改期" % title
     if tool_name == "fact_store":
         subject = str(args.get("subject") or "").strip()
         predicate = str(args.get("predicate") or "").strip()
@@ -237,13 +241,14 @@ def looks_written(tool_name, result):
     return text.startswith("已") or any(mark in text for mark in _WRITTEN_MARKERS)
 
 
-def written_sentence(executed):
+def written_sentence(executed, today=None):
     """写成功之后的模板句：内容全部来自参数，不经模型。
 
     回复校验不通过时整句换成它——宁可少说几句，也不能把错日期念出去。
+    `today` 由调用方传入（校验用哪个「今天」，这里就用哪个）。
     """
     parts = [
-        summary(tool_name, args)
+        summary(tool_name, args, today)
         for tool_name, args in executed or []
         if tool_name in _WRITE_TOOLS
     ]

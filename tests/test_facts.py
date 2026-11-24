@@ -128,3 +128,34 @@ def test_query_treats_wildcards_literally():
     facts.store("水费", "户号", "12345678")
 
     assert [r["subject"] for r in facts.search("%")] == ["100%纯牛奶"]
+
+
+# ---------- 同义改写（2026-11-24） ----------
+
+def test_query_accepts_synonyms():
+    """存「户号」、问「账号」也要能查到（D46 遗留）。"""
+    facts = Facts(":memory:")
+    facts.store("水费", "户号", "12345678")
+    facts.store("燃气", "户号", "87654321")
+
+    assert [r["value"] for r in facts.search("水费账号")] == ["12345678"]
+    assert [r["value"] for r in facts.search("煤气账号")] == ["87654321"]
+
+
+def test_synonyms_do_not_break_precision():
+    """只放宽那一个词：「电费」仍然必须命中，不能把水费一起捞出来。"""
+    facts = Facts(":memory:")
+    facts.store("水费", "户号", "11112222")
+    facts.store("电费", "户号", "33334444")
+
+    assert [r["value"] for r in facts.search("电费账号")] == ["33334444"]
+    assert facts.search("燃气账号") == []
+
+
+def test_synonyms_apply_to_filters():
+    """subject / predicate 过滤也要跟着同义词走。"""
+    facts = Facts(":memory:")
+    facts.store("燃气", "户号", "87654321")
+
+    assert [r["value"] for r in facts.search(subject="煤气")] == ["87654321"]
+    assert [r["value"] for r in facts.search(predicate="账号")] == ["87654321"]
