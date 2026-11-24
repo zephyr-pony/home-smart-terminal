@@ -1040,6 +1040,66 @@ def test_task_postpone_missing_task(monkeypatch):
     )
     assert response.status_code == 404
 
+
+def test_task_postpone_presets_keep_the_clock(monkeypatch):
+    """任务卡上的「明天 / 三天后」：日期由服务端算，时刻保留。"""
+    from datetime import date, timedelta
+
+    from agent.dates import parse_date_text
+
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    today = date.today()
+    task = assistant.tasks.add("取快递", today.isoformat() + "T15:00:00")
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+    headers = {"Authorization": "Bearer secret"}
+
+    expected = {
+        "tomorrow": (today + timedelta(days=1)).isoformat(),
+        "in_3_days": (today + timedelta(days=3)).isoformat(),
+        "next_monday": parse_date_text("下周一", today)["date"],
+    }
+    for preset, day in expected.items():
+        response = client.post(
+            f"/api/tasks/{task['id']}/postpone",
+            json={"preset": preset},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["task"]["due_at"] == day + "T15:00:00"
+
+
+def test_task_postpone_rejects_unknown_preset(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    task = assistant.tasks.add("取快递", "2026-11-25T15:00:00")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    response = client.post(
+        f"/api/tasks/{task['id']}/postpone",
+        json={"preset": "next_year"},
+        headers={"Authorization": "Bearer secret"},
+    )
+    assert response.status_code == 400
+
+
+def test_task_postpone_accepts_absolute_date(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    assistant = make_real_assistant()
+    task = assistant.tasks.add("取快递", "2026-11-25T15:00:00")
+    monkeypatch.setattr(server, "assistant", assistant)
+
+    client = TestClient(server.app)
+    response = client.post(
+        f"/api/tasks/{task['id']}/postpone",
+        json={"due_at": "2026-12-01"},
+        headers={"Authorization": "Bearer secret"},
+    )
+    assert response.status_code == 200
+    assert response.json()["task"]["due_at"] == "2026-12-01T15:00:00"
+
 def test_stats_includes_breakdowns(monkeypatch):
     monkeypatch.setattr(server, "API_TOKEN", "secret")
     assistant = make_real_assistant()

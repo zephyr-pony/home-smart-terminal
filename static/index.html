@@ -121,6 +121,9 @@ html, body {
 .task-card .task-actions {
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
 }
+.task-card .task-postpone {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
+}
 .task-card .task-status {
   margin-top: 8px; font-size: 13px; color: var(--muted);
 }
@@ -1629,12 +1632,23 @@ html, body {
 
     var buttons = [
       { label: '完成', action: 'complete' },
-      { label: '延期一天', action: 'postpone' },
+      { label: '延期', action: 'menu' },
       { label: '取消', action: 'cancel', danger: true }
     ];
 
+    // 「延期」展开的候选。日期口径交给服务端（agent/dates.py），前端不拼日期，
+    // 免得手机时区/月末/周一从哪天算这三件事各错一次。
+    var candidates = document.createElement('div');
+    candidates.className = 'task-postpone hidden';
+    var presets = [
+      { label: '明天', preset: 'tomorrow' },
+      { label: '三天后', preset: 'in_3_days' },
+      { label: '下周一', preset: 'next_monday' },
+      { label: '我自己说', action: 'self' }
+    ];
+
     function finish(message) {
-      actions.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+      bubble.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
       var tip = document.createElement('div');
       tip.className = 'task-status';
       tip.textContent = message;
@@ -1642,23 +1656,43 @@ html, body {
       scrollBottom();
     }
 
+    function fail(err) {
+      var tip = document.createElement('div');
+      tip.className = 'task-status';
+      tip.textContent = '操作失败：' + (err && err.message ? err.message : '未知错误');
+      bubble.appendChild(tip);
+      scrollBottom();
+    }
+
+    function post(url, body, done) {
+      var init = { method: 'POST' };
+      if (body) {
+        init.headers = { 'Content-Type': 'application/json' };
+        init.body = JSON.stringify(body);
+      }
+      apiFetch(url, init).then(function(res) {
+        done(res);
+        pollStatus();
+      }).catch(function(err) {
+        // 失败不锁死卡片：按钮恢复，只贴一行提示
+        bubble.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
+        fail(err);
+      });
+    }
+
     buttons.forEach(function(spec) {
       var b = document.createElement('button');
       b.className = 'small-btn' + (spec.danger ? ' danger' : '');
       b.textContent = spec.label;
       b.addEventListener('click', function() {
-        var url = '/api/tasks/' + encodeURIComponent(task.id) + '/' + spec.action;
-        var init = { method: 'POST' };
-        if (spec.action === 'postpone') {
-          init.headers = { 'Content-Type': 'application/json' };
-          init.body = JSON.stringify({ days: 1 });
+        if (spec.action === 'menu') {
+          candidates.classList.toggle('hidden');
+          return;
         }
         b.disabled = true;
-        apiFetch(url, init).then(function(res) {
-          if (spec.action === 'postpone') {
-            var next = (res && res.task && res.task.due_at) ? res.task.due_at.slice(0, 10) : '';
-            finish(next ? ('已延期到 ' + next) : '已延期');
-          } else if (spec.action === 'complete') {
+        var url = '/api/tasks/' + encodeURIComponent(task.id) + '/' + spec.action;
+        post(url, null, function(res) {
+          if (spec.action === 'complete') {
             var updated = res && res.task;
             if (updated && updated.recur) {
               var nextAt = (updated.due_at || '').replace('T', ' ').slice(0, 16);
@@ -1669,19 +1703,36 @@ html, body {
           } else {
             finish('已取消');
           }
-          if (spec.action !== 'postpone' && activeTask && activeTask.id === task.id) {
-            clearTask();
-          }
-          pollStatus();
-        }).catch(function(err) {
-          b.disabled = false;
-          finish('操作失败：' + (err && err.message ? err.message : '未知错误'));
+          if (activeTask && activeTask.id === task.id) clearTask();
         });
       });
       actions.appendChild(b);
     });
 
+    presets.forEach(function(spec) {
+      var b = document.createElement('button');
+      b.className = 'small-btn';
+      b.textContent = spec.label;
+      b.addEventListener('click', function() {
+        if (spec.action === 'self') {
+          candidates.classList.add('hidden');
+          bindTask(task.id, task.title);
+          textInput.focus();
+          addMsg('直接说「延到周五」就行。', 'bot', null, { persist: false });
+          return;
+        }
+        b.disabled = true;
+        post('/api/tasks/' + encodeURIComponent(task.id) + '/postpone',
+             { preset: spec.preset }, function(res) {
+          var next = (res && res.task && res.task.due_at) ? res.task.due_at.slice(0, 10) : '';
+          finish(next ? ('已延期到 ' + next) : '已延期');
+        });
+      });
+      candidates.appendChild(b);
+    });
+
     bubble.appendChild(actions);
+    bubble.appendChild(candidates);
     row.appendChild(bubble);
     msgBox.appendChild(row);
     scrollBottom();

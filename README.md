@@ -124,6 +124,7 @@ start.bat wake       # 或 python main.py wake
 | `/api/entities` | GET | 实体与别名列表，支持 `q` / `type` / `limit` / `offset` |
 | `/api/tasks/{id}/complete` | POST | 完成任务 |
 | `/api/tasks/{id}/cancel` | POST | 取消任务 |
+| `/api/tasks/{id}/postpone` | POST | 延期：`days` / `due_at` / `preset`（`tomorrow` / `in_3_days` / `next_monday`） |
 | `/api/tasks/{id}` | PATCH | 编辑任务标题 / 时间 / 类型 |
 | `/api/{memories\|items\|facts\|tasks}/{id}?confirm=true` | DELETE | 删除记录，必须显式确认 |
 | `/api/config` | GET / PATCH | 读取脱敏配置 / 更新白名单字段 |
@@ -221,6 +222,8 @@ python scripts/mcp_probe.py --token <MCP_TOKEN> \
 - 提醒状态落库（`reminded_at`），重启服务也不会重复打扰。
 - 点开任务提醒（网页卡片或系统通知）后，输入框上方会出现「正在处理：…」：接下来一句
   「完成了」「延到周五」直接落到那条任务，不用再说一遍是哪条；10 分钟内有效，可手动取消。
+- 任务卡上可以直接「完成 / 延期 / 取消」；「延期」展开明天、三天后、下周一，或选「我自己说」
+  再用一句话指定日期。延期保留原来的时刻（下午三点的提醒还是下午三点）。
 - 网页状态栏同时常驻显示当前到期物品（`/api/status` 的 `due_items`）。
 
 ### 手机系统通知（Web Push）

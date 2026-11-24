@@ -38,7 +38,7 @@
 - 小智接入：MCP 端点 `ask_xiaoma`、声纹 `_meta` 分会话、单张拍照问答（模拟设备整链验证）。
 - 小米生态：Home Assistant + 官方集成，`home_query` / `home_control`（白名单 + 回读确认）、
   `home_watch` 健康巡检与 WebSocket 事件。
-- 评测与回归：439 条 pytest；`scripts/eval_accuracy.py` 41 条真模型用例（当前 41/41）。
+- 评测与回归：442 条 pytest；`scripts/eval_accuracy.py` 41 条真模型用例（当前 41/41）。
 
 ### 主要差距
 
@@ -395,7 +395,7 @@ POST /v1/actions/act-1/confirm
 
 当前进展（2026-11-24 校对）：阶段 0–2 的主体与 Web 控制台已落地，并已越过分阶段计划走进设备接入：
 实体/事实/任务/提案/澄清/确认、旧数据迁移、Web Push、小智 MCP 接入点、单张拍照问答、
-周期提醒、Home Assistant 接入（只读 + 白名单控制 + 事件订阅）。测试 **439** 条；
+周期提醒、Home Assistant 接入（只读 + 白名单控制 + 事件订阅）。测试 **442** 条；
 `scripts/eval_accuracy.py` **41** 条真模型用例（41/41）。下一阶段主线是**设备真机验收**，
 不是 Android App（见 §17–§19 的调整）。
 
@@ -540,7 +540,7 @@ CLI/Web/API 仍是 `main.py` / `server.py`，**没有全部迁进 `adapters/`**�
 
 ### 阶段 6：Agent 化增强与评测
 
-状态（2026-11-24）：**评测已落地**（41 条真模型用例 + 439 条 pytest）；多步任务、主动建议、
+状态（2026-11-24）：**评测已落地**（41 条真模型用例 + 442 条 pytest）；多步任务、主动建议、
 tracing、成本统计仍未做，也还没评估第三方框架。
 
 目标：多步任务、主动建议、可持续迭代。
@@ -564,7 +564,7 @@ tracing、成本统计仍未做，也还没评估第三方框架。
 
 - **歧义/澄清**：`tests/test_clarify.py` + 评测集里的两轮澄清用例（电费、牛奶）。
 - **工具与护栏**：`tests/test_guard.py`、`test_confirm.py`、`test_propose.py`、`test_verify.py`。
-- **回归**：439 条 pytest；正确率基线 `scripts/eval_accuracy.py` 41 条真模型用例（41/41，
+- **回归**：442 条 pytest；正确率基线 `scripts/eval_accuracy.py` 41 条真模型用例（41/41，
   平均 4.7 s/条），直接跑 `pytest tests -q` 即可，评测另行手动跑。
 - **端到端**：`scripts/xiaozhi_probe.py`（小智协议）、`scripts/fake_camera_device.py`（拍照整链）。
 
@@ -834,7 +834,8 @@ App 不在前台、甚至完全关闭时，也能收到「牛奶还有 2 天过�
 > `task_cancel` / `task_postpone`，不必先 `task_list`；任务已不存在/已完成时如实说明，
 > 不拿别的任务顶。推送 payload 已带 `task_id` / `task_title` / `kind`，`sw.js` 存进 IndexedDB，
 > 点通知后页面显示提醒并在输入框上方挂一条「正在处理：…」的绑定条（可手动取消，10 分钟过期）。
-> 已落地 `task_update` / `task_cancel` 与 `agent/dates.py`；网页任务卡有「完成 / 延期一天 / 取消」。
+> 已落地 `task_update` / `task_cancel` 与 `agent/dates.py`；网页任务卡有「完成 / 延期 / 取消」，
+> 「延期」展开固定候选：明天、三天后、下周一、我自己说（D17 已定，见 §16 待决策）。
 > **设备端还没接**：小智走 MCP `ask_xiaoma`，提醒是播报出来的、没有「点击」这个动作，
 > 也没有把「刚提醒过哪条任务」写给 MCP 会话，所以客厅里说「完成了」仍要靠 `task_list`。
 > D17–D19 还没定；§17 之后网页连续语音已暂缓，语音留在设备端。
@@ -889,7 +890,7 @@ Android 上可以在通知里额外带 `actions`，同一份 payload 不冲突�
 
 | 编号 | 问题 | 倾向 |
 |---|---|---|
-| D17 | 延期候选 | 明天 / 三天后 / 下周一 + 「我自己说」，固定项覆盖多数场景，自由语音兜底 |
+| D17 | 延期候选 | **已定（2026-11-24 落地）**：明天 / 三天后 / 下周一 + 「我自己说」。卡片点选走 `POST /api/tasks/{id}/postpone` 的 `preset`（服务端用 `agent/dates.py` 算日期），「我自己说」把任务绑到会话里并聚焦输入框 |
 | D18 | 完成后任务保留还是删除 | 标记 `done` 保留，列表可查历史；删除仍走单独入口 |
 | D19 | 「不用提醒了」是否二次确认 | 不确认：可逆（任务还在，只是取消提醒），但它会静默改变行为，回复里要说清楚 |
 

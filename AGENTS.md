@@ -234,6 +234,9 @@ pytest tests -q
 - 列表接口支持 `q` / `status` / `limit` / `offset`，返回 `total`；前端每页 20 条。
 - 删除接口必须带 `confirm=true`；前端还要弹二次确认，不能静默删除。
 - 任务编辑走 `PATCH /api/tasks/{id}`，只允许改标题、时间、类型。
+- 任务卡延期走 `POST /api/tasks/{id}/postpone`：`days` / `due_at` / `preset`
+  （`tomorrow` / `in_3_days` / `next_monday`）。**日期只在服务端算**（`agent/dates.py`），
+  前端不拼日期；`Tasks.postpone(due_at=...)` 保留原时刻，别改成零点。
 - 新增列表接口时保持只读；需要写操作就复用现有任务/确认逻辑。
 - 移动端优先，所有操作要能在手机浏览器完成。
 

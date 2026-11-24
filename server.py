@@ -54,6 +54,7 @@ from config import (
     VAPID_SUBJECT,
 )
 from agent import wording
+from agent.dates import parse_date_text
 from assistant import Assistant
 from adapters.home_ws import run_event_stream
 from adapters.mcp_endpoint import MCPEndpoint
@@ -644,6 +645,17 @@ class TaskUpdate(BaseModel):
 
 class TaskPostpone(BaseModel):
     days: int = 1
+    due_at: Optional[str] = None
+    # 任务卡上的固定候选；交给 agent/dates.py 算，别在客户端拼日期
+    preset: Optional[str] = None
+
+
+# 延期候选：前端只传 preset，日期口径和语音里的「明天/三天后/下周一」共用一套解析
+POSTPONE_PRESETS = {
+    "tomorrow": "明天",
+    "in_3_days": "三天后",
+    "next_monday": "下周一",
+}
 
 
 class PushKeys(BaseModel):
@@ -1174,8 +1186,24 @@ async def api_task_cancel(task_id: int, _auth=Depends(require_api_token)):
 @app.post("/api/tasks/{task_id}/postpone")
 async def api_task_postpone(task_id: int, req: TaskPostpone,
                             _auth=Depends(require_api_token)):
+    due_at = (req.due_at or "").strip()
+    if req.preset:
+        text = POSTPONE_PRESETS.get(req.preset)
+        if not text:
+            raise HTTPException(status_code=400, detail="preset 无效")
+        parsed = parse_date_text(text)
+        if not parsed:
+            raise HTTPException(status_code=400, detail="无法计算延期日期")
+        due_at = parsed["date"]
     try:
-        task = await asyncio.to_thread(assistant.tasks.postpone, task_id, req.days)
+        if due_at:
+            task = await asyncio.to_thread(
+                assistant.tasks.postpone, task_id, due_at=due_at,
+            )
+        else:
+            task = await asyncio.to_thread(
+                assistant.tasks.postpone, task_id, req.days,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if task is None:
