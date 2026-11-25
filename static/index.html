@@ -270,6 +270,30 @@ html, body {
   color: var(--text-secondary); font-size: 14px; cursor: pointer;
 }
 
+#file-chip {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-secondary);
+}
+#file-chip .chip-label {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+#file-chip button {
+  flex-shrink: 0; background: none; border: 0; padding: 0 4px;
+  color: var(--text-secondary); font-size: 14px; cursor: pointer;
+}
+
+#attach-btn {
+  width: 44px; height: 44px; flex-shrink: 0;
+  border-radius: 50%; border: 1px solid var(--border);
+  background: var(--surface-alt); color: var(--text-secondary);
+  font-size: 18px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+#attach-btn:disabled { opacity: .5; cursor: not-allowed; }
+
 #input-area {
   flex-shrink: 0; display: flex; align-items: center; gap: 10px;
   padding: 12px 14px calc(20px + env(safe-area-inset-bottom));
@@ -304,7 +328,7 @@ html, body {
 #record-btn.recording #record-label { opacity: 1; }
 
 #text-input {
-  flex: 1; height: 44px; padding: 0 14px;
+  flex: 1; min-width: 0; height: 44px; padding: 0 14px;
   font-size: 16px; /* >=16px to prevent iOS zoom */
   background: var(--input-bg); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 22px;
@@ -322,6 +346,14 @@ html, body {
   transition: opacity .15s;
 }
 #send-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 窄屏：录音、附件、发送三个按钮都要留得下，输入框优先让位 */
+@media (max-width: 520px) {
+  #input-area { gap: 8px; padding: 10px 10px calc(16px + env(safe-area-inset-bottom)); }
+  #record-btn { width: 48px; height: 48px; }
+  #attach-btn { width: 40px; height: 40px; }
+  #send-btn { padding: 0 12px; }
+}
 
 /* ---- typing indicator ---- */
 .typing { display: flex; gap: 4px; padding: 6px 0; }
@@ -361,11 +393,18 @@ html, body {
         <span class="chip-label"></span>
         <button type="button" aria-label="取消任务绑定">✕</button>
       </div>
+      <div id="file-chip" class="hidden">
+        <span class="chip-label"></span>
+        <button type="button" aria-label="取消文件">✕</button>
+      </div>
       <div id="input-area">
         <button id="record-btn" aria-label="按住说话">
           <span id="record-label">按住说话</span>
           🎤
         </button>
+        <input id="file-input" type="file" class="hidden"
+               accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.gif,.bmp,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx">
+        <button id="attach-btn" type="button" aria-label="上传文件打印" title="上传文件打印">📎</button>
         <input id="text-input" type="text" placeholder="打字跟小马说话…" autocomplete="off">
         <button id="send-btn">发送</button>
       </div>
@@ -491,6 +530,13 @@ html, body {
   var taskChip   = document.getElementById('task-chip');
   var taskChipLabel = taskChip.querySelector('.chip-label');
   var taskChipClose = taskChip.querySelector('button');
+  var fileInput  = document.getElementById('file-input');
+  var attachBtn  = document.getElementById('attach-btn');
+  var fileChip   = document.getElementById('file-chip');
+  var fileChipLabel = fileChip.querySelector('.chip-label');
+  var fileChipClose = fileChip.querySelector('button');
+  var pendingFile = null;   // 已上传、等这一轮发送的打印文件
+  var uploadBusy = false;
   var tabs       = document.querySelectorAll('.tab');
   var views      = document.querySelectorAll('.view');
   var statCards  = document.getElementById('stat-cards');
@@ -1878,11 +1924,13 @@ html, body {
     sendBtn.disabled = v;
     textInput.disabled = v;
     recBtn.disabled = v;
+    attachBtn.disabled = v || uploadBusy;
     if (v) { sendBtn.textContent = '处理中…'; } else { sendBtn.textContent = '发送'; }
   }
 
   function sendText() {
     var t = textInput.value.trim();
+    if (!t && pendingFile) t = '打印这个文件';
     if (!t || busy) return;
     textInput.value = '';
     addMsg(t, 'user');
@@ -1895,7 +1943,8 @@ html, body {
       body: JSON.stringify({
         text: t,
         client_id: clientId,
-        task_id: activeTask ? activeTask.id : 0
+        task_id: activeTask ? activeTask.id : 0,
+        file_id: pendingFile ? pendingFile.file_id : null
       })
     })
     .then(function(r) {
@@ -1904,6 +1953,7 @@ html, body {
     })
     .then(function(d) {
       removeTyping();
+      clearPendingFile();
       addMsg(d.reply || '（空回复）', 'bot', d.audio || null);
       refreshBoundTask();
     })
@@ -1918,6 +1968,58 @@ html, body {
   textInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); sendText(); }
   });
+
+  // ---- 打印文件上传（D61）：上传后随下一条消息发给小马，确认后出纸 ----
+
+  function clearPendingFile() {
+    pendingFile = null;
+    fileChip.classList.add('hidden');
+    fileChipLabel.textContent = '';
+  }
+
+  attachBtn.addEventListener('click', function() {
+    if (busy || uploadBusy) return;
+    fileInput.click();
+  });
+  fileChipClose.addEventListener('click', clearPendingFile);
+  fileInput.addEventListener('change', function() {
+    var f = fileInput.files && fileInput.files[0];
+    fileInput.value = '';
+    if (f) uploadPrintFile(f);
+  });
+
+  function uploadPrintFile(f) {
+    if (f.size > 10 * 1024 * 1024) {
+      addMsg('文件太大，最多 10MB。', 'error', null, { persist: false });
+      return;
+    }
+    uploadBusy = true;
+    attachBtn.disabled = true;
+    var fd = new FormData();
+    fd.append('file', f, f.name);
+    fd.append('client_id', clientId);
+    fetch('/api/print/files', { method: 'POST', headers: authHeaders(), body: fd })
+    .then(function(r) {
+      return r.json().catch(function() { return {}; }).then(function(d) {
+        if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+        return d;
+      });
+    })
+    .then(function(d) {
+      pendingFile = d;
+      fileChipLabel.textContent = '📄 ' + d.name + (d.pages ? '（' + d.pages + ' 页）' : '');
+      fileChip.classList.remove('hidden');
+      addMsg('文件《' + d.name + '》已收到，说「打印」或「打印两份」就行。',
+             'bot', null, { persist: false });
+    })
+    .catch(function(err) {
+      addMsg('上传失败：' + (err.message || err), 'error', null, { persist: false });
+    })
+    .finally(function() {
+      uploadBusy = false;
+      attachBtn.disabled = busy;
+    });
+  }
 
   // ---- recording (Web Audio → PCM → resample 16kHz → WAV) ----
 

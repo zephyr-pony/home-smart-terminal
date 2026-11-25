@@ -149,11 +149,25 @@ docker compose up -d --build
   只改 `.env` 不改这里不会生效，`doctor.py` 也会在缺依赖时报错。
 - 容器里 `SERVER_HOST` 固定 `0.0.0.0`，**必须设 `API_TOKEN`**，否则 `_check_exposure()`
   会直接拒绝启动——这是刻意的，别为了省事关掉。
+- 打印：镜像默认装 CUPS 客户端和 LibreOffice（`INSTALL_PRINT=1`，镜像会大几百 MB）。
+  不需要打印就 `--build-arg INSTALL_PRINT=0`；打印队列在 `.env` 里配：
+  `PRINTER_SERVER=192.168.1.15:631`、`PRINTER_NAME=HP1020`。容器只向远程 CUPS
+  发 IPP 任务，不用自己跑 cupsd；宿主机/容器能访问到那台 CUPS 即可。
 - 数据放在命名卷 `xiaoma-data`（容器内 `/data`，对应 `DATA_DIR`）。换机器/搬家优先用
   `python scripts/backup.py` 导出，命名卷直接拷文件容易漏掉正在写的库。
 - 语音模型缓存在 `xiaoma-cache` 卷（`/home/xiaoma/.cache`），重建容器不用重下 900MB 模型。
 - 拉不到 `docker.io` 时（国内网络常见）先给 Docker 配镜像加速器或改用可访问的镜像源拉
-  `python:3.12-slim` 并打回同名标签，Dockerfile 本身不用改。
+  `python:3.12-slim` 并打回同名标签，Dockerfile 本身不用改。系统包/ pip 也连不上时，
+  构建加镜像源参数：`APT_MIRROR=mirrors.aliyun.com`、`PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`
+  （写进 compose 的 `build.args` 或 `--build-arg`）。
+- **Windows + Docker Desktop（WSL2）**：端口发布到局域网要在 **Hyper-V 防火墙**放行，
+  普通 Windows 防火墙规则不管用。`networkingMode=mirrored` 时尤其如此：
+  ```powershell
+  # 管理员 PowerShell
+  New-NetFirewallHyperVRule -DisplayName "Xiaoma-8208" -Direction Inbound -Action Allow -Protocol TCP -LocalPorts 8208
+  ```
+  加完从**手机或另一台电脑**访问 `http://<这台机器 IP>:8208` 验证；
+  宿主机自己访问自己的局域网 IP 可能超时（WSL 镜像模式的 hairpin），这不算失败。
 
 ## 服务端 API
 
@@ -162,6 +176,7 @@ docker compose up -d --build
 | `/healthz` | GET | 探活，**不需要鉴权**，只回 `{"ok": true}`（容器/反代用） |
 | `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`） |
 | `/api/stats` | GET | 概览统计：数量、任务状态、到期物品/任务 |
+| `/api/thinking` | GET | 「这轮有没有开思考」的观察记录（最近 20 轮 + 统计），`limit` 可调 |
 | `/api/memories` | GET | 记忆列表，支持 `q` / `limit` / `offset` |
 | `/api/items` | GET | 物品列表，支持 `q` / `status` / `limit` / `offset` |
 | `/api/tasks` | GET | 任务列表，支持 `q` / `status` / `limit` / `offset` |
@@ -177,7 +192,8 @@ docker compose up -d --build
 | `/api/push/subscribe` | POST | 保存设备推送订阅 `{endpoint, keys}` |
 | `/api/push/unsubscribe` | POST | 删除设备推送订阅 |
 | `/api/push/test` | POST | 给已订阅设备发一条测试通知 |
-| `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64 |
+| `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64；打印可带 `file_id` |
+| `/api/print/files` | POST | 上传待打印文件（multipart: file + client_id），返回 `file_id`；只支持 Windows |
 | `/api/voice` | POST | WAV 语音交互（multipart: file + client_id） |
 | `/api/asr` | POST | 设备网关：WAV → 文本（只识别，不进 Agent） |
 | `/api/tts` | POST | 设备网关：`{text}` → mp3 字节 |
@@ -293,8 +309,11 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `LLM_API_KEY` | （必填） | API 密钥 |
 | `LLM_MODEL` | （必填） | 模型名 |
 | `LLM_MODEL_DECISION` | 空 | 第一轮（挑工具）单独用更快的模型；留空 = 两轮都用 `LLM_MODEL` |
-| `LLM_REASONING_EFFORT` | `off` | 思考模式，值原样传给网关：commandcode 用 `off` 关，aisp 用 `none` 关；留空表示不传该参数 |
-| `LLM_PROXY` | 空 | 访问网关走本机代理（如 `http://127.0.0.1:10808`）。直连很慢时配它；留空交给 requests 默认行为 |
+| `LLM_REASONING_EFFORT` | `off` | 默认思考档位，值原样传给网关：commandcode 用 `off` 关，aisp 用 `none` 关；留空表示不传该参数 |
+| `LLM_THINKING_EFFORT` | `medium` | 模型自己调 `set_thinking(true)` 后本轮用的档位（默认关，够用才开） |
+| `THINKING_LOG_ENABLED` | `1` | 记录「这轮有没有开思考」到 `data/thinking.jsonl`，`GET /api/thinking` 可看 |
+| `LLM_PROXY` | 空 | 访问网关的备用代理（如 `http://127.0.0.1:10808`）。**先直连，连不上才走它**；直连失败后 5 分钟内优先代理，之后自动再试直连 |
+| `WEB_PROXY` | 空 | 搜索/抓页面用哪个代理；留空直连（不借用 `LLM_PROXY`） |
 | `VISION_CONTEXT_SECONDS` | `180` | 拍照后「刚才看到什么」在会话里保留多久；只在内存，不进记忆库 |
 | `LLM_CHAT_TEMPLATE_KWARGS` | 空 | 本地 llama.cpp/vLLM 关思考用，JSON，如 `{"enable_thinking": false}` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 语音角色（女声）；男声用 `zh-CN-YunxiNeural` |
@@ -365,6 +384,13 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `MEMORY_DISTILL_MAX_GROUPS` | `10` | 每轮最多合并几组（一组一次模型调用） |
 | `MEMORY_DISTILL_SUMMARY_CHARS` | `60` | 合并后的摘要最多多少字 |
 | `MEMORY_DISTILL_CHECK_SECONDS` | `900` | 后台检查是否该蒸馏的间隔（秒） |
+| `PRINTER_ENABLED` | `1` | 网页上传文件，用 Linux CUPS 队列出纸（服务器部署） |
+| `PRINTER_SERVER` | 空 | 远程 CUPS 服务器 `host:port`（如 `192.168.1.15:631`）；空 = 本机 CUPS |
+| `PRINTER_NAME` | 空 | CUPS 队列名（`lpstat -h <server> -a` 第一列）；空 = 默认队列 |
+| `PRINTER_ALLOWED` | 空 | 允许使用的队列（逗号分隔）；空 = 只允许默认那个 |
+| `PRINTER_MAX_PAGES` | `50` | 一次最多打印多少页 |
+| `PRINTER_MAX_COPIES` | `20` | 一次最多打印多少份 |
+| `PRINTER_FILE_TTL_SECONDS` | `1800` | 上传文件保留多久（秒），打印成功立刻删除 |
 
 ## 使用方式
 
@@ -389,6 +415,22 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 支持安装成 PWA：手机浏览器打开后「添加到主屏幕」，全屏运行、有独立图标；
 断网时至少能打开界面（数据接口仍需要服务端在线）。Service Worker 挂在 `/sw.js`，
 后续 Web Push 提醒复用同一套入口。
+
+### 打印文件（Linux + CUPS）
+
+1. 服务器先配好 CUPS 队列：`lpstat -a` 看队列名，填进 `PRINTER_NAME`
+2. 点聊天输入框左边的 📎，选一个文件（PDF / 图片 / TXT、Markdown / Office）
+3. 说「打印」或「打印两份，1到2页」
+4. 小马复述文件、份数、页码和队列，回复「确认」才提交打印
+
+- 需要 CUPS 客户端（`lp` / `lpstat`）；Office 文档还需要 LibreOffice（`soffice`）
+  - Debian/Ubuntu：`sudo apt install cups-client cups-filters libreoffice-core fonts-noto-cjk`
+- 打印机可以挂在别的机器上：`PRINTER_SERVER=192.168.1.15:631`、`PRINTER_NAME=HP1020`，
+  容器只发 IPP 任务，不用自己跑 cupsd
+- PDF / 图片 / 纯文本直接交给 CUPS 过滤器转换；Office 先由 LibreOffice 转 PDF
+- 文件只落临时目录，打印成功立刻删除，过期（默认 30 分钟）也会清掉
+- 语音终端只能确认，不能传文件；文件必须从网页或 API 上传
+- 不支持 Windows 打印队列：服务器部署是 Linux（D61）
 
 ### 唤醒词模式
 

@@ -4,8 +4,11 @@
 不碰音频、不直接播报，由调用方（CLI 的 tts.speak / 服务端的 TTS 合成）决定输出方式。
 """
 import json
+import os
+import shutil
 import threading
 import time
+import uuid
 from datetime import datetime
 
 from config import (
@@ -14,7 +17,15 @@ from config import (
     HOT_CONTEXT_FACTS,
     HOT_CONTEXT_MAX_CHARS,
     HOT_CONTEXT_MEMORIES,
+    LLM_REASONING_EFFORT,
+    LLM_THINKING_EFFORT,
     MAX_SESSIONS,
+    PRINTER_ALLOWED,
+    PRINTER_ENABLED,
+    PRINTER_MAX_COPIES,
+    PRINTER_MAX_PAGES,
+    PRINTER_NAME,
+    PRINTER_SERVER,
     SESSION_CONTEXT_MAX_CHARS,
     SESSION_CONTEXT_TURNS,
     SESSION_TTL_SECONDS,
@@ -33,19 +44,24 @@ from agent.confirm import (
     parse_confirm_actions,
 )
 from agent.entities import EntityService
-from agent.guard import correction_note, guard_false_claim, guard_write_args
+from agent.guard import (
+    correction_note, guard_false_claim, guard_print_args, guard_write_args,
+)
 from agent.home_watch import build_home_watch
 from agent.verify import verify_reply
 from agent import wording
 from agent.propose import ProposalService
+from agent import thinking
 from adapters.home import build_home
+from adapters.printer import build_printer, kind_of, pdf_page_count
+from adapters import documents
 from adapters.weather import Weather
 from domain.facts import Facts, profile_subject
 from domain.tasks import Tasks
 from memory import Memory
 from items import Items
 from llm import LLM
-from tools import get_all_tools
+from tools import get_all_tools, get_printer_tool
 
 
 def _float_or_none(value):
@@ -81,7 +97,15 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 回答简洁口语化，像家人聊天，别写成公文。
 查不到结果就如实说没有记录，不要编；如果用户的话可能被听错（同音字），
 再问一句"你要查的是哪件事"，不要顺着可能错的词下结论。
-对话历史里可能有相关上下文，理解"那个""它""还有呢"这类指代时结合历史。"""
+对话历史里可能有相关上下文，理解"那个""它""还有呢"这类指代时结合历史。
+遇到要多步推理、写代码、算表格、比较方案的事，先调 set_thinking(true) 再动手；
+带附件要改文件或要打印时，第一步就开；闲聊和单条查询不必开。
+
+打印表格之前先估算版式：按各列宽度加起来，和 A4 可打印宽度比一下（纵向约 17cm、
+左右边距各约 2cm 就按 17cm 算；列宽 1 个单位≈0.2cm，中文按 2 个单位估）。
+超宽时先找出最宽的那几列（长文本、备注列最常见）收窄；收窄后还超，就把工作表
+改成横向（landscape，可打印宽度约 25cm），必要时再按页宽缩放。目的是让整张表
+在一页宽里装下，不要默认打成两三页。"""
 
 # 接了设备网关时才追加，避免模型对着不存在的工具瞎调
 HOME_PROMPT_LINE = """
@@ -115,9 +139,12 @@ class Assistant:
     """家庭智能终端核心编排。"""
 
     def __init__(self, memory=None, llm=None, items=None, clarifier=None,
-                 tasks=None, facts=None, home=None, decision_llm=None):
+                 tasks=None, facts=None, home=None, decision_llm=None,
+                 printer=None):
         self.memory = memory or Memory()
         self.llm = llm or LLM()
+        # 每个请求一个线程，思考开关的临时状态放线程本地，避免多客户端串台
+        self._turn = threading.local()
         # 第一轮（决策/调工具）可以换更快的模型；没配置就和回答轮同一个
         self.decision_llm = decision_llm
         self.items = items or Items()
@@ -150,6 +177,17 @@ class Assistant:
             WEATHER_API_HOST, WEATHER_API_KEY, WEATHER_CITY,
             _float_or_none(WEATHER_LAT), _float_or_none(WEATHER_LON),
         )
+        # 打印（D61）：Linux CUPS 队列；没装 lp/lpstat 时 available=False，
+        # 工具不注册，上传入口也会如实说不可用。
+        self.printer = printer if printer is not None else build_printer(
+            name=PRINTER_NAME,
+            allowed=[item for item in str(PRINTER_ALLOWED or "").split(",") if item.strip()],
+            max_pages=PRINTER_MAX_PAGES,
+            max_copies=PRINTER_MAX_COPIES,
+            server=PRINTER_SERVER,
+            enabled=PRINTER_ENABLED,
+        )
+        self.printer_ready = self.printer.available()
         # 工具注册表（memory + 日期 + items + 实体）
         self.tools = get_all_tools(
             self.memory,
@@ -161,11 +199,15 @@ class Assistant:
             home=self.home,
             weather=self.weather,
         )
+        if self.printer_ready:
+            self.tools.append(get_printer_tool())
         self._tools_by_name = {
             t["schema"]["function"]["name"]: t["execute"] for t in self.tools
         }
         # 确认通过后回放原来的工具调用
         self.confirmations.tool_runner = self._run_tool_by_name
+        # 打印确认后由这里真正出纸（适配器走 CUPS / 远程 CUPS）
+        self.confirmations.print_runner = self._print_file
         self.max_agent_loops = 5
         # 轻量会话上下文：client_id -> [(user_text, reply), ...]（阶段 3 多轮对话的底子）
         self.sessions = {}
@@ -190,12 +232,35 @@ class Assistant:
     # ---------- 对外接口 ----------
 
     def process_text(self, text, client_id=None, on_delta=None, device_camera=False,
-                     task_id=None):
+                     task_id=None, attachment=None):
+        """处理用户文本，并记一条「这轮有没有开思考」（D63）。
+
+        记录只是一次本地追加，不联网、不调模型；写失败也不影响回答。
+        """
+        started = time.time()
+        try:
+            result = self._process_text_inner(
+                text, client_id, on_delta=on_delta, device_camera=device_camera,
+                task_id=task_id, attachment=attachment,
+            )
+        finally:
+            state = getattr(self._turn, "state", None)
+            self._turn.state = None
+        if state is not None:
+            thinking.record_turn(
+                text, client_id, state.get("thinking"), state.get("why"),
+                state.get("tools"), time.time() - started, result,
+            )
+        return result
+
+    def _process_text_inner(self, text, client_id=None, on_delta=None, device_camera=False,
+                            task_id=None, attachment=None):
         """处理用户文本输入，返回结构化结果 dict。
 
         Args:
             device_camera: 这个入口背后的终端带摄像头（只有 /v1 的语音终端会传 True）。
                 带的时候才把 camera_look 给模型看，避免网页/CLI 上模型说「我看到了」。
+            attachment: 这一轮网页上传的文件（打印用），只在内存里；不回写会话历史。
             task_id: 用户点开的到期任务（通知/任务卡带过来的）。只作为这一轮的工具
                 上下文，让「完成了 / 延期」指向那一条；不落库、不进历史。
 
@@ -279,7 +344,7 @@ class Assistant:
         try:
             rtype, answer, extras = self._agent_loop(
                 text, client_id, on_delta, device_camera=device_camera,
-                task_id=task_id,
+                task_id=task_id, attachment=attachment,
             )
         except ConfirmationRequired as exc:
             self._record_turn(client_id, text, exc.reply)
@@ -512,15 +577,41 @@ class Assistant:
             lines.append("这条已经取消了：他说完成或延期时如实说明，不要恢复它。")
         return "\n".join(lines)
 
+    @staticmethod
+    def _attachment_note(attachment):
+        """这一轮待打印文件的说明：只给元数据，不把文件内容塞进上下文。"""
+        if not attachment:
+            return ""
+        name = str(attachment.get("name") or "文件")
+        kind = {
+            "pdf": "PDF", "image": "图片", "text": "文本", "office": "Office 文档",
+        }.get(str(attachment.get("kind") or ""), "文件")
+        parts = [kind]
+        pages = attachment.get("pages")
+        if pages:
+            parts.append("%d 页" % int(pages))
+        size = attachment.get("size")
+        if size:
+            parts.append("%.1f MB" % (float(size) / 1024 / 1024))
+        return (
+            "用户这一轮在网页里上传了文件：《%s》（%s）。"
+            "要知道里面写了什么就调 file_read；要改内容/排版/转格式，"
+            "先 find_tools 看这台机器有什么，再用 run_python 生成新文件，"
+            "然后打印那个新文件。要打印就调用 printer_print，份数和页码按用户说的填。"
+            "没读过就不要编造文件里写了什么。"
+            % (name, "，".join(parts))
+        )
+
     # ---------- agent loop ----------
 
     def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False,
-                    task_id=None):
+                    task_id=None, attachment=None):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
 
         client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
         task_id 是用户点开的到期任务：只在这一轮注入一条 system 提示，
         让「完成了 / 延期」指向那一条，不写进会话历史。
+        attachment 是网页上传的待打印文件：只在有文件时把 printer_print 给模型看。
 
         Returns:
             (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）；
@@ -558,16 +649,36 @@ class Assistant:
         task_note = self._task_context_note(task_id)
         if task_note:
             messages.append({"role": "system", "content": task_note})
+        # 网页上传了待打印文件：只在这一轮告诉模型「有文件可打」，
+        # 文件名/页数够了；正文不给模型看，避免把文件内容带进上下文。
+        attachment_note = self._attachment_note(attachment)
+        if attachment_note:
+            messages.append({"role": "system", "content": attachment_note})
         messages.append({"role": "user", "content": user_text})
-        # 没有摄像头的入口不给这个 schema：模型看不到就不会说「我看到了」
+        # 没有摄像头的入口不给这个 schema：模型看不到就不会说「我看到了」；
+        # file_read 只在有附件时露出来；run_python 任何时候都能生成文件，
+        # 所以 printer_print 只要有打印机就给——没文件时调用会被拦下并说明原因。
+        show_printer = self.printer_ready
+        file_tools = {"file_read", "file_process", "run_python"}
         schemas = [
             t["schema"] for t in self.tools
-            if device_camera or t["schema"]["function"]["name"] != "camera_look"
+            if (device_camera or t["schema"]["function"]["name"] != "camera_look")
+            and (t["schema"]["function"]["name"] != "printer_print" or show_printer)
+            and (
+                t["schema"]["function"]["name"] not in file_tools
+                or t["schema"]["function"]["name"] == "run_python"
+                or attachment
+            )
         ]
         tools_by_name = self._tools_by_name
         used_tools = []
         used_tool_names = set()
         executed_writes = []
+        # 用户原始上传的文件：run_python 每次都以它为输入，产物只影响「接下来打印哪个」，
+        # 否则一次「探测环境」的产物会把输入顶掉，后面再也读不到原表
+        origin_attachment = attachment
+        # 这一轮的思考决策，结束时由 process_text 记一条（D63）
+        self._turn.state = {"thinking": False, "why": "", "tools": used_tools}
         query_total = 0
         query_empty = 0
         blocked_reply = None
@@ -576,7 +687,18 @@ class Assistant:
         search_n = 5
         device_call = None
 
-        for _turn in range(self.max_agent_loops):
+        max_loops = self.max_agent_loops
+        if attachment:
+            # 带文件的活天然多步：读内容 → 查工具 → 改文件 → 确认打印，
+            # 5 轮不够用（2026-11-25 实测在「绕晕了」前刚好卡住）
+            max_loops = max(max_loops, 10)
+        # 模型要给 run_python 写整段代码，512 会在代码中间截断，
+        # 截断后的半截代码会被当成回复念给用户（2026-11-25 实测）
+        turn_tokens = 2048 if attachment else 512
+        # 思考档位：默认按配置（语音场景是 off）；模型调 set_thinking(true) 后
+        # 本轮改成 LLM_THINKING_EFFORT，下一轮用户说话时自然复位（D63）
+        effort = None
+        for _turn in range(max_loops):
             # 第一轮只决定「调不调工具、调哪个」，第二轮才组织要说的话；
             # 配了 decision_llm 就分开用，没配则两轮同一个模型。
             client = self.decision_llm if (_turn == 0 and self.decision_llm is not None) else self.llm
@@ -586,10 +708,14 @@ class Assistant:
                 can_stream = on_delta is not None and not executed_writes
                 if can_stream and hasattr(client, "chat_with_tools_stream"):
                     data = client.chat_with_tools_stream(
-                        messages, schemas, on_delta=on_delta
+                        messages, schemas, on_delta=on_delta,
+                        max_tokens=turn_tokens, reasoning_effort=effort,
                     )
                 else:
-                    data = client.chat_with_tools(messages, schemas)
+                    data = client.chat_with_tools(
+                        messages, schemas, max_tokens=turn_tokens,
+                        reasoning_effort=effort,
+                    )
             except Exception as exc:
                 print(f"⚠️ LLM 调用失败：{exc}")
                 return "chat", "抱歉，我现在连不上大脑，请稍后再试。", {
@@ -633,6 +759,81 @@ class Assistant:
                             },
                         }
                         break
+                    # 模型自己决定要不要开思考（D63）：默认关，本轮内生效
+                    if name == "set_thinking":
+                        wanted = (args or {}).get("enabled")
+                        if isinstance(wanted, str):
+                            wanted = wanted.strip().lower() in (
+                                "1", "true", "yes", "是", "开",
+                            )
+                        if wanted:
+                            effort = LLM_THINKING_EFFORT or "medium"
+                            turn_tokens = max(turn_tokens, 2048)
+                            result = "已开启深度思考，本轮后续步骤更稳，会稍慢。"
+                        else:
+                            effort = LLM_REASONING_EFFORT or None
+                            result = "已关闭深度思考。"
+                        state = getattr(self._turn, "state", None)
+                        if state is not None:
+                            state["thinking"] = bool(wanted)
+                            state["why"] = str((args or {}).get("why") or "")[:120]
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": result,
+                        })
+                        print("🛠 set_thinking -> %s（reasoning=%s）" % (
+                            "on" if wanted else "off", effort,
+                        ))
+                        continue
+                    # 文件：先看内容、再用代码处理；处理后的新文件接替这一轮的附件，
+                    # 后面调 printer_print 打的就是它（D62）。
+                    if name in ("file_read", "run_python"):
+                        try:
+                            if name == "file_read" and not attachment:
+                                result = "错误：这一轮没有附带文件。"
+                            elif name == "file_read":
+                                result = documents.read_document(
+                                    attachment.get("path"), attachment.get("name")
+                                )
+                            else:
+                                print("🐍 run_python 代码：%s" % str(
+                                    (args or {}).get("code") or ""
+                                ).replace("\n", " ")[:240])
+                                result, attachment = self._process_file(
+                                    origin_attachment, args or {}
+                                )
+                        except documents.DocumentError as exc:
+                            result = "错误：%s" % exc
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id", ""),
+                            "content": str(result),
+                        })
+                        print("🛠 %s -> %s" % (
+                            name, str(result).replace("\n", " ")[:160]
+                        ))
+                        continue
+                    # 打印（D61）：文件只在内存/临时目录里，确认后由适配器出纸。
+                    # 无条件确认——纸和墨花掉就回不来，和画像一样不跟弱模型开关走。
+                    if name == "printer_print":
+                        if not attachment or not self.printer_ready:
+                            blocked_reply = "这一轮没有可打印的文件（或当前部署不支持打印）。"
+                            break
+                        args, blocked = guard_print_args(args)
+                        if blocked:
+                            blocked_reply = blocked
+                            break
+                        payload = dict(args)
+                        payload["path"] = attachment.get("path")
+                        payload["name"] = attachment.get("name")
+                        payload["printer"] = self.printer.name
+                        question = wording.print_question(payload, user_text)
+                        conversation_id = (client_id or "cli").strip()
+                        pending = self.confirmations.request(
+                            conversation_id, "print_file", payload, question, user_text
+                        )
+                        raise ConfirmationRequired(question, pending)
                     # 画像（D59）：模型推断的偏好永远先问一句，
                     # 不跟 CONFIRM_WRITE_ACTIONS 走——用户的事后否认不能靠配置开关。
                     if name == "profile_set":
@@ -707,6 +908,9 @@ class Assistant:
                         "tool_call_id": tc.get("id", ""),
                         "content": str(result),
                     })
+                    print("🛠 %s -> %s" % (
+                        name, str(result).replace("\n", " ")[:160]
+                    ))
                 if device_call is not None:
                     break
                 if blocked_reply is not None:
@@ -723,6 +927,10 @@ class Assistant:
 
             # 普通回答（finish=stop）
             answer = (message.get("content") or "").strip()
+            # 有些模型会把工具调用写成 <invoke ...> 文本（多发生在输出被截断时）；
+            # 这种半截文本不能当回复念给用户
+            if "<invoke" in answer or "<tool_call" in answer:
+                answer = "这一步我没走通，能再发一次吗？"
             break
         else:
             answer = "抱歉，我绕晕了，能再说一遍吗？"
@@ -842,6 +1050,86 @@ class Assistant:
             return f"错误：未知工具 {name}"
         return execute(**(args or {}))
 
+    def _process_file(self, attachment, args):
+        """跑一段模型写的 Python，返回 (给模型的说明, 新附件)。
+
+        没有附件也可以跑：从零生成一个表格/PDF 再打印。
+        新文件放在附件同目录（没有附件就放临时目录），打印成功时由
+        `_print_file` 删掉；用户取消就跟着临时目录清。
+        """
+        import tempfile
+
+        from adapters.printer import SUPPORTED_EXTENSIONS
+
+        attachment = attachment or {}
+        requested = str(args.get("output_name") or "").strip()
+        fallback_ext = os.path.splitext(requested)[1].lower() or os.path.splitext(
+            attachment.get("name") or ""
+        )[1].lower() or ".txt"
+        outcome = documents.run_code(
+            args.get("code"), attachment.get("path"), out_name=requested
+        )
+        if not outcome.get("path"):
+            # 只是查环境/试代码：不改打印目标，把输出原样带回去
+            note = "代码执行完成，没有生成文件，打印目标保持不变。"
+            if outcome.get("stdout"):
+                note += "\n代码输出：%s" % outcome["stdout"]
+            return note, attachment
+        if not os.path.isfile(outcome["path"]):
+            raise documents.DocumentError("产物不是一个文件，没法打印")
+        # 以实际产物的扩展名为准：模型常常写 .xlsx 却传了个别的名字
+        actual_ext = os.path.splitext(outcome["path"])[1].lower() or fallback_ext
+        if actual_ext not in SUPPORTED_EXTENSIONS:
+            shutil.rmtree(outcome.get("workdir") or "", ignore_errors=True)
+            raise documents.DocumentError(
+                "产物是 %s，打印认不了；打印只支持 %s。" %
+                (actual_ext or "未知格式", "、".join(sorted(SUPPORTED_EXTENSIONS)))
+            )
+        source_dir = os.path.dirname(attachment.get("path") or "")
+        if not source_dir or not os.path.isdir(source_dir):
+            source_dir = tempfile.mkdtemp(prefix="xiaoma_out_")
+        stem = os.path.splitext(attachment.get("name") or "file")[0]
+        if requested:
+            final_name = os.path.splitext(requested)[0] + actual_ext
+        else:
+            final_name = stem + "_处理" + actual_ext
+        final_path = os.path.join(source_dir, uuid.uuid4().hex + actual_ext)
+        try:
+            shutil.move(outcome["path"], final_path)
+        finally:
+            shutil.rmtree(outcome.get("workdir") or "", ignore_errors=True)
+
+        updated = {
+            "path": final_path,
+            "name": final_name,
+            "kind": kind_of(final_name),
+            "size": os.path.getsize(final_path),
+            "pages": pdf_page_count(final_path) if kind_of(final_name) == "pdf" else None,
+        }
+        note = "已生成《%s》（%d 字节），这一步要打印的就是它。" % (
+            final_name, updated["size"],
+        )
+        if outcome.get("stdout"):
+            note += "\n代码输出：%s" % outcome["stdout"]
+        return note, updated
+
+    def _print_file(self, payload):
+        """确认之后真正打印；成功就把临时文件删掉，失败留到 TTL 方便重试。"""
+        payload = payload or {}
+        result = self.printer.print_file(
+            payload.get("path"),
+            copies=payload.get("copies") or 1,
+            pages=payload.get("page_indices"),
+            printer_name=payload.get("printer") or "",
+            doc_name=payload.get("name") or "",
+        )
+        if result.get("ok"):
+            try:
+                os.remove(payload.get("path"))
+            except OSError:
+                pass
+        return result
+
     @staticmethod
     def _tool_metadata(used_tools):
         mappings = {
@@ -863,6 +1151,7 @@ class Assistant:
             "fact_search": ("facts", "search"),
             "fact_list": ("facts", "list"),
             "profile_set": ("profile", "store"),
+            "printer_print": ("printer", "print"),
             "get_current_date": ("date", "query"),
         }
         business = [mappings[name] for name in used_tools if name in mappings and name != "get_current_date"]

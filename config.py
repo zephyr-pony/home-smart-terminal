@@ -45,6 +45,10 @@ LLM_MODEL_DECISION = _get("LLM_MODEL_DECISION", "")
 # 思考模式：值原样传给网关（commandcode: off 关闭 / low…max 按档位；aisp: none 关闭）
 # 留空表示不传该参数；网关不认这个字段时留空，改用 LLM_CHAT_TEMPLATE_KWARGS
 LLM_REASONING_EFFORT = _get("LLM_REASONING_EFFORT", "")
+# 模型自己调 set_thinking(true) 后用的思考档位；语音场景默认 off，需要时再升。
+LLM_THINKING_EFFORT = _get("LLM_THINKING_EFFORT", "medium")
+# 记不记录「这轮有没有开思考」（data/thinking.jsonl，调试用，可关）
+THINKING_LOG_ENABLED = _get_int("THINKING_LOG_ENABLED", 1)
 # 部分后端（llama.cpp / vLLM）用 chat_template_kwargs 关思考，值是 JSON，如
 # LLM_CHAT_TEMPLATE_KWARGS={"enable_thinking": false}
 LLM_CHAT_TEMPLATE_KWARGS = _get("LLM_CHAT_TEMPLATE_KWARGS", "")
@@ -52,6 +56,8 @@ LLM_CHAT_TEMPLATE_KWARGS = _get("LLM_CHAT_TEMPLATE_KWARGS", "")
 # 留空 = 交给 requests 的默认行为。2026-11-23 实测：同一条请求直连 65 s、
 # 走本机代理 4.7 s（NO_PROXY 设了值会让 requests 跳过 Windows 注册表代理）。
 LLM_PROXY = _get("LLM_PROXY", "")
+# 上网搜索/抓页面走哪个代理；留空 = 直连（默认不借 LLM_PROXY）。
+WEB_PROXY = _get("WEB_PROXY", "")
 
 # 看一眼之后，画面描述在会话里保留多久（秒）。只在内存里，不进记忆库：
 # 用户拍完接着问「那是什么牌子」要能接上，但三天后还拿旧画面回答就是错的。
@@ -175,6 +181,20 @@ MEMORY_DISTILL_INTERVAL_HOURS = _get_int("MEMORY_DISTILL_INTERVAL_HOURS", 6)
 MEMORY_DISTILL_MAX_GROUPS = _get_int("MEMORY_DISTILL_MAX_GROUPS", 10)
 MEMORY_DISTILL_SUMMARY_CHARS = _get_int("MEMORY_DISTILL_SUMMARY_CHARS", 60)
 MEMORY_DISTILL_CHECK_SECONDS = _get_int("MEMORY_DISTILL_CHECK_SECONDS", 900)
+
+# ---- 打印（D61）----
+# 部署在 Linux，走 CUPS（lp / lpstat）；Windows 打印队列不在支持范围。
+PRINTER_ENABLED = _get_bool("PRINTER_ENABLED", True)
+# CUPS 队列名（`lpstat -a` 第一列）；空 = 系统默认队列
+PRINTER_NAME = _get("PRINTER_NAME", "")
+# 远程 CUPS 服务器（host:port，如 192.168.1.15:631）；空 = 本机 CUPS。
+# 容器部署时填家里共享打印机那台 CUPS，容器里不用自己跑 cupsd。
+PRINTER_SERVER = _get("PRINTER_SERVER", "")
+# 允许使用的队列（逗号分隔）；空 = 只允许 PRINTER_NAME / 系统默认
+PRINTER_ALLOWED = _get("PRINTER_ALLOWED", "")
+PRINTER_MAX_PAGES = _get_int("PRINTER_MAX_PAGES", 50)
+PRINTER_MAX_COPIES = _get_int("PRINTER_MAX_COPIES", 20)
+PRINTER_FILE_TTL_SECONDS = _get_int("PRINTER_FILE_TTL_SECONDS", 30 * 60)
 
 # ---- 到期提醒 ----
 REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"

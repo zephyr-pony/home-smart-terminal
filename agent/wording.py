@@ -217,6 +217,36 @@ def profile_reply(args):
     return "好，我记住了：%s的%s是「%s」。" % (who, aspect, value)
 
 
+def print_question(args, user_text=None):
+    """打印确认：念清文件、份数、页码和打印机，纸和墨是花掉就回不来的。"""
+    args = args or {}
+    name = str(args.get("name") or "这份文件").strip()
+    copies = args.get("copies") or 1
+    pages = str(args.get("pages") or "").strip()
+    page_text = ("第 %s 页" % pages) if pages else "全部页"
+    printer = str(args.get("printer") or "").strip() or "默认打印机"
+    return "要打印《%s》%d 份，%s，用 %s 吗？回复「确认」或「取消」。" % (
+        name, int(copies), page_text, printer,
+    )
+
+
+def print_reply(args, result):
+    """打印回执：内容来自参数和 CUPS 的返回，不让模型自己说。
+
+    纯文本由 CUPS 排版，提交时还不知道页数；这时只报份数，不编「共 N 页」。
+    """
+    args = args or {}
+    result = result or {}
+    name = str(args.get("name") or result.get("name") or "文件").strip()
+    copies = result.get("copies") or args.get("copies") or 1
+    pages = result.get("pages")
+    printer = str(result.get("printer") or args.get("printer") or "打印队列").strip()
+    head = "已提交到打印队列（%s）：《%s》%d 份" % (printer, name, int(copies))
+    if pages:
+        head += "，共 %d 页" % int(pages)
+    return head + "。"
+
+
 def echo_prefix(executed, reply=""):
     """执行完的极短回显，接在模型回复前面。
 

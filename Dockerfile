@@ -7,6 +7,12 @@
 FROM python:3.12-slim
 
 ARG INSTALL_STT=0
+# 打印（D61）：装 CUPS 客户端和 LibreOffice。不需要打印就传 0，镜像小很多。
+ARG INSTALL_PRINT=1
+# 国内网络构建：APT_MIRROR=mirrors.aliyun.com，PIP_INDEX_URL=清华 PyPI。
+# 默认走官方源，海外用户不用改。
+ARG APT_MIRROR=deb.debian.org
+ARG PIP_INDEX_URL=
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -14,16 +20,47 @@ ENV PYTHONUNBUFFERED=1 \
     DATA_DIR=/data \
     SERVER_HOST=0.0.0.0 \
     SERVER_PORT=8000 \
-    STT_ENABLED=0
+    STT_ENABLED=0 \
+    TZ=Asia/Shanghai
 
 WORKDIR /app
 
+# 打印依赖是系统包，不是 pip 包：
+#   cups-client/cups-common 提供 lp / lpstat 和 MIME 表（提交到远程 CUPS 用）
+#   libreoffice 负责 Office → PDF；fonts-noto-cjk 保证中文不乱码
+RUN if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
+      sed -i "s|deb.debian.org|$APT_MIRROR|g" \
+          /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
+    fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && if [ "$INSTALL_PRINT" = "1" ]; then \
+         apt-get install -y --no-install-recommends \
+             cups-client cups-common cups-filters \
+             libreoffice fonts-noto-cjk \
+         && fc-cache -f; \
+       fi \
+    && rm -rf /var/lib/apt/lists/*
+
+# 读 PDF 正文（file_read）：单独一层，改了不影响上面那层的大缓存
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# 给模型装环境用（D62）：git 拉仓库、curl 下载、node/npm 跑现成的 MCP 工具
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git curl ca-certificates nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-server.txt requirements-stt.txt ./
-RUN pip install --no-cache-dir -r requirements-server.txt \
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} \
+        -r requirements-server.txt \
     && if [ "$INSTALL_STT" = "1" ]; then \
          pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
              torch==2.8.0 torchaudio==2.8.0 \
-         && pip install --no-cache-dir -r requirements-stt.txt; \
+         && pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} \
+             -r requirements-stt.txt; \
        fi
 
 COPY . .
@@ -31,8 +68,10 @@ COPY . .
 # 容器里不要用 root 跑；/data 提前建好并交给运行用户，
 # 这样命名卷第一次挂载时继承的是可写权限。
 RUN useradd --create-home --uid 10001 xiaoma \
-    && mkdir -p /data /home/xiaoma/.cache \
+    && mkdir -p /data /data/work /data/home /home/xiaoma/.cache \
     && chown -R xiaoma:xiaoma /data /app /home/xiaoma
+# soffice / 字体缓存都往 HOME 写；不显式设会继承 /root
+ENV HOME=/home/xiaoma
 USER xiaoma
 
 VOLUME ["/data"]

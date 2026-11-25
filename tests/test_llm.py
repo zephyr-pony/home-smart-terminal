@@ -2,6 +2,8 @@
 
 重点是 reasoning_effort：网关默认会跑思考模式，语音场景下白等好几秒。
 """
+import pytest
+
 import llm
 
 
@@ -196,17 +198,61 @@ def test_stream_assembles_tool_calls(monkeypatch):
     assert message["tool_calls"][0]["function"]["arguments"] == '{"keywords":"牛奶"}'
 
 
-def test_proxy_passed_when_configured(monkeypatch):
-    """直连 65 s、走本机代理 4.7 s：配了 LLM_PROXY 就必须把 proxies 传给 requests。"""
-    captured = {}
-    monkeypatch.setattr(llm, "REASONING_EFFORT", "")
+def test_direct_first_then_proxy_on_connection_error(monkeypatch):
+    """先直连；直连不通且配了代理，才改走代理（而不是反过来）。"""
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"role": "assistant", "content": "好"}}]}
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kwargs):
+        calls.append(kwargs.get("proxies"))
+        if len(calls) == 1:
+            raise llm.requests.exceptions.ConnectionError("no route")
+        return FakeResponse()
+
+    monkeypatch.setattr(llm, "BASE_URL", "http://example.com/v1")
+    monkeypatch.setattr(llm, "API_KEY", "test-key")
     monkeypatch.setattr(llm, "LLM_PROXY", "http://127.0.0.1:10808")
-    client = make_llm(monkeypatch, captured)
-    client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
-    assert captured["proxies"] == {
+    monkeypatch.setattr(llm, "_prefer_proxy_until", 0.0)
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+
+    client = llm.LLM("test-model")
+    data = client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+
+    assert data["choices"][0]["message"]["content"] == "好"
+    assert calls[0] is None
+    assert calls[1] == {
         "http": "http://127.0.0.1:10808",
         "https": "http://127.0.0.1:10808",
     }
+    # 直连失败后，下一次请求直接走代理，不再重复等超时
+    assert llm._use_proxy() is True
+
+
+def test_http_error_does_not_switch_to_proxy(monkeypatch):
+    """400/401 是参数问题，换代理没用，不要偷偷改路。"""
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kwargs):
+        calls.append(kwargs.get("proxies"))
+        raise llm.requests.exceptions.HTTPError("401")
+
+    monkeypatch.setattr(llm, "BASE_URL", "http://example.com/v1")
+    monkeypatch.setattr(llm, "API_KEY", "test-key")
+    monkeypatch.setattr(llm, "LLM_PROXY", "http://127.0.0.1:10808")
+    monkeypatch.setattr(llm, "_prefer_proxy_until", 0.0)
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+
+    client = llm.LLM("test-model")
+    with pytest.raises(RuntimeError):
+        client.chat_with_tools([{"role": "user", "content": "hi"}], tools=[])
+
+    assert calls and all(proxy is None for proxy in calls)
 
 
 def test_proxy_untouched_when_unset(monkeypatch):

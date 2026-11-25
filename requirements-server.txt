@@ -10,3 +10,8 @@ aiohttp==3.13.5
 # MCP 接入点的 WebSocket 由 uvicorn 交给它实现；探针脚本也用它当客户端
 websockets==15.0.1
 pywebpush==2.1.2
+# 打印（D61）：Linux CUPS 队列 + PDF 页数 + 图片校验
+pypdfium2==5.15.2
+pillow==11.3.0
+# 文件读写（D62）：模型看表格内容、用代码改表格（openpyxl 只认 xlsx/xlsm）
+openpyxl==3.1.5

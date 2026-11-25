@@ -12,11 +12,17 @@ services:
       context: .
       args:
         INSTALL_STT: "0"
+        # 打印（D61）：CUPS 客户端 + LibreOffice；不打印就改 0
+        INSTALL_PRINT: "1"
+        # 国内网络构建拉不到 deb.debian.org / PyPI 时，取消下面两行注释：
+        # APT_MIRROR: mirrors.aliyun.com
+        # PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
     image: xiaoma:local
     container_name: xiaoma
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # 宿主机端口用 .env 的 SERVER_PORT（家里是 8208），容器里固定 8000
+      - "${SERVER_PORT:-8208}:8000"
     env_file:
       - .env
     environment:
@@ -25,9 +31,19 @@ services:
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "8000"
       DATA_DIR: /data
+      TZ: "${TZ:-Asia/Shanghai}"
+      # 容器里的 127.0.0.1 是容器自己：HA 在宿主机上，所以走 host.docker.internal。
+      # 数据路径不要用 DB_PATH 覆盖，默认跟着 DATA_DIR=/data 走。
+      # LLM_PROXY / WEB_PROXY 留空 = 直连；只有确实需要代理时才填（如企业网络）。
+      # 打印在 .env 里配：
+      #   PRINTER_SERVER=192.168.1.15:631   # 家里共享打印机的 CUPS 地址
+      #   PRINTER_NAME=HP1020               # lpstat -h <server> -a 的队列名
       # 镜像默认没装 funasr；这里盖掉 .env 里的 STT_ENABLED=1，避免启动即崩。
       # 用 --build-arg INSTALL_STT=1 构建后，再把这一行改成 "1"。
       STT_ENABLED: "0"
+    extra_hosts:
+      # 和 xiaozhi 容器一致：容器里用 host.docker.internal 访问宿主机
+      - "host.docker.internal:host-gateway"
     volumes:
       # 用命名卷：Linux 上换成 bind mount（./data:/data）会撞上容器内 uid 10001
       # 没有写权限的问题。要 bind mount 就先 chown 10001:10001 ./data。

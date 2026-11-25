@@ -33,13 +33,15 @@ TIMEOUT = 120
 RETRIES = 2
 
 
-def _apply_reasoning(body):
+def _apply_reasoning(body, effort_override=None):
     """把「关思考」的相关参数塞进请求体，两个后端参数名不同，都支持。
 
     取值原样透传：各网关自己的枚举不一样（commandcode 只认 off/low/medium/high/xhigh/max，
     aisp 认 none），代码替它归一化只会在换网关时静默 400。留空或写 `omit` 才表示不传。
+    `effort_override` 用来按场景覆盖（如文件任务临时放开思考），None 表示用配置。
     """
-    effort = str(REASONING_EFFORT or "").strip().lower()
+    effort = REASONING_EFFORT if effort_override is None else effort_override
+    effort = str(effort or "").strip().lower()
     if effort and effort != "omit":
         body["reasoning_effort"] = effort
     if CHAT_TEMPLATE_KWARGS:
@@ -47,17 +49,47 @@ def _apply_reasoning(body):
     return body
 
 
-def _proxies():
-    """可选的本机代理。
+# 先直连；直连不通且配了代理时才走代理。家用网络里代理说关就关，
+# 小马不能反过来依赖它——2026-11-25 实测容器直连网关 1 秒 200。
+# 直连失败后记住一段时间，期间直接走代理，避免每次请求都先等一次超时。
+_DIRECT_RETRY_SECONDS = 300
+_prefer_proxy_until = 0.0
 
-    只在配了 `LLM_PROXY` 时才干预。直连网关的正常机器不该被绕一圈；而设了
-    `NO_PROXY` 环境变量的机器上，requests 会跳过 Windows 注册表里的系统代理，
-    结果「裸连」到远端——2026-11-23 实测同一条请求直连 65 s、走本机代理 4.7 s。
-    """
+
+def _proxy_map():
     proxy = str(LLM_PROXY or "").strip()
     if not proxy:
         return None
     return {"http": proxy, "https": proxy}
+
+
+def _use_proxy():
+    return bool(LLM_PROXY) and time.time() < _prefer_proxy_until
+
+
+def _note_direct_failure():
+    """直连不通：接下来一段时间先走代理，过一阵再试直连。"""
+    global _prefer_proxy_until
+    if not LLM_PROXY:
+        return
+    _prefer_proxy_until = time.time() + _DIRECT_RETRY_SECONDS
+    print("⚠️ 直连网关不通，改用代理（%d 秒后再试直连）" % _DIRECT_RETRY_SECONDS)
+
+
+def _note_proxy_failure():
+    """代理也不通：回到直连，别把一个坏代理一直挂在路径上。"""
+    global _prefer_proxy_until
+    _prefer_proxy_until = 0.0
+    print("⚠️ 代理连不上，改回直连")
+
+
+def _is_connectivity_error(exc):
+    """只对「路不通」换路径；400/401 这类是参数问题，换代理也没用。"""
+    return isinstance(exc, (
+        requests.exceptions.ProxyError,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.ConnectTimeout,
+    ))
 
 
 def _describe_error(exc):
@@ -94,6 +126,7 @@ class LLM:
         retries=RETRIES,
         on_delta=None,
         model=None,
+        reasoning_effort=None,
     ):
         """调用带 tools 参数的接口，返回完整响应 dict（供 agent loop 使用）。
 
@@ -121,17 +154,18 @@ class LLM:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         # 网关支持 reasoning_effort：none 即关闭思考，能省掉几秒
-        _apply_reasoning(body)
+        _apply_reasoning(body, reasoning_effort)
 
         last_error = None
         for attempt in range(retries + 1):
+            proxies = _proxy_map() if _use_proxy() else None
             try:
                 resp = requests.post(
                     f"{BASE_URL}/chat/completions",
                     json=body,
                     headers={"Authorization": f"Bearer {API_KEY}"},
                     timeout=TIMEOUT,
-                    proxies=_proxies(),
+                    proxies=proxies,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -145,6 +179,14 @@ class LLM:
                 return data
             except (requests.RequestException, ValueError) as exc:
                 last_error = _describe_error(exc)
+                # 先直连：不通且配了代理，换代理立刻重试，不进退避等待
+                if proxies is None and _proxy_map() and _is_connectivity_error(exc):
+                    _note_direct_failure()
+                    continue
+                # 代理也不通：回到直连重试
+                if proxies is not None and _is_connectivity_error(exc):
+                    _note_proxy_failure()
+                    continue
                 if attempt < retries:
                     time.sleep(1 + attempt)
 
@@ -165,6 +207,7 @@ class LLM:
         max_tokens=512,
         on_delta=None,
         model=None,
+        reasoning_effort=None,
     ):
         """流式版本：拿到一段就回调一段，返回与 chat_with_tools 相同结构。
 
@@ -184,19 +227,41 @@ class LLM:
             body["max_tokens"] = max_tokens
         _apply_reasoning(body)
 
+        proxies = _proxy_map() if _use_proxy() else None
         try:
-            resp = requests.post(
-                f"{BASE_URL}/chat/completions",
-                json=body,
-                headers={"Authorization": f"Bearer {API_KEY}"},
-                timeout=TIMEOUT,
-                stream=True,
-                proxies=_proxies(),
-            )
-            resp.raise_for_status()
-            return self._consume_stream(resp, on_delta)
+            return self._stream_once(body, proxies, on_delta)
         except Exception as exc:
+            # 直连不通就先试代理，代理也不通再回到直连 —— 和 chat_with_tools 一致
+            if proxies is None and _proxy_map() and _is_connectivity_error(exc):
+                _note_direct_failure()
+                try:
+                    return self._stream_once(body, _proxy_map(), on_delta)
+                except Exception as proxy_exc:
+                    _note_proxy_failure()
+                    raise RuntimeError(
+                        f"LLM 流式请求失败：{_describe_error(proxy_exc)}"
+                    ) from proxy_exc
+            if proxies is not None and _is_connectivity_error(exc):
+                _note_proxy_failure()
+                try:
+                    return self._stream_once(body, None, on_delta)
+                except Exception as direct_exc:
+                    raise RuntimeError(
+                        f"LLM 流式请求失败：{_describe_error(direct_exc)}"
+                    ) from direct_exc
             raise RuntimeError(f"LLM 流式请求失败：{_describe_error(exc)}") from exc
+
+    def _stream_once(self, body, proxies, on_delta):
+        resp = requests.post(
+            f"{BASE_URL}/chat/completions",
+            json=body,
+            headers={"Authorization": f"Bearer {API_KEY}"},
+            timeout=TIMEOUT,
+            stream=True,
+            proxies=proxies,
+        )
+        resp.raise_for_status()
+        return self._consume_stream(resp, on_delta)
 
     @staticmethod
     def _consume_stream(resp, on_delta):

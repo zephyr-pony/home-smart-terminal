@@ -8,13 +8,36 @@
  * 策略：页面导航用「网络优先，失败回退缓存」；静态资源缓存优先；
  * /api/ 一律走网络，不缓存（数据实时性优先）。
  */
-var CACHE_NAME = 'xiaoma-shell-v3';
+var CACHE_NAME = 'xiaoma-shell-v4';
 var SHELL = [
   '/',
   '/manifest.json',
   '/static/icons/icon-192.png',
   '/static/icons/icon-512.png'
 ];
+
+// 连不上小马又没有缓存时给的页面：宁可显示一句话，也不要白屏。
+// 从主屏图标打开是 standalone，没有地址栏，白屏等于什么都诊断不了。
+function offlinePage() {
+  var html = '<!doctype html><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>小马连不上</title>'
+    + '<body style="margin:0;background:#1b1f2a;color:#e8ecf4;'
+    + 'font:16px/1.6 -apple-system,BlinkMacSystemFont,\'PingFang SC\',sans-serif;'
+    + 'display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px">'
+    + '<div style="max-width:22em">'
+    + '<h1 style="font-size:18px;margin:0 0 12px">连不上小马</h1>'
+    + '<p style="color:#8b93a8;margin:0 0 18px">服务可能没启动，或者手机不在同一个网络里。</p>'
+    + '<p style="color:#8b93a8;margin:0 0 18px">地址：'
+    + self.location.origin + '</p>'
+    + '<button onclick="location.reload()" style="padding:10px 18px;border:0;'
+    + 'border-radius:10px;background:#4c8bf5;color:#fff;font-size:15px">重试</button>'
+    + '</div>';
+  return new Response(html, {
+    status: 503,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' }
+  });
+}
 
 self.addEventListener('install', function(event) {
   event.waitUntil(
@@ -49,11 +72,19 @@ self.addEventListener('fetch', function(event) {
     event.respondWith(
       fetch(request)
         .then(function(response) {
-          var copy = response.clone();
-          caches.open(CACHE_NAME).then(function(cache) { cache.put('/', copy); });
+          // 只缓存真正的页面：之前不判断状态码，502/401 也会被当成首页存下来，
+          // 之后离线打开主屏图标就是一片白（standalone 模式连报错页都没有）
+          if (response && response.ok) {
+            var copy = response.clone();
+            caches.open(CACHE_NAME).then(function(cache) { cache.put('/', copy); });
+          }
           return response;
         })
-        .catch(function() { return caches.match('/'); })
+        .catch(function() {
+          return caches.match('/').then(function(hit) {
+            return hit || offlinePage();
+          });
+        })
     );
     return;
   }

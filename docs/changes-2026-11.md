@@ -1372,3 +1372,107 @@ compose 注释和 doctor 的提示里都写明了怎么开。
   无关跳过、失败重试、不重复蒸馏、新成员重开、调度判定）。
 - 真模型实测：6 条记忆分成「牛奶」「电费」两组，各合并成一句，
   摘要落在最新那条，老条目摘要和原文原样保留，条数不变。
+
+### 内网打印（D61）
+
+- 目标：网页里上传文件，说「打印两份，1到2页」，小马确认后打印。
+- 部署方向修正：服务器是 **Linux**，原先按 Windows 打印队列 + GDI + Office COM
+  写的版本全部移除；打印改走 **CUPS**（`lp` / `lpstat`），不依赖本机操作系统。
+- 链路：PDF / 图片 / 纯文本直接交给 CUPS（`cups-filters` 负责转换）；
+  Office 先用 LibreOffice（`soffice --headless --convert-to pdf`）转 PDF。
+- 入口：`POST /api/print/files` 上传（类型白名单、10MB、内容 magic 校验），
+  返回 `file_id`；聊天带 `file_id` 时只在这一轮把 `printer_print` 给模型看。
+- 确认：打印无条件先问（文件、份数、页码、队列），确认后由
+  `ConfirmationManager` 调适配器；成功后立刻删临时文件，失败保留到 TTL。
+- 约束：份数/页数有上限（默认 20 份 / 50 页）；页码在 guard 里只做语法解析，
+  越界由适配器按真实页数拦；队列固定用配置里的 `PRINTER_NAME`，不采纳模型自己挑。
+- 服务器依赖：CUPS 客户端（`lp` / `lpstat`）；Office 额外要 LibreOffice。
+  队列名用 `lpstat -h <server> -a` 查。开发机是 Windows，`lp` 不存在，打印会如实显示不可用。
+- 单测 501 → 527，新增 `tests/test_print.py` 26 条（CUPS 命令、远程 `-h`、页码、上传校验、
+  Office 转换、份数/页数护栏、附件确认流、上传接口），外部命令全部 mock，不依赖本机 CUPS。
+- 部署：Dockerfile 加 `INSTALL_PRINT=1`（cups-client + LibreOffice + 中文字体），
+  compose 映射宿主机 `${SERVER_PORT}`，打印队列通过 `PRINTER_SERVER=192.168.1.15:631`、
+  `PRINTER_NAME=HP1020` 配置；容器只发 IPP 任务，不需要本地 cupsd。
+- 2026-11-25 回家验收（Docker Desktop / Linux 容器）：
+  - 镜像构建完成（`xiaoma:local`），容器 healthy，8208 → 8000，`/healthz` 正常；
+  - 容器内 `lpstat -h 192.168.1.15:631 -a` 看到 `HP1020 accepting requests`；
+  - 网页链路走通：上传单页 PDF → 「打印这份文件，一份」→ 确认句
+    「要打印《print-test.pdf》1 份，全部页，用 HP1020 吗？」→ 回「确认」→
+    CUPS 任务 `HP1020-7`（用户 `xiaoma`）完成，真实出纸，临时文件已删；
+  - 容器里 LLM（走宿主代理）与 `/v1`（小智入口）都正常；
+  - 数据卷 `xiaoma-data` 接管原 `data/*.db`，`DATA_DIR=/data` 生效。
+- 两个部署坑（已处理）：
+  - `.env` 里残留 `MEMORY_DB_PATH=./data/memory.db` 会让库落到卷外，已删；
+    `LLM_PROXY` / `HOME_BASE_URL` 在 compose 里改成 `host.docker.internal`；
+  - WSL2 是 `networkingMode=mirrored`，容器发布的端口要过 **Hyper-V 防火墙**，
+    已给 8208 加 `Xiaoma-8208` 入站规则（和 xiaozhi 的 8400-8403 同样做法）；
+    手机浏览器访问 `http://192.168.2.40:8208` 验证通过——宿主机自测局域网 IP 会超时，
+    那是镜像模式的 hairpin，不代表外部访问失败。
+- 小智侧提醒桥（`XIAOMA_BASE_URL`）原先还是 8200，容器重建后才指向 8208；
+  `restart` 不会重载环境变量，改 compose 后必须 `docker compose up -d` 重建。
+
+### 文件处理与通用能力（D62）
+
+- 起因：用户让「把表格列宽调一下，打在一页纸上」「把两列相乘再打印」。原来只有
+  「原样打印」一条路，模型没有能读文件、改文件的工具，只能回「做不到」。
+- 第一版按需求加了 `fit_page`（LibreOffice `SinglePageSheets`），被否掉：那是把
+  用户的每个想法都写死成一个参数，想法无限、参数也无限。已全部撤回。
+- 最终方向：补**通用通道**，不补功能。
+  - `file_read`：表格 → 工作表名/行列数/列字母/前 40 行；PDF → `pdftotext` 正文；
+    Word → 解 `word/document.xml`；文本直读。
+  - `find_tools`：列 PATH 里真正存在的命令（soffice / pdftotext / gs / node …）和
+    已装 Python 包，模型按关键词查，不凭印象假设。
+  - `run_python`：在临时目录跑模型写的代码，输入 `XIAOMA_IN`、输出 `XIAOMA_OUT`；
+    产物接替这一轮的打印附件，可以「先算再打」。清空环境变量、30 秒、1GB、CPU 上限。
+  - `run_shell`：`bash -lc`，`/data/work` 持久工作目录、`pip install --user` 装到
+    `/data/home`（重启还在）；非 root，装不了 apt 系统包；90 秒超时。
+  - `web_search` / `web_fetch`：必应中国站优先、DuckDuckGo 兜底，`site:` 可限定
+    GitHub / PyPI / ModelScope；抓页面正文，超时、1MB、6000 字截断、不抓内网；
+    默认直连，只有显式配 `WEB_PROXY` 才走代理。
+- 打印工具跟着调整：`printer_print` 只要有打印机就给模型看（不再要求本轮先有附件），
+  这样「run_python 生成文件 → 打印」能在一轮里完成；没有文件时调用会被拦下并说明。
+- 镜像：`openpyxl`、`poppler-utils`、`git/curl/nodejs/npm`，`/data/work` 与 `/data/home`。
+- 单测 527 → 546（新增 `tests/test_documents.py`、`tests/test_capabilities.py`）；
+  shell 用例在没有 bash 的机器上跳过，联网用例全部 mock。
+- 参考：OpenCode 自己也是「工具目录 + 权限 + MCP 运行时发现」，提示词只写身份和边界，
+  能力靠工具描述——D62 沿用这个结构，只是把工具换成了这台家用服务器能做的事。
+- 网关访问策略：**先直连，连不上才走 `LLM_PROXY`**，并记住 5 分钟（期间优先代理、
+  过后自动再试直连）；`400/401` 这类参数错误不换路径。容器里代理指向
+  `host.docker.internal:10808`，用户关掉代理也不影响小马。
+- 2026-11-25 真实链路（容器 + 真实模型）：上传 13×4 的报价表，说「把数量和单价相乘，
+  加一列合计，然后打印」→ `file_read` 读到列字母 → `run_python` 用 openpyxl 生成
+  《报价表_含合计.xlsx》（`配件1 2×3.8=7.6`，末行 `24×7.1=170.4`）→ `printer_print`
+  确认 → CUPS 任务 `HP1020-9` 完成。全程 32 秒，未人工干预。
+- 2026-11-25 版式提示词：按用户要求把「打印前先算列宽」写进系统提示词（不用代码拦）：
+  估算总宽 vs A4 可打印宽度 → 收窄最宽的几列 → 仍超宽就横向（landscape）→ 必要时
+  按页宽缩放。实测同一张 13×4 报价表：模型把列宽收到 A14/B8/C10/D14/E12，
+  设 `fitToWidth=1`，CUPS 任务 `HP1020-10` 打出 **1 页**（此前默认 2 页）。
+- 这次联调暴露的三个用法问题（都已修）：
+  - `max_tokens=512` 会把模型写的代码截断在半句，半截代码被当成回复念出来；
+    文件任务现在给 2048，并且带文件时最多 10 轮。
+  - `LLM_REASONING_EFFORT=off` 时模型只会「试探环境」；开成 `medium` 后一次做对。
+    语音场景嫌慢可以再关，但文件任务需要思考。
+  - 探测用的 `run_python` 会产出临时文件，曾把「打印目标」顶掉，导致后续读的都是
+    探测产物；现在输入固定为用户原始文件（`XIAOMA_IN` / `XIAOMA_SOURCE`），
+    没有产出文件就保持原打印目标。
+
+### D63 思考开关交给模型 + 观察记录（2026-11-25）
+
+- 不再按「语音 / 文件」硬切档位，改成模型自己判断：每轮默认 `LLM_REASONING_EFFORT`
+  （语音场景 `off`，快）；模型觉得要多步推理/写代码/算表格，就调 `set_thinking(true)`，
+  本轮后续请求改用 `LLM_THINKING_EFFORT`（默认 `medium`），下一轮用户说话时自然复位。
+- 工具只写「什么时候值得开」，不写流程；开关本身在 `assistant._agent_loop` 里拦，
+  不落到 `execute`，也不进会话历史。
+- 记录：`agent/thinking.py` 每轮追加一行 JSONL（`data/thinking.jsonl`，5MB 滚动）——
+  问的是什么、开没开、为什么、用了哪些工具、耗时、结果类型。只是本地追加一行，
+  不联网、不调模型；写失败不影响回答。`GET /api/thinking?limit=50` 返回最近记录 +
+  「开了几轮 / 没开几轮 / 各自平均耗时」，`THINKING_LOG_ENABLED=0` 可关。
+- 先观察，不预设结论：如果某类问题长期不开思考却总答错，就改工具描述，不要加关键词路由。
+- 首次观察（2026-11-25，真实模型 + 容器）：
+  - 「你好」→ 没开，3.6 秒；
+  - 「12×37+8 说清过程」→ 没开，11.4 秒，答对（口语算术不必开，属合理）；
+  - 上传报价表「加合计、压一页、打印」→ 第一版（工具描述只说「多步推理才开」）
+    模型**没开**，改用 4 次 `run_python` 才做对，34.6 秒；
+    把「带附件要改文件/要打印，第一步就开」写进工具描述和系统提示后，同一句
+    模型主动 `set_thinking(true)`（原因：「要改表格加合计列并控制打印版式在一页内」），
+    20.7 秒完成，1 页出纸。记录里 `tools` 会带上 `set_thinking`，便于统计。

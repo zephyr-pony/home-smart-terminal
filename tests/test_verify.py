@@ -199,7 +199,7 @@ class ScriptedLLM:
         self.calls.append("plain")
         return self._next()
 
-    def chat_with_tools_stream(self, messages, tools, on_delta=None):
+    def chat_with_tools_stream(self, messages, tools, on_delta=None, **kwargs):
         self.calls.append("stream")
         return self._next()
 

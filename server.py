@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import traceback
+import uuid
 import wave
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -50,6 +51,7 @@ from config import (
     MEMORY_DISTILL_MAX_GROUPS,
     MEMORY_DISTILL_SUMMARY_CHARS,
     MEMORY_DISTILL_THRESHOLD,
+    PRINTER_FILE_TTL_SECONDS,
     PUSH_ENABLED,
     PUSH_MAX_FAILURES,
     PUSH_TTL_SECONDS,
@@ -64,8 +66,13 @@ from config import (
     VAPID_SUBJECT,
 )
 from agent import wording
+from agent import thinking
 from agent.dates import parse_date_text
 from agent.distill import MemoryDistiller, distillation_due
+from adapters.printer import (
+    SUPPORTED_EXTENSIONS, PrintError, kind_of, office_available, pdf_page_count,
+    validate_file,
+)
 from assistant import Assistant
 from adapters.home_ws import run_event_stream
 from adapters.mcp_endpoint import MCPEndpoint
@@ -147,6 +154,42 @@ push_sender: WebPushSender = None
 
 # 记忆蒸馏（D60）：lifespan 里建，后台循环按深夜/阈值触发
 distiller: MemoryDistiller = None
+
+# 待打印文件（D61）：file_id -> {id, path, name, kind, size, pages, at, client_id}
+# 只在内存里登记，文件落 _tmp_dir；打印成功或过期就删。
+_PRINT_FILES = {}
+_PRINT_LOCK = threading.Lock()
+
+
+def _purge_print_files(now=None):
+    """清掉过期/已删除的上传文件；顺手把磁盘上的临时文件删掉。"""
+    now = now or time.time()
+    expired = []
+    with _PRINT_LOCK:
+        for file_id, item in list(_PRINT_FILES.items()):
+            if now - item["at"] > PRINTER_FILE_TTL_SECONDS:
+                expired.append(_PRINT_FILES.pop(file_id))
+    for item in expired:
+        try:
+            os.remove(item["path"])
+        except OSError:
+            pass
+
+
+def _get_print_file(file_id, client_id=""):
+    """取一个待打印文件；不存在/过期/不属于这个客户端都返回 None。"""
+    _purge_print_files()
+    with _PRINT_LOCK:
+        item = _PRINT_FILES.get(str(file_id or ""))
+        if not item:
+            return None
+        owner = item.get("client_id") or ""
+        if owner and client_id and owner != str(client_id).strip():
+            return None
+        if not os.path.exists(item["path"]):
+            _PRINT_FILES.pop(item["id"], None)
+            return None
+        return dict(item)
 
 # 到期提醒缓存（提醒循环按 REMINDER_INTERVAL_SECONDS 刷新）
 due_items = []
@@ -777,6 +820,8 @@ class ChatRequest(BaseModel):
     client_id: str = Field(default="", max_length=MAX_CLIENT_ID_CHARS)
     # 从到期提醒点进来时带上的任务；只影响这一轮，不落库
     task_id: Optional[int] = Field(default=None, ge=0)
+    # 网页里先上传的待打印文件（D61）；只在这一轮生效
+    file_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class ConfigUpdate(BaseModel):
@@ -1148,6 +1193,22 @@ async def api_stats(_auth=Depends(require_api_token)):
     data = await asyncio.to_thread(_stats_sync)
     data["ok"] = True
     return data
+
+
+@app.get("/api/thinking")
+async def api_thinking(limit: int = 50, _auth=Depends(require_api_token)):
+    """观察「模型自己决定的思考开关」（D63）：最近 N 轮 + 粗统计。
+
+    只读调试数据，不是用户资产；`data/thinking.jsonl` 删了也不影响任何功能。
+    """
+    rows = await asyncio.to_thread(thinking.tail, limit)
+    stats = await asyncio.to_thread(thinking.summary, max(limit, 200))
+    return {
+        "ok": True,
+        "enabled": bool(thinking.ENABLED),
+        "items": rows,
+        "summary": stats,
+    }
 
 
 @app.get("/api/memories")
@@ -1707,10 +1768,17 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
 
+    attachment = None
+    if req.file_id:
+        attachment = _get_print_file(req.file_id, req.client_id)
+        if attachment is None:
+            raise HTTPException(status_code=400, detail="文件已过期，请重新上传")
+
     try:
         # 编排是同步阻塞（memory 检索 + LLM 调用），丢线程池避免卡事件循环
         result = await asyncio.to_thread(
-            assistant.process_text, req.text, req.client_id, task_id=req.task_id,
+            assistant.process_text, req.text, req.client_id,
+            task_id=req.task_id, attachment=attachment,
         )
     except Exception as e:
         traceback.print_exc()
@@ -1727,6 +1795,78 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
         "domain": result.get("domain", "chat"),
         "action": result.get("action", "chat"),
         "pending_action": result.get("pending_action"),
+    }
+
+
+@app.post("/api/print/files")
+async def api_print_upload(file: UploadFile = File(...), client_id: str = Form(""),
+                           _auth=Depends(require_api_token)):
+    """接收待打印文件（D61）：落临时目录，返回 file_id，随下一条聊天消息使用。"""
+    if assistant is None or _tmp_dir is None:
+        raise HTTPException(status_code=503, detail="服务尚未就绪")
+    if not assistant.printer_ready:
+        raise HTTPException(status_code=503, detail="当前部署没有可用的打印机（Linux 服务器需要 CUPS）")
+    if len(client_id) > MAX_CLIENT_ID_CHARS:
+        raise HTTPException(status_code=422, detail="client_id 过长")
+
+    original = os.path.basename(file.filename or "").strip()
+    ext = os.path.splitext(original)[1].lower()
+    if not original or ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail="不支持的文件类型；支持 PDF、图片、TXT/Markdown、Office",
+        )
+
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="文件是空的")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="文件太大，最多 10MB")
+
+    file_id = uuid.uuid4().hex
+    folder = os.path.join(_tmp_dir, "print")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, file_id + ext)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    try:
+        validate_file(path, original)
+    except PrintError as exc:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=415, detail=str(exc))
+
+    kind = kind_of(original)
+    if kind == "office" and not office_available():
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=415,
+            detail="服务器没装 LibreOffice，Office 文档先另存为 PDF 再发",
+        )
+    pages = pdf_page_count(path) if kind == "pdf" else None
+    _purge_print_files()
+    with _PRINT_LOCK:
+        _PRINT_FILES[file_id] = {
+            "id": file_id,
+            "path": path,
+            "name": original,
+            "kind": kind,
+            "size": len(data),
+            "pages": pages,
+            "at": time.time(),
+            "client_id": (client_id or "").strip(),
+        }
+    return {
+        "file_id": file_id,
+        "name": original,
+        "kind": kind,
+        "size": len(data),
+        "pages": pages,
     }
 
 

@@ -59,8 +59,9 @@ class FakeAssistant:
         self.seen_device_camera = None
 
     def process_text(self, text, client_id, on_delta=None, device_camera=False,
-                     task_id=None):
+                     task_id=None, attachment=None):
         self.seen_device_camera = device_camera
+        self.seen_attachment = attachment
         if on_delta is not None:
             on_delta(text)
         return {

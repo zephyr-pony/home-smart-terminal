@@ -48,13 +48,15 @@ class ConfirmationRequired(Exception):
 
 class ConfirmationManager:
     def __init__(self, store, memory, items, ttl_seconds=PENDING_ACTION_TTL_SECONDS,
-                 tool_runner=None):
+                 tool_runner=None, print_runner=None):
         self.store = store
         self.memory = memory
         self.items = items
         self.ttl_seconds = ttl_seconds
         # 写操作确认需要回放工具调用；由 Assistant 注入，避免 agent 层依赖 tools
         self.tool_runner = tool_runner
+        # 打印确认后真正出纸；同样由 Assistant 注入，agent 层不 import 设备适配器
+        self.print_runner = print_runner
 
     def get_pending(self, conversation_id):
         pending = self.store.get_pending(conversation_id)
@@ -113,6 +115,41 @@ class ConfirmationManager:
     def _execute(self, pending):
         action_type = pending.get("action_type")
         payload = pending.get("payload") or {}
+
+        # 打印（D61）：确认后由适配器出纸，回执用参数和返回值拼，不让模型复述。
+        if action_type == "print_file" and self.print_runner is not None:
+            try:
+                result = self.print_runner(payload)
+            except Exception as exc:
+                return {
+                    "kind": "done",
+                    "type": "chat",
+                    "domain": "printer",
+                    "action": "error",
+                    "reply": f"打印失败：{exc}",
+                }
+            if not (isinstance(result, dict) and result.get("ok")):
+                return {
+                    "kind": "done",
+                    "type": "chat",
+                    "domain": "printer",
+                    "action": "error",
+                    "reply": str(result) or "打印失败，检查一下打印机。",
+                }
+            reply = wording.print_reply(payload, result)
+            self.store.record_proposal(
+                "print_file",
+                {key: payload.get(key) for key in ("name", "copies", "pages", "printer")},
+                "committed",
+                reply,
+            )
+            return {
+                "kind": "done",
+                "type": "chat",
+                "domain": "printer",
+                "action": "print",
+                "reply": reply,
+            }
 
         # 画像（D59）：进来时已经被用户点头，这里只负责落库和回显。
         # 审计的 committed 由 ProposalService.store_profile 记，不在这里重复记。

@@ -812,6 +812,215 @@ def get_camera_tool():
     )
 
 
+def get_printer_tool():
+    """打印这一轮用户上传的文件（有打印机时把 schema 给模型）。
+
+    真正的出纸要等用户确认，由 assistant 拦截后走 ConfirmationManager；
+    这里的 execute 只是兜底，防止模型在没有文件时调用。
+    """
+    return _build(
+        name="printer_print",
+        description=(
+            "打印这一轮用户上传的文件（PDF / 图片 / 文本 / Office）。"
+            "只有用户附带了文件时才可用；打印前系统会自动向用户确认，调用后不用再问。"
+            "不知道文件里是什么就先调 file_read；要改内容或排版就先调 file_process，"
+            "它产出的新文件才是这一步要打印的文件。不要编造文件里写了什么。"
+        ),
+        properties={
+            "copies": {
+                "type": "integer",
+                "description": "打印几份，默认 1",
+            },
+            "pages": {
+                "type": "string",
+                "description": "页码范围，如 '1-3,5'；不传打印全部页",
+            },
+        },
+        required=[],
+        execute=lambda **kwargs: "这一轮没有附带文件，无法打印。",
+    )
+
+
+def get_file_tools():
+    """读取/处理这一轮上传的文件，外加一份「这台机器有什么工具」的清单（D62）。
+
+    为什么不内置「转格式」「改列宽」「两列相乘」这类工具：每个需求都加一个，
+    工具的数量会跟着用户的想象无限长。这里只给三样通用的东西：
+    - file_read：把文件内容变成模型能读的文本；
+    - find_tools：查这台机器装了哪些命令行工具和 Python 包；
+    - run_python：一段 Python，模型自己 import / 调 soffice / 算东西，
+      产出新文件后自动成为这一步的打印文件。
+    具体用什么库、走哪条命令，由模型自己看着办。
+    """
+    from adapters import documents
+
+    return [
+        _build(
+            name="file_read",
+            description=(
+                "读取这一轮用户上传文件的内容。表格返回工作表名、行列数和前 40 行"
+                "（带列字母，如 A=项目、B=一月），PDF 返回正文，Word 返回文字。"
+                "用户问文件里有什么、要按列运算或改版式之前，先调用它。"
+            ),
+            properties={},
+            required=[],
+            execute=lambda **kwargs: "这一轮没有附带文件。",
+        ),
+        _build(
+            name="find_tools",
+            description=(
+                "查这台服务器上装了哪些命令行工具和 Python 包（如 soffice、pdftotext、"
+                "gs、openpyxl）。做格式转换、拆合 PDF、算数、画图之前先查一下，"
+                "按查到的能力自己选，不要凭印象假设某个工具存在。"
+            ),
+            properties={
+                "query": {
+                    "type": "string",
+                    "description": "关键词，如 'pdf'、'office'、'image'；不传列全部",
+                },
+            },
+            required=[],
+            execute=lambda **kwargs: documents.inventory(kwargs.get("query")),
+        ),
+        _build(
+            name="run_python",
+            description=(
+                "跑一段 Python 处理附件（或从零生成一个文件），产出新文件用于打印。"
+                "输入路径在环境变量 XIAOMA_IN（没有附件时为空字符串），把结果存到 "
+                "环境变量 XIAOMA_OUT 指向的**文件路径**（它不是一个目录，直接 "
+                "wb.save(os.environ['XIAOMA_OUT']) 就行）；运行完这个文件自动成为"
+                "这一步的打印文件。XIAOMA_IN 始终是用户上传的原件，不会因为上一步"
+                "的产物而改变。"
+                "可以用容器里已装的库和命令行（先 find_tools 查），也可以用 subprocess "
+                "调 soffice 转格式。没有网络。"
+                "用户只是问内容时用 file_read 就够，不必跑代码。"
+            ),
+            properties={
+                "code": {
+                    "type": "string",
+                    "description": "要执行的 Python 代码；读写 XIAOMA_IN / XIAOMA_OUT",
+                },
+                "output_name": {
+                    "type": "string",
+                    "description": (
+                        "输出文件名（含扩展名，如 报价单_改.xlsx、结果.pdf）；"
+                        "不传沿用输入文件的扩展名"
+                    ),
+                },
+            },
+            required=["code"],
+            execute=lambda **kwargs: "这一轮没有附带文件。",
+        ),
+    ]
+
+
+def get_capability_tools():
+    """上网、装环境、跑命令：通用能力，不针对某个需求（D62）。
+
+    用户的原话是「就像现在我跟你一样」——查资料、找工具、装环境、跑起来。
+    这里只给通道，具体用哪个库、走哪条命令，由模型自己判断。
+    """
+    from adapters import shell as shell_mod
+    from adapters import web
+
+    def do_search(**kwargs):
+        try:
+            results = web.search(kwargs.get("query"), kwargs.get("n") or 5)
+        except web.WebError as exc:
+            return "错误：%s" % exc
+        return web.format_results(results)
+
+    def do_fetch(**kwargs):
+        try:
+            return web.fetch(kwargs.get("url"))
+        except web.WebError as exc:
+            return "错误：%s" % exc
+
+    def do_shell(**kwargs):
+        try:
+            result = shell_mod.run(kwargs.get("command"), kwargs.get("timeout"))
+        except shell_mod.ShellError as exc:
+            return "错误：%s" % exc
+        return shell_mod.format_result(result)
+
+    return [
+        _build(
+            name="web_search",
+            description=(
+                "搜网页（必应优先，DuckDuckGo 兜底），拿到标题、链接和摘要。"
+                "遇到不认识的格式、要找现成的库或工具时用；支持 site: 限定站点，"
+                "如 site:github.com、site:pypi.org、site:modelscope.cn、site:docs.python.org。"
+                "搜到的地址可以用 web_fetch 打开看细节。"
+            ),
+            properties={
+                "query": {"type": "string", "description": "搜索词"},
+                "n": {"type": "integer", "description": "返回几条，默认 5，最多 10"},
+            },
+            required=["query"],
+            execute=do_search,
+        ),
+        _build(
+            name="web_fetch",
+            description=(
+                "打开一个网页，返回去掉标签的正文（最多约 6000 字）。"
+                "用于看文档、README、报错页；只支持 http/https，不抓内网地址。"
+            ),
+            properties={
+                "url": {"type": "string", "description": "http/https 地址"},
+            },
+            required=["url"],
+            execute=do_fetch,
+        ),
+        _build(
+            name="run_shell",
+            description=(
+                "在服务器（Linux 容器）里执行 shell 命令，用来装环境和跑现成的工具。"
+                "工作目录 /data/work 会保留；pip install --user 装到 /data/home，重启还在。"
+                "当前用户不是 root，装不了 apt 系统包；缺系统包时如实告诉用户。"
+                "默认 90 秒超时；下载、编译这种慢活拆小一点或显式传 timeout。"
+            ),
+            properties={
+                "command": {"type": "string", "description": "要执行的命令"},
+                "timeout": {
+                    "type": "integer",
+                    "description": "超时秒数，默认 90，最大 600",
+                },
+            },
+            required=["command"],
+            execute=do_shell,
+        ),
+    ]
+
+
+def get_thinking_tool():
+    """让模型自己决定要不要开思考（D63）。默认关，省下语音场景的几秒。
+
+    真正切换在 assistant 的 agent loop 里；这个 execute 只是兜底。
+    """
+    return _build(
+        name="set_thinking",
+        description=(
+            "打开/关闭深度思考。问题需要多步推理、写代码、算表格、"
+            "比较方案或拿不准时，先调用 set_thinking(true) 再动手；"
+            "带附件要改文件、要打印、算法不止一步时，第一步就该开。"
+            "闲聊、查一条记录、时间天气这类不必开，直接回答。"
+            "开启后本轮后续步骤会慢几秒。"
+        ),
+        properties={
+            "enabled": {
+                "type": "boolean",
+                "description": "true 打开，false 关闭",
+            },
+            "why": {
+                "type": "string",
+                "description": "为什么需要/不需要，一句话",
+            },
+        },
+        required=["enabled"],
+        execute=lambda **kwargs: "思考开关由编排层处理。",
+    )
+
+
 def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
                   tasks=None, facts=None, home=None, weather=None):
     """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备 + 天气）。"""
@@ -832,4 +1041,8 @@ def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
         tools.append(get_weather_tool(weather))
     # 摄像头只在带摄像头的终端上可用；assistant 会按入口决定给不给模型看这个 schema
     tools.append(get_camera_tool())
+    # 文件读写同样只在带附件的那一轮露出来
+    tools += get_file_tools()
+    tools += get_capability_tools()
+    tools.append(get_thinking_tool())
     return tools

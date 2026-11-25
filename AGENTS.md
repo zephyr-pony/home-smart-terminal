@@ -25,6 +25,10 @@
 | `agent/verify.py` | 回复事实校验：口播的日期/星期/名字须与工具参数一致 |
 | `agent/distill.py` | 记忆蒸馏：同主题合并、只重算 summary，深夜/超阈值后台跑（D60） |
 | `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
+| `adapters/printer.py` | Linux CUPS 打印队列：PDF/图片/文本 + LibreOffice 转 Office（D61） |
+| `adapters/documents.py` | 读附件内容（表格/PDF/Word/文本）+ 临时目录跑模型写的 Python（D62） |
+| `adapters/shell.py` | 通用命令通道：`/data/work` 持久工作目录、清空环境变量、非 root（D62） |
+| `adapters/web.py` | 上网查：DuckDuckGo 搜索 + 抓页面正文，不抓内网（D62） |
 | `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
@@ -199,9 +203,39 @@ pytest tests -q
 - 新工具在 `tools.py` 用 `_build(...)` 注册，返回 `{"schema", "execute"}`；`assistant` 会自动聚合，核心循环不用改。
 - `execute(**kwargs)` 必须返回**字符串**（直接进 LLM 上下文）。
 - 参数名与 JSON Schema 保持一致；`assistant` 会把 `memory_store` 的 `summary`、`memory_search` 的关键词提取进返回值，改动工具名/参数时注意同步。
-- `camera_look` 是唯一的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
+- `camera_look` 是摄像头入口的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
 - 小智会把设备工具名的点换成下划线（`self.camera.take_photo` → `self_camera_take_photo`）再给 LLM；`/v1` 回 `tool_calls` 时**必须用请求里那个名字**，用带点的原始名它查不到工具，拍照会静默失败。判断有没有摄像头也要按归一化后的名字比。
 - `/v1` 里带 `image_url` 的请求走 `Assistant.describe_image`，不进 agent、不进记忆；图片只在内存里用一次，日志不打印 base64。描述本身在 `vision_context` 里留 `VISION_CONTEXT_SECONDS`（默认 180 秒）供下一句追问，过期即删、不进记忆库。
+- 打印（D61）：`printer_print` 只在**这一轮带上传附件**时才把 schema 给模型（同 camera 的思路），
+  不经过 `execute`，确认后由 `ConfirmationManager.print_runner` 调 `adapters/printer.py`。
+  文件经 `POST /api/print/files` 落临时目录，只对上传者 `client_id` 有效，打印成功即删；
+  服务器是 Linux，打印走 CUPS（`lp` / `lpstat`），Office 用 LibreOffice 转 PDF；
+  不要写任何 Windows 专用代码（打印队列、GDI、Office COM 都不在支持范围）。
+
+### 通用能力，不按需求加工具（D62）
+
+- 用户的每个新想法都不该变成一个新参数或新工具（「缩到一页」「转格式」「两列相乘」……）。
+  先问缺的是哪种**通用能力**：看见文件、查环境里有什么、跑代码/命令、上网查。
+- 对应通道：`file_read`（读内容）、`find_tools`（查已装命令和包）、`run_python`
+  （临时目录跑代码，产出新文件后自动成为待打印文件）、`run_shell`（bash，`/data/work`
+  持久、`pip install --user` 装到 `/data/home`）、`web_search` / `web_fetch`。
+- 这些工具的描述只写**能力与边界**（能干什么、装不装得下、有没有网络），不写操作步骤；
+  具体用哪个库、走哪条命令，由模型自己查、自己定。
+- 执行类工具的安全边界必须保持：子进程清空环境变量（密钥不进命令）、有超时、
+  以非 root 运行、`web_fetch` 不抓内网地址。它们**不是**沙箱，别在文档里说成沙箱。
+- 新增能力优先做成「通道 + 清单」，而不是「功能开关」；确实需要固定契约的
+  （打印、写库）才做专用工具。
+
+### 思考开关（D63）
+
+- 不按入口硬切「语音 off / 文件 medium」，交给模型判断：默认 `LLM_REASONING_EFFORT`，
+  模型调 `set_thinking(true)` 后本轮改用 `LLM_THINKING_EFFORT`，下一轮复位。
+- `set_thinking` 在 `assistant._agent_loop` 里拦，不落 `execute`、不进会话历史；
+  开关只影响本轮后续请求，不跨轮记忆。
+- 每轮记一行 `data/thinking.jsonl`（问题 / 开没开 / 原因 / 工具 / 耗时），
+  `GET /api/thinking` 看最近记录和统计。这是调试观测数据，不是用户资产，
+  可随时删，`THINKING_LOG_ENABLED=0` 关闭；写失败不许影响回答。
+- 观察到某类问题长期不开思考却总答错，改工具描述，不要加关键词路由。
 
 ### 工具输出：给事实，不给话术
 
@@ -313,7 +347,7 @@ pytest tests -q
 ## 常见坑
 
 - 缺少 `.env` 时 `LLM()` 会在启动阶段抛 `RuntimeError`；import 模块本身不受影响，pytest 收集也不会失败。
-- LLM 请求莫名变慢（65 s 级）先看 `LLM_PROXY`：设了 `NO_PROXY` 环境变量的机器上，requests 会跳过 Windows 注册表里的系统代理，变成裸连远端；本机走代理可能只要几秒。
+- LLM 请求莫名变慢（65 s 级）先看 `LLM_PROXY`：设了 `NO_PROXY` 环境变量的机器上，requests 会跳过 Windows 注册表里的系统代理，变成裸连远端；本机走代理可能只要几秒。现在的策略是**先直连、连不上才走 `LLM_PROXY`**（并记住 5 分钟），配了代理也不会拖慢正常直连。
 - `stt.py` 内部才 `import funasr`，导入模块本身不会加载模型。
 - `TTS` 的私有事件循环刻意不关闭（Windows Proactor 下 close 会产生告警）。
 - agent loop 通过 `self.llm.chat_with_tools(...)` 调用 LLM，测试注入一个带同名方法的假实现即可。

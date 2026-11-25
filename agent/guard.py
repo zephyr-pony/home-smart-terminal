@@ -15,7 +15,9 @@
 import re
 from datetime import date, datetime
 
+from adapters.printer import PrintError, parse_pages
 from agent.dates import has_date_hint, parse_date_text, parse_recurrence, resolve_due
+from config import PRINTER_MAX_COPIES, PRINTER_MAX_PAGES
 
 # 会落库的写工具；用来判断「用户要写，但没有真的写」
 WRITE_TOOLS = (
@@ -239,6 +241,36 @@ _CLAIM_RE = re.compile(
 _DEVICE_CLAIM_RE = re.compile(
     r"已经.{0,10}(关|开|调|启动|停止)|已(关|开|调|设|启动|停止)"
 )
+
+
+def guard_print_args(args):
+    """打印参数：份数夹到上限、页码只做语法解析、打印机固定用配置那台（D61）。
+
+    页码在 guard 里不查总页数：Office/文本要渲染后才知道有多少页，
+    真正的越界检查在打印适配器里做。模型给打印机名也不采纳——单机部署
+    只允许配置里那台，避免一句「用彩色那台」就打错纸。
+    """
+    cleaned = dict(args or {})
+    try:
+        copies = int(cleaned.get("copies") or 1)
+    except (TypeError, ValueError):
+        copies = 1
+    cleaned["copies"] = max(1, min(copies, PRINTER_MAX_COPIES))
+    cleaned.pop("printer", None)
+
+    spec = cleaned.pop("pages", None)
+    if spec is None or not str(spec).strip():
+        cleaned["page_indices"] = None
+        return cleaned, None
+    try:
+        indices = parse_pages(spec, None)
+    except PrintError as exc:
+        return cleaned, str(exc)
+    if len(indices) > PRINTER_MAX_PAGES:
+        return cleaned, "一次最多打印 %d 页" % PRINTER_MAX_PAGES
+    cleaned["page_indices"] = indices
+    cleaned["pages"] = str(spec).strip()
+    return cleaned, None
 
 
 def guard_false_claim(user_text, used_tools, reply):
