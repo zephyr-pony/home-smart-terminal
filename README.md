@@ -354,6 +354,10 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `WEATHER_LAT` / `WEATHER_LON` | 空 | 可选，填了跳过城市名匹配，避免撞同名小地方 |
 | `WEATHER_API_HOST` | 空 | 可选，和风专属 API Host；与 Key 都填才启用和风 |
 | `WEATHER_API_KEY` | 空 | 可选，和风 API KEY（不是 JWT） |
+| `HOT_CONTEXT_ENABLED` | `1` | 会话开始时把画像/常用事实/最近记忆注入 system prompt（冻结快照） |
+| `HOT_CONTEXT_MAX_CHARS` | `900` | 热点上下文总字符预算，超了按 画像 > 常用事实 > 最近记忆 截断 |
+| `HOT_CONTEXT_FACTS` | `6` | 常用事实最多注入几条 |
+| `HOT_CONTEXT_MEMORIES` | `5` | 最近记忆最多注入几条 |
 
 ## 使用方式
 

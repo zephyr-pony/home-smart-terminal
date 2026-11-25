@@ -157,6 +157,15 @@ WEATHER_CITY = _get("WEATHER_CITY", "")
 WEATHER_LAT = _get("WEATHER_LAT", "")
 WEATHER_LON = _get("WEATHER_LON", "")
 
+# ---- 热点上下文（D58）----
+# 会话开始时把画像、常用事实、最近记忆注入 system prompt，会话内不变（冻结快照）。
+# 目的是省掉「查一次记忆」那一轮 LLM（语音场景约 2-5 秒），所以必须小：
+# 预算超了就按 画像 > 常用事实 > 最近记忆 的优先级截断。
+HOT_CONTEXT_ENABLED = _get_bool("HOT_CONTEXT_ENABLED", True)
+HOT_CONTEXT_MAX_CHARS = _get_int("HOT_CONTEXT_MAX_CHARS", 900)
+HOT_CONTEXT_FACTS = _get_int("HOT_CONTEXT_FACTS", 6)
+HOT_CONTEXT_MEMORIES = _get_int("HOT_CONTEXT_MEMORIES", 5)
+
 # ---- 到期提醒 ----
 REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"
 REMINDER_INTERVAL_SECONDS = _get_int("REMINDER_INTERVAL_SECONDS", 60)  # 后台扫描间隔

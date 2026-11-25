@@ -10,6 +10,10 @@ from datetime import datetime
 
 from config import (
     CONFIRM_WRITE_ACTIONS,
+    HOT_CONTEXT_ENABLED,
+    HOT_CONTEXT_FACTS,
+    HOT_CONTEXT_MAX_CHARS,
+    HOT_CONTEXT_MEMORIES,
     MAX_SESSIONS,
     SESSION_CONTEXT_MAX_CHARS,
     SESSION_CONTEXT_TURNS,
@@ -171,6 +175,12 @@ class Assistant:
         # 注入 agent 的历史轮数（0=关闭多轮上下文）与单条截断长度
         self.session_context_turns = SESSION_CONTEXT_TURNS
         self.session_context_max_chars = SESSION_CONTEXT_MAX_CHARS
+        # 热点上下文冻结快照（D58）：client_id -> {"text", "at"}，过期即重建
+        self.hot_contexts = {}
+        self.hot_context_enabled = HOT_CONTEXT_ENABLED
+        self.hot_context_max_chars = HOT_CONTEXT_MAX_CHARS
+        self.hot_context_facts = HOT_CONTEXT_FACTS
+        self.hot_context_memories = HOT_CONTEXT_MEMORIES
         self._session_lock = threading.RLock()
         # 最近一次「看到」的画面描述：client_id -> {"text", "at"}。
         # 只在内存里、有 TTL，不进记忆库——拍照是看一眼，不是一条事实。
@@ -363,6 +373,101 @@ class Assistant:
                 return None
             return item["text"]
 
+    # ---------- 热点上下文（D58） ----------
+
+    def _hot_context(self, client_id):
+        """会话开始时的冻结快照：画像 + 常用事实 + 最近记忆。
+
+        为什么冻结而不是每轮重建：system prompt 一旦每轮变化，前缀缓存全部失效，
+        token 成本翻倍；而且同一通对话里记忆本来就不该漂移（Hermes 的冻结快照同理）。
+        预算很小（默认 900 字），所以只能装热点，长尾仍然走工具检索。
+        """
+        if not self.hot_context_enabled:
+            return ""
+        key = (client_id or "cli").strip()
+        now = time.time()
+        with self._session_lock:
+            item = self.hot_contexts.get(key)
+            if item and now - item["at"] <= self.session_ttl_seconds:
+                return item["text"]
+            self.hot_contexts.pop(key, None)
+
+        text = self._build_hot_context()
+        with self._session_lock:
+            self.hot_contexts[key] = {"text": text, "at": now}
+            if len(self.hot_contexts) > self.max_sessions:
+                oldest = min(
+                    self.hot_contexts, key=lambda k: self.hot_contexts[k]["at"]
+                )
+                self.hot_contexts.pop(oldest, None)
+        return text
+
+    def _build_hot_context(self):
+        """按 画像 > 常用事实 > 最近记忆 的优先级拼，超出预算就停。"""
+        budget = max(0, self.hot_context_max_chars)
+        if budget <= 0:
+            return ""
+
+        profile_lines = []
+        fact_lines = []
+        try:
+            facts = self.facts.search(n_results=60) if self.facts is not None else []
+        except Exception:
+            facts = []
+        for fact in facts:
+            subject = str(fact.get("subject") or "").strip()
+            predicate = str(fact.get("predicate") or "").strip()
+            value = str(fact.get("value") or "").strip()
+            if not subject or not value:
+                continue
+            line = "- %s %s：%s" % (subject, predicate, value) if predicate else (
+                "- %s：%s" % (subject, value)
+            )
+            if subject.startswith("用户") or "偏好" in predicate:
+                profile_lines.append(line)
+            elif len(fact_lines) < self.hot_context_facts:
+                fact_lines.append(line)
+
+        mem_lines = []
+        try:
+            memories = (
+                self.memory.list_all(self.hot_context_memories)
+                if self.memory is not None else []
+            )
+        except Exception:
+            memories = []
+        for mem in memories:
+            summary = str(mem.get("summary") or mem.get("text") or "").strip()
+            if summary:
+                mem_lines.append("- [%s] %s" % (mem.get("time", ""), summary))
+
+        blocks = []
+        if profile_lines:
+            blocks.append(("用户画像", profile_lines))
+        if fact_lines:
+            blocks.append(("常用事实", fact_lines))
+        if mem_lines:
+            blocks.append(("最近记忆", mem_lines))
+        if not blocks:
+            return ""
+
+        text = "【已知信息】"
+        for title, lines in blocks:
+            chunk = "\n%s：\n%s" % (title, "\n".join(lines))
+            if len(text) + len(chunk) <= budget:
+                text += chunk
+                continue
+            # 整块放不下：先加标题，再按行塞，塞不下就停（后面的块优先级更低）
+            header = "\n%s：" % title
+            if len(text) + len(header) <= budget:
+                text += header
+            for line in lines:
+                if len(text) + len(line) + 2 > budget:
+                    break
+                text += "\n" + line
+            break
+        return text if len(text) > len("【已知信息】") else ""
+
     def _task_context_note(self, task_id):
         """把「点开的那条提醒」说成一条 system 提示；没有有效 id 就返回空串。
 
@@ -430,6 +535,10 @@ class Assistant:
                 sys_prompt += HOME_CONTROL_PROMPT_LINE
         if device_camera:
             sys_prompt += CAMERA_PROMPT_LINE
+        # 热点上下文（D58）：画像/常用事实/最近记忆，冻结快照，省掉查记忆那一轮
+        hot = self._hot_context(client_id)
+        if hot:
+            sys_prompt += "\n\n" + hot
         messages = [{"role": "system", "content": sys_prompt}]
         messages.extend(self._context_messages(client_id))
         # 刚拍过照：把画面描述带进这一轮，追问「那是什么牌子」不用再拍一张。
