@@ -18,6 +18,8 @@ from config import (
     WEATHER_API_HOST,
     WEATHER_API_KEY,
     WEATHER_CITY,
+    WEATHER_LAT,
+    WEATHER_LON,
 )
 from agent.clarify import Clarifier
 from agent.confirm import (
@@ -40,6 +42,14 @@ from memory import Memory
 from items import Items
 from llm import LLM
 from tools import get_all_tools
+
+
+def _float_or_none(value):
+    """配置里的经纬度是字符串；空或非法返回 None，交给 Open-Meteo 走城市名。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # 内置命令识别（宽泛匹配，兼容语音变体）
@@ -131,8 +141,11 @@ class Assistant:
         self.confirm_write_actions = parse_confirm_actions(CONFIRM_WRITE_ACTIONS)
         # 实体管理：新增/改名/别名/列表
         self.entities = EntityService(self.clarifier.store)
-        # 天气：外部 HTTP，配置不全时 configured=False，工具不会注册
-        self.weather = Weather(WEATHER_API_HOST, WEATHER_API_KEY, WEATHER_CITY)
+        # 天气：默认 Open-Meteo（零 key），配了和风 key 就用和风；配置不全时不注册
+        self.weather = Weather(
+            WEATHER_API_HOST, WEATHER_API_KEY, WEATHER_CITY,
+            _float_or_none(WEATHER_LAT), _float_or_none(WEATHER_LON),
+        )
         # 工具注册表（memory + 日期 + items + 实体）
         self.tools = get_all_tools(
             self.memory,

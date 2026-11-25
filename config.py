@@ -146,12 +146,16 @@ HOME_EVENT_COOLDOWN_SECONDS = _get_int("HOME_EVENT_COOLDOWN_SECONDS", 600)
 # 设备巡检间隔：门铃/有人停留这类事件等 60 秒就没意义了，单独跑短周期
 HOME_SCAN_SECONDS = _get_int("HOME_SCAN_SECONDS", 15)
 
-# ---- 天气（和风）----
-# api_host 是账号专属域名，必须和 api_key 配对；用公共域名会 403 Invalid Host。
-# 三项都为空时不注册天气工具，模型就不会假装能查。
+# ---- 天气 ----
+# 默认走 Open-Meteo（不需要 key）：填 WEATHER_CITY 即可；配了和风的
+# Host+Key 则优先用和风（中国局地数据更准）。两者都没配就不注册天气工具。
 WEATHER_API_HOST = _get("WEATHER_API_HOST", "")
 WEATHER_API_KEY = _get("WEATHER_API_KEY", "")
 WEATHER_CITY = _get("WEATHER_CITY", "")
+# Open-Meteo 的城市名匹配偶尔会撞上同名小地方（「烟台」命中辽宁小村），
+# 填了经纬度就跳过 geocoding，最稳。
+WEATHER_LAT = _get("WEATHER_LAT", "")
+WEATHER_LON = _get("WEATHER_LON", "")
 
 # ---- 到期提醒 ----
 REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"

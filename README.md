@@ -350,9 +350,10 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `HOME_WATCH_EVENTS` | 空 | 盯哪些 `event` 实体（摄像头移动侦测等），空 = 不盯 |
 | `HOME_EVENT_COOLDOWN_SECONDS` | `600` | 同一路事件多久内不重复提醒 |
 | `HOME_SCAN_SECONDS` | `15` | 设备巡检间隔（秒）；物品/任务仍是 60 秒 |
-| `WEATHER_API_HOST` | 空 | 和风天气专属 API Host，形如 `abc123.re.qweatherapi.com`；与 Key 必须配对 |
-| `WEATHER_API_KEY` | 空 | 和风 API KEY（不是 JWT）；Host/Key 任一为空则不注册天气工具 |
-| `WEATHER_CITY` | 空 | 家庭所在城市，问天气不指定城市时用它 |
+| `WEATHER_CITY` | 空 | 家庭所在城市；只填这一项就能用 Open-Meteo（不需要 key） |
+| `WEATHER_LAT` / `WEATHER_LON` | 空 | 可选，填了跳过城市名匹配，避免撞同名小地方 |
+| `WEATHER_API_HOST` | 空 | 可选，和风专属 API Host；与 Key 都填才启用和风 |
+| `WEATHER_API_KEY` | 空 | 可选，和风 API KEY（不是 JWT） |
 
 ## 使用方式
 
