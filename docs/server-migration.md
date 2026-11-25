@@ -93,7 +93,8 @@ WantedBy=multi-user.target
 - [ ] Linux 上没有 `host.docker.internal`。两种改法：
       compose 里加 `extra_hosts: ["host.docker.internal:host-gateway"]`，
       或者干脆 `network_mode: host`，把 LLM 地址写成 `http://127.0.0.1:8200/v1`
-- [ ] 端口：Windows 上为了绕开保留端口段改成了 8300/8303；Linux 上可以改回 8000/8003，
+- [ ] 端口：Windows 上为了绕开保留端口段改成了 8400/8403（该段会随重启变化，见
+      `docs/xiaozhi-setup.md`）；Linux 上可以改回 8000/8003，
       也可以保留，**改完要同步设备 OTA 里的 WebSocket 地址**
 - [ ] `mcp_endpoint` 改成 `ws://127.0.0.1:8200/mcp_endpoint/mcp/?token=<MCP_TOKEN>`
       （同一台机器时不用走局域网 IP）
@@ -125,8 +126,8 @@ tar czf /backup/homeassistant-$(date +%F).tgz -C data homeassistant
 | PWA 安装 | 绑定旧「源」 | 重新「添加到主屏」 |
 | localStorage 聊天记录 | 绑定旧「源」 | 不会跟过去（可接受；要保留就导出） |
 | 小智 MCP 地址 | `ws://<旧 IP>:8200/mcp_endpoint/mcp/?token=…` | xiaozhi-server 配置 |
-| 小智服务端自身 | `D:\xiaozhi-server`（8000/8003 或 8300/8303） | 新机器 compose + `.config.yaml` |
-| 摄像头视觉地址 | `server.vision_explain=http://<旧 IP>:8303/mcp/vision/explain` | `.config.yaml`（必须是**设备能访问到**的新 LAN IP） |
+| 小智服务端自身 | `D:\xiaozhi-server`（8000/8003 或 8400/8403） | 新机器 compose + `.config.yaml` |
+| 摄像头视觉地址 | `server.vision_explain=http://<旧 IP>:8403/mcp/vision/explain` | `.config.yaml`（必须是**设备能访问到**的新 LAN IP） |
 | 设备固件 OTA/WS 地址 | 旧 IP | 小智 OTA 返回的地址（本机部署时用新 IP） |
 | HA 回调 | `homeassistant.local` | 新机器的 `/etc/hosts` |
 | SSE / API 调用方 | 旧 IP | `docs/xiaozhi-mcp.md` 里的地址 |

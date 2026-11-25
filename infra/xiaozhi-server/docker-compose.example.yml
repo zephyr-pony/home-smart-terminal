@@ -16,10 +16,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      # ws 服务端
-      - "8300:8000"
+      # ws 服务端（Windows 保留端口段会随重启变化，先看 docs/xiaozhi-setup.md 再定端口）
+      - "8400:8000"
       # http：OTA / 视觉分析
-      - "8303:8003"
+      - "8403:8003"
     volumes:
       - ./data:/opt/xiaozhi-esp32-server/data
       - ./models/SenseVoiceSmall/model.pt:/opt/xiaozhi-esp32-server/models/SenseVoiceSmall/model.pt

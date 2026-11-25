@@ -8,13 +8,13 @@
 服务端返回的 STT 文本与 TTS 句子。
 
 前置：
-    - xiaozhi-server 已启动（默认 ws://127.0.0.1:8300/xiaozhi/v1/）
+    - xiaozhi-server 已启动（默认 ws://127.0.0.1:8400/xiaozhi/v1/）
     - 本机 server.py 已启动（/api/tts 与 /v1/chat/completions 可用）
     - 系统已安装 ffmpeg（winget install Gyan.FFmpeg）
 
 用法：
     python scripts/xiaozhi_probe.py "明天提醒我交电费"
-    python scripts/xiaozhi_probe.py --ws ws://192.168.2.40:8300/xiaozhi/v1/ "..."
+    python scripts/xiaozhi_probe.py --ws ws://192.168.2.40:8400/xiaozhi/v1/ "..."
 """
 import argparse
 import asyncio
@@ -29,8 +29,8 @@ import time
 import requests
 import websockets
 
-DEFAULT_WS = "ws://127.0.0.1:8300/xiaozhi/v1/"
-DEFAULT_API = "http://127.0.0.1:8200"
+DEFAULT_WS = "ws://127.0.0.1:8400/xiaozhi/v1/"
+DEFAULT_API = "http://127.0.0.1:8208"
 FRAME_MS = 60
 SAMPLE_RATE = 16000
 

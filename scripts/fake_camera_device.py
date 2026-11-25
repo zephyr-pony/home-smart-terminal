@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 import requests
 import websockets
 
-DEFAULT_WS = "ws://127.0.0.1:8300/xiaozhi/v1/"
+DEFAULT_WS = "ws://127.0.0.1:8400/xiaozhi/v1/"
 DEVICE_ID = "aa:bb:cc:dd:ee:01"
 CLIENT_ID = "fake-camera-01"
 DEFAULT_TEXT = "看看桌上有什么"

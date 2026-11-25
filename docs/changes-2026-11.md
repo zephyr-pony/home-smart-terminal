@@ -1261,3 +1261,61 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 - 验证时发现一个会反复咬人的点：容器重建会丢掉 `/home/xiaoma/.cache` 里的模型，
   每次重下 900MB。compose 因此加了 `xiaoma-cache` 卷，Dockerfile 里先把该目录建好并
   交给 uid 10001——否则命名卷挂上来会变成 root 属主，非 root 进程写不进去。
+
+## 40. 语音终端真机联调（2026-11-24）
+
+立创·实战派 S3（ESP32-S3 N16R8）到货，从刷机一路走到「语音 → 小马 → 播报」。
+
+### 环境上被咬的三处
+
+1. **Windows 保留端口段会变**：`netsh int ipv4 show excludedportrange protocol=tcp` 当时是
+   `8298-8397`，正好吃掉之前用的 8300/8303；Docker 绑定静默失败（`docker port` 为空、
+   容器里 netstat 却正常监听），换 8400/8403 才通。文档不能只写「8000 在保留段」，要写「每次核对」。
+2. **Docker 端口默认只对 loopback 生效**：手机连不上。放行 8400-8403 入站 + 把 WLAN 从
+   「公用网络」改成「专用」之后才可达；本机访问自己的 LAN IP 仍然超时（hairpin），不能当判据。
+3. **git 直连不通**：系统代理在 `127.0.0.1:10808`，git 不读它，克隆 ESP-IDF 直接超时；
+   得显式带 `-c http.proxy`。
+4. **第二天重启后保留段又变了**：`8108-8207` 这次包住了小马自己的 `8200`，uvicorn 直接
+   `Errno 13`（不是「端口被占」）。把 `.env` 的 `SERVER_PORT`、小智的 `base_url` /
+   `mcp_endpoint`、compose 的 `XIAOMA_BASE_URL` 一起挪到 `8208` 才恢复。这个坑每次重启都
+   可能重现，应该在 `doctor.py` 里前置检查，而不是等 bind 失败。
+
+### 刷机
+
+- ESP-IDF 用 `release/v6.1`（上游最低 6.0.1）。`install.bat` 要求 Python 3.10+，系统是 3.9，
+  换成 uv 的 3.12 再把 PATH 指过去。
+- `scripts/build.py lckfb/szpi-esp32s3 --language zh-CN --wake-word nihaoxiaozhi` 一次配好
+  板型 / 设备端 AEC / 唤醒词；`CONFIG_OTA_URL` 它不管，得事后改 sdkconfig 再增量编译。
+- 上游当天把 `78/esp-wifi-connect` 升到 4.0.0，但组件 CDN 索引还没同步（API 能查到、
+  `components-file` 的 json 里没有），依赖求解失败；退回上一个提交（`~3.3.3`）即可。
+- 擦除 + 烧录后设备自动进配网 AP（`Xiaozhi-5C1D` / `http://192.168.4.1`），选 2.4G 的「糖豆」。
+
+### 真机实测
+
+- 摄像头是 **GC2145**（200 万），不是资料里写的 OV2640；`self.camera.take_photo` 已注册。
+- 链路：ASR（SenseVoiceSmall，本地）→ `/v1` → 小马工具 → TTS。识别 400-500 ms，
+  端到端首句 10-17 s，两轮 LLM 占大头。
+- 「再见」不结束会话：小智的 `check_direct_exit` 要求整句**等于**退出词，而人总说「好的，再见」。
+  打补丁改成句尾匹配，并在 prompt 里让模型明确告别时调 `handle_exit_intent`
+  （它本来就在 function_call 的工具列表里，只是没人告诉模型）。
+- 天气怎么都不行，最后定位到：**`/v1` 根本不把小智的 `tools` 转发给模型**，只用来判断
+  有没有摄像头。小智侧加的 `get_weather` 插件在这条链路上是死代码，改描述、改 prompt 都没用。
+
+### 天气改由小马提供
+
+- 新增 `adapters/weather.py` + `weather_query` 工具；和风的地理接口已挪到
+  `/geo/v2/city/lookup`（旧 `/v2/...` 404），天气仍是 `/v7/weather/{now,3d}`。
+- 按 D53 只返回事实清单，**和风给的字段一个不裁剪**（实测第一版挑了「重要字段」，
+  用户问风力时模型就没数据可念）。穿衣建议照旧不写，实测模型自己补了「出门记得穿厚点」。
+- 和风的 `dew=21`（气温 1℃）、`cloud=91`（天气晴）这类自相矛盾的值也原样给出，
+  由模型决定说不说、怎么说。
+- 按 D56 又拆了一次：`scope=now / today / forecast`，实时、今天、未来分开取。
+  一次全灌会让「今天天气」带进 22:05 的实时值、问「现在」又拖着未来三天。
+  实测「现在外面几度」「今天穿什么」「明天冷不冷」三句分别只拿到对应范围。
+- 日期在工具里转成 `11月24日（周二）`，不让 ISO 串进语音。
+
+### 测试
+
+- 新增 `tests/test_weather.py` 6 条：只给事实（输出里不许出现「穿」「伞」）、geo 路径、
+  上游失败降级成人话、中文日期。
+- 457 → 463 passed。

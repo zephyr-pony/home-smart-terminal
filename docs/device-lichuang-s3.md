@@ -46,12 +46,12 @@
    - `Xiaozhi Assistant` → `Board Type` → `LCKFB SZPI ESP32-S3 (立创·实战派)`
    - `Enable Device-Side AEC` → 开（这块板要开，回采在 MIC3）
    - `Wake Word` → 见下面「唤醒词」
-   - `OTA URL` → `http://192.168.0.138:8303/xiaozhi/ota/`（本机小智服务端）
+   - `OTA URL` → `http://<PC-IP>:8403/xiaozhi/ota/`（本机小智服务端，当前 LAN IP 是 `192.168.2.40`）
 4. `idf.py -p COM<x> flash monitor`（Type-C 直接烧，不需要额外 USB-TTL）
 5. 首次启动进配网（AP `Xiaozhi-xxxx`），手机连上填 **2.4G** WiFi
 6. 设备连上后去小智服务端日志确认 `connection open` + 设备 ID；
    `D:\xiaozhi-server\data\.config.yaml` 的 `server.websocket` 必须是
-   `ws://192.168.0.138:8300/xiaozhi/v1/`（设备是从服务端下发的地址，不是固件里写死的）
+   `ws://192.168.2.40:8400/xiaozhi/v1/`（设备是从服务端下发的地址，不是固件里写死的）
 
 > 小智侧配置见 `docs/xiaozhi-setup.md`；反向提醒的桥已经跑在同一进程，刷完固件就能收到。
 
@@ -84,8 +84,8 @@
 
 摄像头（方向已定，见 `docs/ROADMAP.md` §26；刷完固件即可验证）：
 
-- [ ] **先验网络**：手机（关 Tailscale）打开 `http://<PC-IP>:8303/mcp/vision/explain` 应返回一行文字；
-      `ws://<PC-IP>:8300` 也要能连。本机访问自己的 LAN IP 会超时（Docker Desktop 转发），不能当判据
+- [ ] **先验网络**：手机（关 Tailscale）打开 `http://<PC-IP>:8403/xiaozhi/ota/` 应返回 JSON；
+      `ws://<PC-IP>:8400` 也要能连。本机访问自己的 LAN IP 会超时（Docker Desktop 转发），不能当判据
 - [ ] 看 monitor 里 sensor 探测到的型号（确认 200W 版本实际是哪颗）
 - [ ] 说「看看桌上有什么」→ 屏幕出现 `% self_camera_take_photo`，3–5 秒内播报
 - [ ] 记「拍照 → 开口」的实测耗时，和纯文字对比
@@ -97,7 +97,7 @@
 | 项 | 说明 | 处理 |
 |---|---|---|
 | 30W / 200W 两个版本 | sensor 不同，固件探测失败会没有摄像头功能 | 不影响语音；型号以 monitor 日志为准 |
-| 局域网端口可达性 | 本机访问自己的 `192.168.0.138:8300/8303` 超时（Docker Desktop 端口转发只对 loopback 生效），**真机未必**如此 | 刷机前用手机验证；不通就加防火墙规则或改 Docker 端口发布方式 |
+| 局域网端口可达性 | 本机访问自己的 `192.168.2.40:8400/8403` 超时（Docker Desktop 端口转发只对 loopback 生效），**真机未必**如此；另注意 Windows 保留端口段会变，`8300/8303` 已被 `8298-8397` 吃掉 | 刷机前用手机验证；不通就加防火墙规则或改 Docker 端口发布方式 |
 | 1000mAh + 摄像头 | 拍照瞬间电流峰值，SY8088 双路 1A 偏紧 | 先不接摄像头测语音，稳定后再开 |
 | 1W 喇叭 | 客厅背景噪声下听感偏小 | 真机听；必要时外接有源音箱（GH1.25/3.5 转接） |
 | 双麦在侧边开孔 | 指向性朝向随摆放变化 | 摆位当作验收项，不当作可调参数 |

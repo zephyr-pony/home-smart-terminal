@@ -76,8 +76,41 @@ def patch_app():
     )
 
 
+def patch_intent_exit():
+    """退出命令按「句尾」匹配。
+
+    上游用的是 `if text == cmd`，但人说话几乎总带前缀（「好的再见」「不用再见」），
+    去掉标点后整句相等反而永远匹配不上，会话会一直挂着等无语音超时。
+    """
+    _replace_once(
+        "core/handle/intentHandler.py",
+        "    for cmd in cmd_exit:\n        if text == cmd:\n",
+        "    for cmd in cmd_exit:\n"
+        "        # 小马：整句相等或句尾命中都算，避免「好的再见」这种说法漏掉\n"
+        "        if text == cmd or text.endswith(cmd):\n",
+        "退出命令句尾匹配",
+    )
+
+
+def patch_weather_tool_desc():
+    """去掉「本地天气已在上下文中，绝对不要调用」这句。
+
+    上游靠 prompt_manager 预取天气塞进 system prompt（模板要写 {{weather_info}}），
+    我们用的是自定义 prompt，没有这个预取；留着这句模型既不调工具、也没有数据，
+    只会回「我查不了天气」。
+    """
+    _replace_once(
+        "plugins_func/functions/get_weather.py",
+        "重要：本地未来7天天气已在上下文中提供，用户未指明其他城市时绝对不要调用此工具。",
+        "用户问天气时调用此工具；未指明城市时查本地（家庭所在城市）。",
+        "天气工具描述去掉禁调提示",
+    )
+
+
 if __name__ == "__main__":
     patch_websocket_server()
     patch_app()
+    patch_intent_exit()
+    patch_weather_tool_desc()
     print("小智提醒桥补丁完成")
     sys.exit(0)

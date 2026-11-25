@@ -21,13 +21,24 @@ copy C:\Users\<你>\.cache\modelscope\hub\iic\SenseVoiceSmall\model.pt D:\xiaozh
 ## 端口
 
 官方 compose 用 `8000`（WebSocket）和 `8003`（OTA/视觉）。这台机器上 8000/8100 落在
-Windows 保留端口段，所以映射改成 **8300 → 8000**、**8303 → 8003**。
+Windows 保留端口段，所以映射改成 **8400 → 8000**、**8403 → 8003**。
 
 ```yaml
 ports:
-  - "8300:8000"
-  - "8303:8003"
+  - "8400:8000"
+  - "8403:8003"
 ```
+
+> **保留端口段不是固定的**。Hyper-V/WSL 每次重启可能重新划走一段，2026-11-24 这台机器的
+> 保留段变成 `8298-8397`，正好吃掉原来的 8300/8303，Docker 静默绑定失败（`docker port`
+> 为空、容器里 `netstat` 却正常监听）。换端口前先核对：
+>
+> ```powershell
+> netsh int ipv4 show excludedportrange protocol=tcp
+> ```
+>
+> 优先选 `8400`/`8403`、`18800`/`18803` 这类不易撞车的号；改完必须 `docker port` 看到映射
+> 才算生效。
 
 ## 配置（data/.config.yaml）
 
@@ -36,11 +47,11 @@ server:
   ip: 0.0.0.0
   port: 8000
   http_port: 8003
-  websocket: ws://<局域网IP>:8300/xiaozhi/v1/   # 设备回来后用这个地址
+  websocket: ws://<局域网IP>:8400/xiaozhi/v1/   # 设备回来后用这个地址
   timezone_offset: +8
   # 摄像头拍完把图 POST 到这里（宿主机端口映射到容器 8003）。
   # 留空的话 get_vision_url() 返回空串，take_photo 拍完没地方传。
-  vision_explain: http://<局域网IP>:8303/mcp/vision/explain
+  vision_explain: http://<局域网IP>:8403/mcp/vision/explain
 
 prompt: |
   你叫小马，是这个家的生活助手。说话简短、口语化，像家里人聊天。
@@ -81,7 +92,7 @@ VLLM:
 - `host.docker.internal` 是容器访问宿主机的入口；`/v1/chat/completions` 由 `server.py` 提供
 - `Intent: function_call`：设备工具（拍照、音量、设备状态）只在这个模式下发；普通文本回复
   仍是 `content` 直送 TTS，不会多跑一轮
-- `vision_explain` 必须是**设备能访问到**的宿主机地址（Docker 里 8003 映射到 8303）。
+- `vision_explain` 必须是**设备能访问到**的宿主机地址（Docker 里 8003 映射到 8403）。
   上游启动日志那行「视觉分析接口是 http://172.18.0.2:8003/…」是硬编码打印**容器 IP**，
   不代表实际下发地址，别被它误导
 - `ASR.language: zh`，避免短句被 SenseVoice 误判成韩文/日文
@@ -123,7 +134,7 @@ python scripts/xiaozhi_probe.py "明天提醒我交电费"
 1. **握手必须带 `device-id`**（以及 `client-id`），否则 xiaozhi-server 直接断开且日志里
    只有一句 `connection open`，很难猜。
 2. 官方固件连的是 `xiaozhi.me`，设备回来后要刷开源固件并把 OTA/WebSocket 指向
-   `ws://<局域网IP>:8300/xiaozhi/v1/`。
+   `ws://<局域网IP>:8400/xiaozhi/v1/`。
 
 ## 实测延迟（2026-11-21）
 

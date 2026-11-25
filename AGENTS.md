@@ -45,6 +45,8 @@
 
 当前优先语音设备真机（小智 + ESP32）与真机验收；Web 控制台、CLI 和既有服务端能力继续维护；Android App 与 RAG 延后。
 
+设备语音链路现在是**自建的第三方小智服务端**（`infra/xiaozhi-server`），它是部署件、不是小马的模块依赖：小马本身只提供 `/v1` 和 MCP 接入点，网页/手机/API 不装它也能用。终局是把语音管线（WS 协议、Opus、VAD、打断）做进小马，见 ROADMAP D57。
+
 ### 开发顺序
 
 1. 阶段 0：分层重构（`domain/` / `agent/` / `adapters/`），保持现有行为。
@@ -122,7 +124,7 @@ pytest tests -q
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
 - 摄像头整条链用 `scripts/fake_camera_device.py --image 图.jpg`：假设备报工具、收调用、把图 POST 到
   `vision_explain`，验证 `tool_calls` 名字、设备驱动和播报。它先试 LAN 地址再退 `127.0.0.1`，
-  **不能替代**「另一台设备能不能连 8300/8303」的验证。
+  **不能替代**「另一台设备能不能连小智端口（当前 8400/8403）」的验证。
 - 旧数据迁移：`python scripts/migrate_legacy.py`（默认 dry-run，`--apply` 才写入并自动备份）。迁移逻辑在 `agent/legacy.py`，测试在 `tests/test_legacy.py`。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
 - 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`；任务/事实在 `tests/test_tasks.py` / `tests/test_facts.py`。
@@ -196,6 +198,26 @@ pytest tests -q
 - `camera_look` 是唯一的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
 - 小智会把设备工具名的点换成下划线（`self.camera.take_photo` → `self_camera_take_photo`）再给 LLM；`/v1` 回 `tool_calls` 时**必须用请求里那个名字**，用带点的原始名它查不到工具，拍照会静默失败。判断有没有摄像头也要按归一化后的名字比。
 - `/v1` 里带 `image_url` 的请求走 `Assistant.describe_image`，不进 agent、不进记忆；图片只在内存里用一次，日志不打印 base64。描述本身在 `vision_context` 里留 `VISION_CONTEXT_SECONDS`（默认 180 秒）供下一句追问，过期即删、不进记忆库。
+
+### 工具输出：给事实，不给话术
+
+- 工具返回**事实和结构化数据**，不返回成品话术（穿衣建议、开场白、语气、安慰）。这些由模型按用户是谁、今天要出门干什么、怕不怕冷自己组织；工具里写死就等于把 LLM 降级成模板填空（D53）。
+- 数据里的日期/时刻用中文格式（`11月24日（周二）`），不要把 ISO 串丢给模型——语音里「二零二六杠十一杠二四」用户听不出对错，模型也不会主动转格式。
+- 字段给齐，不替模型挑：少一个字段，用户问到它就只能编，或者再问一遍。上游数据自相矛盾时也原样给出，让模型决定说哪个、怎么说。
+- 例外仍然只有两处：写操作的确认回显、回复校验失败时的兜底（`agent/wording.py`）。那是「说了就得对」，不是替模型说话。
+- 判断标准：把这条输出交给两个人，他们的回答应该不一样（一个怕冷、一个不怕），否则就是定死了。
+
+### 约束放在代码里，不放在提示词里
+
+- **执行前给模型的规则**（system prompt 里的场景路由表、「日期转 YYYY-MM-DD」、「不超过三句」）能删就删：工具 schema 写清能力，模型自己判断。路由表本质是关键词路由，写进提示词也只是换了个地方的 `if`。
+- **需要保留的约束一律做成执行期检查**，不依赖模型自觉：
+  - 参数校正/拦截：`agent/guard.py`（工具执行前，拿用户原话校正）
+  - 高风险确认：`agent/confirm.py`（执行前拦下等确认）
+  - 回复校验：`agent/verify.py`（发出前比对工具参数）
+  - 检索收紧：工具内部实现（D46）
+- 判断标准：模型违反了会导致「说的是错的」，就必须有代码兜底；如果只是「说得不够好」，交给模型。
+- 提示词里只留身份/语气，以及确有必要的一点路由歧义；剩下的靠工具描述和实测。
+- 删掉提示词里的规则后要跑 `scripts/eval_accuracy.py` 验证准确率没有下降，掉了就修工具描述，不要把路由表加回来（D56）。
 
 ### 存储与并发
 
