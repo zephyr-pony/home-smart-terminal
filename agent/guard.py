@@ -19,7 +19,7 @@ from agent.dates import has_date_hint, parse_date_text, parse_recurrence, resolv
 
 # 会落库的写工具；用来判断「用户要写，但没有真的写」
 WRITE_TOOLS = (
-    "memory_store", "item_add", "task_add", "fact_store",
+    "memory_store", "item_add", "task_add", "fact_store", "profile_set",
     "task_update", "task_cancel", "task_complete", "task_postpone",
 )
 # 会动物理设备的工具：没调却回「已关灯」同样是在骗人，但说法不能套「清单」

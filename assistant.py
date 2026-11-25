@@ -40,7 +40,7 @@ from agent import wording
 from agent.propose import ProposalService
 from adapters.home import build_home
 from adapters.weather import Weather
-from domain.facts import Facts
+from domain.facts import Facts, profile_subject
 from domain.tasks import Tasks
 from memory import Memory
 from items import Items
@@ -633,6 +633,21 @@ class Assistant:
                             },
                         }
                         break
+                    # 画像（D59）：模型推断的偏好永远先问一句，
+                    # 不跟 CONFIRM_WRITE_ACTIONS 走——用户的事后否认不能靠配置开关。
+                    if name == "profile_set":
+                        args, blocked = self._profile_args(args)
+                        if blocked:
+                            blocked_reply = blocked
+                            break
+                        question = wording.profile_question(args, user_text)
+                        conversation_id = (client_id or "cli").strip()
+                        # 先记一条 proposed：用户答不答应都能在审计里看到
+                        self.proposals.record_profile_proposal(args, question)
+                        pending = self.confirmations.request(
+                            conversation_id, name, args, question, user_text
+                        )
+                        raise ConfirmationRequired(question, pending)
                     if self.confirm_write_actions and name in CONFIRMABLE_WRITES \
                             and name in self.confirm_write_actions:
                         question = self._write_confirmation_question(name, args, user_text)
@@ -807,6 +822,20 @@ class Assistant:
         """
         return wording.confirmation_question(tool_name, args, user_text)
 
+    @staticmethod
+    def _profile_args(args):
+        """画像主体归一成「用户」/「用户/<名字>」，和热点上下文用同一套前缀。
+
+        缺方面或内容时不硬凑一句话去问「我猜你的的...」，直接告诉模型没听清。
+        """
+        args = dict(args or {})
+        args["subject"] = profile_subject(args.get("subject"))
+        for key in ("predicate", "value", "evidence"):
+            args[key] = str(args.get(key) or "").strip()
+        if not args["predicate"] or not args["value"]:
+            return args, "要记的是哪方面、什么内容？我没太听明白。"
+        return args, None
+
     def _run_tool_by_name(self, name, args):
         execute = self._tools_by_name.get(name)
         if execute is None:
@@ -833,6 +862,7 @@ class Assistant:
             "fact_store": ("facts", "store"),
             "fact_search": ("facts", "search"),
             "fact_list": ("facts", "list"),
+            "profile_set": ("profile", "store"),
             "get_current_date": ("date", "query"),
         }
         business = [mappings[name] for name in used_tools if name in mappings and name != "get_current_date"]

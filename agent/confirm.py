@@ -114,6 +114,35 @@ class ConfirmationManager:
         action_type = pending.get("action_type")
         payload = pending.get("payload") or {}
 
+        # 画像（D59）：进来时已经被用户点头，这里只负责落库和回显。
+        # 审计的 committed 由 ProposalService.store_profile 记，不在这里重复记。
+        if action_type == "profile_set" and self.tool_runner is not None:
+            try:
+                result = str(self.tool_runner(action_type, payload))
+            except Exception as exc:
+                return {
+                    "kind": "done",
+                    "type": "chat",
+                    "domain": "profile",
+                    "action": "error",
+                    "reply": f"操作失败：{exc}",
+                }
+            if result.startswith("已保存画像"):
+                return {
+                    "kind": "done",
+                    "type": "record",
+                    "domain": "profile",
+                    "action": "create",
+                    "reply": wording.profile_reply(payload),
+                }
+            return {
+                "kind": "done",
+                "type": "chat",
+                "domain": "profile",
+                "action": "error",
+                "reply": result,
+            }
+
         if action_type in WRITE_ACTIONS and self.tool_runner is not None:
             try:
                 result = str(self.tool_runner(action_type, payload))

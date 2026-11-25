@@ -180,6 +180,43 @@ def delete_question(tool_name, args):
     return "确认删除物品「%s」吗？回复「确认」或「取消」。" % target
 
 
+def _profile_who(subject):
+    """「用户/妈妈」→「妈妈」，「用户」→「你」。"""
+    text = str(subject or "").strip()
+    if text in ("", "用户"):
+        return "你"
+    for prefix in ("用户/", "用户"):
+        if text.startswith(prefix):
+            name = text[len(prefix):].strip("/ ")
+            if name:
+                return name
+    return text
+
+
+def profile_question(args, user_text=None):
+    """画像确认：念的是「我猜的」，不是「你说的」。
+
+    措辞必须让用户能立刻否认；套用写入确认的「要记成」会听起来像既定事实，
+    用户更容易顺着「嗯」下去，确认就白做了（D59）。
+    """
+    args = args or {}
+    who = _profile_who(args.get("subject"))
+    aspect = str(args.get("predicate") or "偏好").strip()
+    value = str(args.get("value") or "").strip()
+    return "我猜%s的%s是「%s」，要记下来吗？回复「确认」或「取消」。" % (
+        who, aspect, value,
+    )
+
+
+def profile_reply(args):
+    """确认之后按参数回显，不让模型复述——画像内容必须和落库的一字不差。"""
+    args = args or {}
+    who = _profile_who(args.get("subject"))
+    aspect = str(args.get("predicate") or "偏好").strip()
+    value = str(args.get("value") or "").strip()
+    return "好，我记住了：%s的%s是「%s」。" % (who, aspect, value)
+
+
 def echo_prefix(executed, reply=""):
     """执行完的极短回显，接在模型回复前面。
 

@@ -168,7 +168,10 @@ pytest tests -q
 
 ### 写操作
 
-- `memory_store` / `item_add` / `task_add` / `fact_store` 不直接写库，统一走 `ProposalService`。
+- `memory_store` / `item_add` / `task_add` / `fact_store` / `profile_set` 不直接写库，统一走 `ProposalService`。
+- `profile_set` 是「模型推断的偏好」，**无条件**先确认再落库，不跟 `CONFIRM_WRITE_ACTIONS` 走；
+  用户自己说出的事实仍走 `fact_store` 直接写。画像主体统一挂 `用户` / `用户/<名字>` 前缀
+  （`domain/facts.py` 的 `profile_subject`），热点上下文靠它识别画像（D59）。
 - 提案记录在 `proposals` 表，带 `idempotency_key`；`PROPOSAL_DEDUPE_SECONDS` 内相同内容自动去重。
 - 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
 - 同名物品在 `ProposalService.add_item` 里合并：带新日期就更新到期日（清 `reminded_at`、状态退回 `active`），不带日期就保留原值，避免清单出现两条同名物品、提醒两次。

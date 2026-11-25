@@ -165,6 +165,58 @@ class ProposalService:
         self._record("fact_store", payload, "committed", message, key)
         return message
 
+    def record_profile_proposal(self, payload, note=""):
+        """记一条「模型提议、等用户点头」的画像审计（D59）。
+
+        和 store_profile 的 committed 分开记：网页端既能看模型猜了什么，
+        也能看用户当时答没答应，猜错频繁的模型一眼就能发现。
+        """
+        self._record("profile_set", payload, "proposed", note)
+
+    def store_profile(self, subject, predicate, value, evidence=""):
+        """画像写入：只应由「用户确认过的推断」调用。
+
+        action_type 用 profile_set 而不是 fact_store，审计里才分得清
+        「用户说的」和「模型猜的」——后者正是 D59 要盯住的东西。
+        """
+        if self.facts is None:
+            return "画像模块未启用"
+        payload = {
+            "subject": str(subject or "").strip(),
+            "predicate": str(predicate or "").strip(),
+            "value": str(value or "").strip(),
+            "evidence": str(evidence or "").strip(),
+        }
+        source = "模型推断"
+        if payload["evidence"]:
+            source += "：%s" % payload["evidence"][:80]
+
+        key = self._key("profile_set", payload)
+        duplicate = self._recent_duplicate(key)
+        if duplicate and duplicate["status"] in ("committed", "duplicate"):
+            self._record("profile_set", payload, "duplicate", "重复提案，未写入", key)
+            return "已存在相同画像，未重复保存"
+
+        try:
+            fact = self.facts.store(
+                payload["subject"],
+                payload["predicate"],
+                payload["value"],
+                source,
+            )
+        except ValueError as exc:
+            self._record("profile_set", payload, "rejected", str(exc), key)
+            return f"无法保存画像：{exc}"
+
+        message = (
+            f"已保存画像：{fact['subject']} · {fact['predicate']} = {fact['value']}"
+        )
+        replaced = fact.get("replaced") or []
+        if replaced:
+            message += "（原值 %s 已失效）" % "、".join(replaced)
+        self._record("profile_set", payload, "committed", message, key)
+        return message
+
     def _commit(self, action_type, payload, write_fn, success_message):
         key = self._key(action_type, payload)
         duplicate = self._recent_duplicate(key)

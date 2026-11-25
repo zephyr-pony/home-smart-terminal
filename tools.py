@@ -7,6 +7,7 @@
 from datetime import datetime
 
 from agent import wording
+from domain.facts import profile_subject
 from memory import Memory
 
 
@@ -556,10 +557,11 @@ def get_fact_tools(facts, proposals=None):
             description=(
                 "保存结构化事实，如户号、地址、品牌、型号、偏好。"
                 "用户说'爸妈家电费户号是123''牛奶是蒙牛的'时调用。"
+                "只记用户自己说出来的；你从对话里推断的偏好用 profile_set。"
                 "同一主体+属性再次保存会关闭旧值、保留历史。"
             ),
             properties={
-                "subject": {"type": "string", "description": "主体，如 '爸妈家'"},
+                "subject": {"type": "string", "description": "主体，如 '爸妈家'；某个人的偏好用 '用户' 或 '用户/妈妈'"},
                 "predicate": {"type": "string", "description": "属性，如 '电费户号'"},
                 "value": {"type": "string", "description": "值，如 '123456'"},
                 "source": {"type": "string", "description": "来源，可选"},
@@ -584,6 +586,68 @@ def get_fact_tools(facts, proposals=None):
             properties={},
             required=[],
             execute=lambda: _fmt_facts(facts.list_all()),
+        ),
+    ]
+
+
+def get_profile_tools(facts, proposals=None):
+    """用户画像：只装「模型推断出的偏好」，必须先问用户（D59）。
+
+    为什么不和 fact_store 合并：fact_store 记的是用户自己说出来的事实
+    （「我妈不吃辣」），猜错也是用户自己说的；这条是模型从对话里推测的
+    （「用户可能喜欢简短回答」），猜错会一直污染后续对话，所以必须让用户
+    点头。确认由 assistant 无条件拦下，不依赖 CONFIRM_WRITE_ACTIONS。
+    """
+
+    def set_profile(subject, predicate, value, evidence=""):
+        subject = profile_subject(subject)
+        predicate = str(predicate or "").strip()
+        value = str(value or "").strip()
+        evidence = str(evidence or "").strip()
+        if not predicate or not value:
+            return "无法保存画像：方面和内容都不能为空"
+        if proposals is not None:
+            return proposals.store_profile(subject, predicate, value, evidence)
+        source = "模型推断"
+        if evidence:
+            source += "：%s" % evidence[:80]
+        try:
+            fact = facts.store(subject, predicate, value, source)
+        except ValueError as exc:
+            return f"无法保存画像：{exc}"
+        return "已保存画像：%s · %s = %s" % (
+            fact["subject"], fact["predicate"], fact["value"],
+        )
+
+    return [
+        _build(
+            name="profile_set",
+            description=(
+                "记录你从对话里推断出来的用户偏好、习惯、口味、称呼或沟通风格。"
+                "只在用户没有直接说明、而是你推测出来时用；"
+                "用户明确说出的事实（如「我妈不吃辣」）用 fact_store。"
+                "这个工具保存前会自动向用户确认，调用后不用再自己问一遍。"
+            ),
+            properties={
+                "subject": {
+                    "type": "string",
+                    "description": "这是谁的画像：当前说话人填「用户」，别人填「用户/妈妈」这样的名字",
+                },
+                "predicate": {
+                    "type": "string",
+                    "description": "哪个方面，如 口味 / 作息 / 称呼 / 沟通风格 / 偏好",
+                },
+                "value": {
+                    "type": "string",
+                    "description": "你推断出的内容，一句话说清",
+                },
+                "evidence": {
+                    "type": "string",
+                    "description": "依据：用户哪句话让你这么判断，引用原话片段",
+                },
+            },
+            required=["subject", "predicate", "value"],
+            execute=set_profile,
         ),
     ]
 
@@ -761,6 +825,7 @@ def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
         tools += get_task_tools(tasks, proposals)
     if facts is not None:
         tools += get_fact_tools(facts, proposals)
+        tools += get_profile_tools(facts, proposals)
     if home is not None:
         tools += get_home_tools(home)
     if weather is not None and getattr(weather, "configured", False):

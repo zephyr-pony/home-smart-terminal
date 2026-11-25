@@ -40,6 +40,22 @@ def _haystack(row):
     return "%s%s%s" % (row[1] or "", row[2] or "", row[3] or "")
 
 
+# 画像统一挂在「用户」前缀下：用户 / 用户/妈妈。
+# 热点上下文（D58）就是靠这个前缀把画像和普通事实分开的，别在别处另起格式。
+PROFILE_PREFIX = "用户"
+_SELF_WORDS = ("", "我", "本人", "自己", "用户", "当前说话人", "说话人")
+
+
+def profile_subject(person):
+    """把「谁」归一成画像 subject：当前说话人 → 用户，别人 → 用户/<名字>。"""
+    person = str(person or "").strip()
+    if person in _SELF_WORDS:
+        return PROFILE_PREFIX
+    if person.startswith(PROFILE_PREFIX):
+        return person
+    return "%s/%s" % (PROFILE_PREFIX, person)
+
+
 def _query_terms(query):
     """把查询拆成检索词：多词按词拆，长词再拆成二字组。
 
