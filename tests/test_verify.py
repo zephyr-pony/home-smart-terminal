@@ -4,6 +4,7 @@ from datetime import date, timedelta
 
 from agent import wording
 from agent.clarify import Clarifier
+from agent.dates import parse_date_text
 from agent.verify import verify_reply, written_days, written_times
 from assistant import Assistant
 from domain.facts import Facts
@@ -234,17 +235,21 @@ def make_assistant(llm):
 
 
 def test_agent_loop_replaces_misquoted_date():
-    # 模型把「下周三」算成 11-25（实际 12-02）：护栏会改参数，模型嘴上仍念旧值
+    # 模型把「下周三」算错一天：护栏会把参数改成正确日期，模型嘴上仍念旧值。
+    # 日期必须相对今天算，写死会在今天恰好等于那个日期时失效（2026-11-25 就踩过）。
+    today = date.today()
+    expected = date.fromisoformat(parse_date_text("下周三", today)["date"])
+    wrong = expected + timedelta(days=1)
     llm = ScriptedLLM([
-        _tool_call("item_add", {"name": "牛奶", "expiry_date": "2026-11-25"}),
-        _stop("记好了，牛奶11月25日过期，记得喝。"),
+        _tool_call("item_add", {"name": "牛奶", "expiry_date": wrong.isoformat()}),
+        _stop("记好了，牛奶%s过期，记得喝。" % wrong.strftime("%m月%d日")),
     ])
     assistant = make_assistant(llm)
 
     result = assistant.process_text("牛奶下周三过期")
 
-    assert "11月25日" not in result["reply"]
-    assert wording.speak_date("2026-12-02") in result["reply"]
+    assert wrong.strftime("%m月%d日") not in result["reply"]
+    assert wording.speak_date(expected.isoformat()) in result["reply"]
 
 
 def test_agent_loop_does_not_stream_the_turn_after_a_write():

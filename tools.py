@@ -122,6 +122,41 @@ def get_current_date_tool():
     )
 
 
+def get_weather_tool(weather):
+    """天气工具：实时 + 未来几天，位置缺省用家庭所在城市。"""
+    return _build(
+        name="weather_query",
+        description=(
+            "查天气。scope 决定范围："
+            "now=此刻实时（气温、体感、风向风力、湿度、能见度、气压等）；"
+            "today=今天一整天（最高最低温、白天夜间天气、紫外线、日出日落）；"
+            "forecast=未来几天，不含今天（days 指定天数，默认 3）；"
+            "不传 scope 则三段都给。"
+            "用户问「现在」用 now，问「今天/穿什么/要不要带伞」用 today，问「明天/这周」用 forecast。"
+            "location 不传就查家里所在城市，只有问别的城市时才传城市名。"
+        ),
+        properties={
+            "location": {
+                "type": "string",
+                "description": "城市名，如'烟台'；不传则查本地",
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["now", "today", "forecast", "all"],
+                "description": "查询范围：now=此刻 / today=今天 / forecast=未来几天 / all=全部",
+            },
+            "days": {
+                "type": "integer",
+                "description": "scope=forecast 时的天数，默认 3",
+            },
+        },
+        required=[],
+        execute=lambda location="", scope="all", days=3: weather.query(
+            location, scope, days
+        ),
+    )
+
+
 # ---------- 格式化辅助 ----------
 
 def _fmt_memories(memories):
@@ -714,8 +749,8 @@ def get_camera_tool():
 
 
 def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
-                  tasks=None, facts=None, home=None):
-    """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备）。"""
+                  tasks=None, facts=None, home=None, weather=None):
+    """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备 + 天气）。"""
     tools = get_memory_tools(memory, proposals) + [get_current_date_tool()]
     if items is not None:
         tools += get_items_tools(items, proposals)
@@ -728,6 +763,8 @@ def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
         tools += get_fact_tools(facts, proposals)
     if home is not None:
         tools += get_home_tools(home)
+    if weather is not None and getattr(weather, "configured", False):
+        tools.append(get_weather_tool(weather))
     # 摄像头只在带摄像头的终端上可用；assistant 会按入口决定给不给模型看这个 schema
     tools.append(get_camera_tool())
     return tools

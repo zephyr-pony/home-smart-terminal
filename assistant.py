@@ -15,6 +15,9 @@ from config import (
     SESSION_CONTEXT_TURNS,
     SESSION_TTL_SECONDS,
     VISION_CONTEXT_SECONDS,
+    WEATHER_API_HOST,
+    WEATHER_API_KEY,
+    WEATHER_CITY,
 )
 from agent.clarify import Clarifier
 from agent.confirm import (
@@ -30,6 +33,7 @@ from agent.verify import verify_reply
 from agent import wording
 from agent.propose import ProposalService
 from adapters.home import build_home
+from adapters.weather import Weather
 from domain.facts import Facts
 from domain.tasks import Tasks
 from memory import Memory
@@ -59,22 +63,11 @@ def _is_list_command(text):
 AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记事情、查事情、管物品。
 今天日期：{today}
 
-工具分工：
-- 家庭日常事实/闲聊记录（如"今天买了个新鼠标""冰箱里还有三个鸡蛋"）→ memory_store（summary 用绝对日期）
-- 账单/日程/提醒（如"明天交电费""下周三开会""提醒我周五取快递"）→ task_add（type=bill/schedule/custom，due_at 转 YYYY-MM-DD）
-- 周期提醒（"每天八点吃药""每周三下午三点开会""每月1号交房租"）→ task_add 并设 recur=daily/weekly/monthly；用户没说具体几点就先问一句，不要自己替用户定时间
-- 结构化属性（户号、地址、品牌、型号、偏好）→ fact_store；查询用 fact_search
-- 任务查询/完成/修改/延期（"我有哪些提醒""电费交了""取快递改到明天""这个提醒不用了""明天再说"）→ task_list / task_complete / task_update / task_cancel / task_postpone
-- 家庭事务查询（"酸奶还有几天过期""冰箱里有什么""我有哪些提醒""我记了哪些东西""我记过什么"）→ family_search 一次查完物品/记忆/待办，不要分别调用 item_search / memory_search / task_list
-- 会过期的物品（"酸奶8月5号过期""鸡蛋还剩3个"）→ item_add 记到物品清单（expiry_date 转 YYYY-MM-DD）
-- 物品管理（"删掉酸奶""看看有哪些东西"）→ item_delete / item_list
-- 记忆管理（"看看记忆""忘掉X"）→ memory_list / memory_delete
-- 实体管理（"把爸妈家也叫父母家"）→ entity_add / entity_rename / entity_list
-- 时间相关问题（还有几天/什么时候/是否过期）→ 直接用上方「今天日期」计算，**不要**调用 get_current_date
-- 查无结果时老实说"我还没有这方面的记录"；如果用户的话可能被听错（同音字），再问一句"你要查的是哪件事？"，不要顺着可能错的词下结论
-- 对话历史里可能已有相关上下文，理解"那个""它""还有呢"这类指代时结合历史
-- 回答简洁口语化，像家人聊天，不超过 3 句话
-- 只有闲聊（打招呼/无关话题）才直接回答，不需要调用工具"""
+工具描述里写了各自能做什么，按用户的意思自己选。
+回答简洁口语化，像家人聊天，别写成公文。
+查不到结果就如实说没有记录，不要编；如果用户的话可能被听错（同音字），
+再问一句"你要查的是哪件事"，不要顺着可能错的词下结论。
+对话历史里可能有相关上下文，理解"那个""它""还有呢"这类指代时结合历史。"""
 
 # 接了设备网关时才追加，避免模型对着不存在的工具瞎调
 HOME_PROMPT_LINE = """
@@ -138,6 +131,8 @@ class Assistant:
         self.confirm_write_actions = parse_confirm_actions(CONFIRM_WRITE_ACTIONS)
         # 实体管理：新增/改名/别名/列表
         self.entities = EntityService(self.clarifier.store)
+        # 天气：外部 HTTP，配置不全时 configured=False，工具不会注册
+        self.weather = Weather(WEATHER_API_HOST, WEATHER_API_KEY, WEATHER_CITY)
         # 工具注册表（memory + 日期 + items + 实体）
         self.tools = get_all_tools(
             self.memory,
@@ -147,6 +142,7 @@ class Assistant:
             tasks=self.tasks,
             facts=self.facts,
             home=self.home,
+            weather=self.weather,
         )
         self._tools_by_name = {
             t["schema"]["function"]["name"]: t["execute"] for t in self.tools
