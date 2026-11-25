@@ -36,12 +36,20 @@ from pydantic import BaseModel, Field
 
 from config import (
     API_TOKEN,
+    DATA_DIR,
     HOME_SCAN_SECONDS,
     MAX_AUDIO_SECONDS,
     MAX_CLIENT_ID_CHARS,
     MAX_TEXT_CHARS,
     MAX_UPLOAD_BYTES,
     MCP_TOKEN,
+    MEMORY_DISTILL_CHECK_SECONDS,
+    MEMORY_DISTILL_ENABLED,
+    MEMORY_DISTILL_HOUR,
+    MEMORY_DISTILL_INTERVAL_HOURS,
+    MEMORY_DISTILL_MAX_GROUPS,
+    MEMORY_DISTILL_SUMMARY_CHARS,
+    MEMORY_DISTILL_THRESHOLD,
     PUSH_ENABLED,
     PUSH_MAX_FAILURES,
     PUSH_TTL_SECONDS,
@@ -57,6 +65,7 @@ from config import (
 )
 from agent import wording
 from agent.dates import parse_date_text
+from agent.distill import MemoryDistiller, distillation_due
 from assistant import Assistant
 from adapters.home_ws import run_event_stream
 from adapters.mcp_endpoint import MCPEndpoint
@@ -135,6 +144,9 @@ assistant: Assistant = None
 # Web Push：push_store 存订阅，push_sender 负责真正发推（lifespan 里建）
 push_store: PushStore = None
 push_sender: WebPushSender = None
+
+# 记忆蒸馏（D60）：lifespan 里建，后台循环按深夜/阈值触发
+distiller: MemoryDistiller = None
 
 # 到期提醒缓存（提醒循环按 REMINDER_INTERVAL_SECONDS 刷新）
 due_items = []
@@ -582,9 +594,60 @@ async def reminder_loop():
         await asyncio.sleep(REMINDER_INTERVAL_SECONDS)
 
 
+# ---------- 记忆蒸馏（D60） ----------
+
+_DISTILL_STATE = os.path.join(DATA_DIR, "distill_state.json")
+
+
+def _load_last_distill(path=None):
+    try:
+        with open(path or _DISTILL_STATE, encoding="utf-8") as fh:
+            return datetime.fromisoformat(json.load(fh)["last_run"])
+    except Exception:
+        return None
+
+
+def _save_last_distill(when, path=None):
+    try:
+        target = path or _DISTILL_STATE
+        parent = os.path.dirname(target)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            json.dump({"last_run": when.isoformat()}, fh)
+    except Exception:
+        traceback.print_exc()
+
+
+async def distill_loop():
+    """每天深夜蒸馏一次，记忆超过阈值时补跑（D60）。
+
+    状态存 DATA_DIR 下的小 JSON：重启不该把当天已经跑过的再跑一遍；
+    失败也别频繁重试——等下一个检查周期，别把模型额度打满。
+    """
+    while True:
+        try:
+            if distiller is not None:
+                count = await asyncio.to_thread(assistant.memory.count)
+                if distillation_due(
+                    datetime.now(), count, _load_last_distill(),
+                    hour=MEMORY_DISTILL_HOUR,
+                    threshold=MEMORY_DISTILL_THRESHOLD,
+                    interval_hours=MEMORY_DISTILL_INTERVAL_HOURS,
+                ):
+                    result = await asyncio.to_thread(distiller.run)
+                    _save_last_distill(datetime.now())
+                    print("🧠 记忆蒸馏：%d 组，更新 %d 条，跳过 %d 组" % (
+                        result["groups"], result["updated"], result["skipped"],
+                    ), flush=True)
+        except Exception:
+            traceback.print_exc()
+        await asyncio.sleep(MEMORY_DISTILL_CHECK_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global stt, tts, assistant, _tmp_dir, push_store, push_sender
+    global stt, tts, assistant, _tmp_dir, push_store, push_sender, distiller
     _check_exposure()
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
@@ -593,6 +656,15 @@ async def lifespan(app: FastAPI):
     assistant = Assistant(memory=Memory(), llm=LLM(), items=Items(),
                           decision_llm=decision_llm)
     print("🧠 决策轮模型：%s" % (decision_llm.model_name if decision_llm else "同回答轮"))
+    # 记忆蒸馏（D60）：只重算摘要，不删原文；跑在后台，失败不影响对话
+    distiller = None
+    if MEMORY_DISTILL_ENABLED:
+        distiller = MemoryDistiller(
+            assistant.memory,
+            assistant.llm,
+            max_groups=MEMORY_DISTILL_MAX_GROUPS,
+            summary_max_chars=MEMORY_DISTILL_SUMMARY_CHARS,
+        )
     if STT_ENABLED:
         stt = STT()  # 预热 FunASR
     else:
@@ -613,6 +685,9 @@ async def lifespan(app: FastAPI):
         print("📭 Web Push 未启用（PUSH_ENABLED/VAPID 密钥缺失）")
     # 启动到期提醒后台任务
     reminder_task = asyncio.create_task(reminder_loop())
+    distill_task = None
+    if distiller is not None:
+        distill_task = asyncio.create_task(distill_loop())
     home_task = None
     ws_task = None
     watcher = getattr(assistant, "home_watch", None)
@@ -633,6 +708,12 @@ async def lifespan(app: FastAPI):
             await reminder_task
         except asyncio.CancelledError:
             pass
+        if distill_task is not None:
+            distill_task.cancel()
+            try:
+                await distill_task
+            except asyncio.CancelledError:
+                pass
         if home_task is not None:
             home_task.cancel()
             try:
@@ -657,6 +738,7 @@ async def lifespan(app: FastAPI):
         assistant = None
         push_store = None
         push_sender = None
+        distiller = None
         _tmp_dir = None
         print("🛑 服务关闭")
 

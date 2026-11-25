@@ -23,12 +23,13 @@
 | `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
 | `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
 | `agent/verify.py` | 回复事实校验：口播的日期/星期/名字须与工具参数一致 |
+| `agent/distill.py` | 记忆蒸馏：同主题合并、只重算 summary，深夜/超阈值后台跑（D60） |
 | `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
 | `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
-| `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒、静态页面 |
+| `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒/记忆蒸馏、静态页面 |
 | `assistant.py` | 核心编排 + 手写 Agent loop；CLI 与服务端共用 |
 | `tools.py` | OpenAI function calling 工具注册表（schema + execute） |
 | `llm.py` | OpenAI 兼容 `/chat/completions` 客户端（带 tools） |

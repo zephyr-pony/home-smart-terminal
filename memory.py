@@ -63,6 +63,16 @@ class Memory:
                 timestamp TEXT
             )
         """)
+        # 蒸馏记录（D60）：同一组成员再跑一次没有意义，用指纹跳过；
+        # 模型判定「无关」也记一条，免得每天重复问同一个问题。
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_distill_log (
+                signature TEXT PRIMARY KEY,
+                memory_id INTEGER,
+                summary TEXT,
+                updated_at TEXT
+            )
+        """)
 
     def _migrate_legacy(self):
         """迁移旧版单表格式（memories FTS 表）到新格式。"""
@@ -186,7 +196,10 @@ class Memory:
         """
         with self._lock:
             rows = self.conn.execute(
-                "SELECT id, summary, text, timestamp FROM memories_raw ORDER BY timestamp DESC LIMIT ?",
+                "SELECT id, summary, text, timestamp FROM memories_raw "
+                # Windows 的 datetime.now() 精度只有十几毫秒，同一轮连续写入会
+                # 撞上同一个 timestamp；用 id 兜底，保证「最新」是确定的。
+                "ORDER BY timestamp DESC, id DESC LIMIT ?",
                 (n_results,),
             ).fetchall()
         return [
@@ -263,6 +276,53 @@ class Memory:
         with self._lock:
             cursor = self.conn.execute("SELECT COUNT(*) FROM memories_raw")
             return cursor.fetchone()[0]
+
+    # ---------- 蒸馏（D60） ----------
+
+    def update_summary(self, memory_id, summary):
+        """只换摘要：原文和时间一个字都不动，FTS 索引同步重建。
+
+        原文是用户真实说过的话，也是摘要查不到时的兜底，所以这里绝不 UPDATE text。
+        """
+        summary = str(summary or "").strip()
+        if not summary:
+            return False
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT timestamp FROM memories_raw WHERE id=?", (memory_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self.conn.execute(
+                "UPDATE memories_raw SET summary=? WHERE id=?", (summary, memory_id)
+            )
+            self.conn.execute(
+                "DELETE FROM memories_fts WHERE rowid=?", (memory_id,)
+            )
+            self.conn.execute(
+                "INSERT INTO memories_fts (rowid, searchable, timestamp) VALUES (?, ?, ?)",
+                (memory_id, _segment(summary), row[0]),
+            )
+            self.conn.commit()
+            return True
+
+    def is_distilled(self, signature):
+        """这一组是否已经蒸馏过（或已判定为无关）。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM memory_distill_log WHERE signature=?", (signature,)
+            ).fetchone()
+            return row is not None
+
+    def record_distill(self, signature, memory_id, summary=""):
+        """记下蒸馏结果；summary 为空表示模型判定「不是同一主题」。"""
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO memory_distill_log "
+                "(signature, memory_id, summary, updated_at) VALUES (?, ?, ?, ?)",
+                (signature, memory_id, summary or "", datetime.now().isoformat()),
+            )
+            self.conn.commit()
 
     def close(self):
         with self._lock:

@@ -358,6 +358,12 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `HOT_CONTEXT_MAX_CHARS` | `900` | 热点上下文总字符预算，超了按 画像 > 常用事实 > 最近记忆 截断 |
 | `HOT_CONTEXT_FACTS` | `6` | 常用事实最多注入几条 |
 | `HOT_CONTEXT_MEMORIES` | `5` | 最近记忆最多注入几条 |
+| `MEMORY_DISTILL_ENABLED` | `1` | 记忆蒸馏：合并同主题记忆，只重算摘要、不删原文 |
+| `MEMORY_DISTILL_HOUR` | `3` | 每天几点跑蒸馏（本机时间） |
+| `MEMORY_DISTILL_THRESHOLD` | `500` | 记忆达到多少条时不等半夜、直接补跑 |
+| `MEMORY_DISTILL_INTERVAL_HOURS` | `6` | 超阈值补跑的最小间隔（小时） |
+| `MEMORY_DISTILL_MAX_GROUPS` | `10` | 每轮最多合并几组（一组一次模型调用） |
+| `MEMORY_DISTILL_SUMMARY_CHARS` | `60` | 合并后的摘要最多多少字 |
 
 ## 使用方式
 
