@@ -206,9 +206,13 @@ pytest tests -q
 - `camera_look` 是摄像头入口的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
 - 小智会把设备工具名的点换成下划线（`self.camera.take_photo` → `self_camera_take_photo`）再给 LLM；`/v1` 回 `tool_calls` 时**必须用请求里那个名字**，用带点的原始名它查不到工具，拍照会静默失败。判断有没有摄像头也要按归一化后的名字比。
 - `/v1` 里带 `image_url` 的请求走 `Assistant.describe_image`，不进 agent、不进记忆；图片只在内存里用一次，日志不打印 base64。描述本身在 `vision_context` 里留 `VISION_CONTEXT_SECONDS`（默认 180 秒）供下一句追问，过期即删、不进记忆库。
-- 打印（D61）：`printer_print` 只在**这一轮带上传附件**时才把 schema 给模型（同 camera 的思路），
-  不经过 `execute`，确认后由 `ConfirmationManager.print_runner` 调 `adapters/printer.py`。
-  文件经 `POST /api/print/files` 落临时目录，只对上传者 `client_id` 有效，打印成功即删；
+- 打印（D61）：`printer_print` 只要有打印机就把 schema 给模型（D62 起不要求本轮先有附件，
+  否则「run_python 生成文件再打印」走不通）；不经过 `execute`，确认后由
+  `ConfirmationManager.print_runner` 调 `adapters/printer.py`。
+  文件经 `POST /api/print/files` 落临时目录，只对上传者 `client_id` 有效；
+  这个会话最近处理过的文件在 `PRINTER_FILE_TTL_SECONDS`（默认 30 分钟）内会被自动接上，
+  所以「刚才的文件再打一份」「改成横向」不用重传；**打印成功也不删文件**（卡纸重打很常见），
+  统一由服务端按 TTL 清（`_purge_print_files` 连 `run_python` 生成的产物一起扫）。
   服务器是 Linux，打印走 CUPS（`lp` / `lpstat`），Office 用 LibreOffice 转 PDF；
   不要写任何 Windows 专用代码（打印队列、GDI、Office COM 都不在支持范围）。
 

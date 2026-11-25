@@ -390,7 +390,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `PRINTER_ALLOWED` | 空 | 允许使用的队列（逗号分隔）；空 = 只允许默认那个 |
 | `PRINTER_MAX_PAGES` | `50` | 一次最多打印多少页 |
 | `PRINTER_MAX_COPIES` | `20` | 一次最多打印多少份 |
-| `PRINTER_FILE_TTL_SECONDS` | `1800` | 上传文件保留多久（秒），打印成功立刻删除 |
+| `PRINTER_FILE_TTL_SECONDS` | `1800` | 上传文件保留多久（秒）；期间「再打一份」不用重传，到期自动清 |
 
 ## 使用方式
 
@@ -428,7 +428,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - 打印机可以挂在别的机器上：`PRINTER_SERVER=192.168.1.15:631`、`PRINTER_NAME=HP1020`，
   容器只发 IPP 任务，不用自己跑 cupsd
 - PDF / 图片 / 纯文本直接交给 CUPS 过滤器转换；Office 先由 LibreOffice 转 PDF
-- 文件只落临时目录，打印成功立刻删除，过期（默认 30 分钟）也会清掉
+- 文件只落临时目录，按 `PRINTER_FILE_TTL_SECONDS` 过期清理；这段时间里「刚才的文件再打一份」不用重新上传
 - 语音终端只能确认，不能传文件；文件必须从网页或 API 上传
 - 不支持 Windows 打印队列：服务器部署是 Linux（D61）
 

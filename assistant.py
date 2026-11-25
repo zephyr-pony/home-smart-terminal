@@ -22,6 +22,7 @@ from config import (
     MAX_SESSIONS,
     PRINTER_ALLOWED,
     PRINTER_ENABLED,
+    PRINTER_FILE_TTL_SECONDS,
     PRINTER_MAX_COPIES,
     PRINTER_MAX_PAGES,
     PRINTER_NAME,
@@ -145,6 +146,9 @@ class Assistant:
         self.llm = llm or LLM()
         # 每个请求一个线程，思考开关的临时状态放线程本地，避免多客户端串台
         self._turn = threading.local()
+        # 每个会话最近处理过的文件（D61 补充）：手机上传一次以后，「再打一份」
+        # 「改成横向」这类话说的时候没有新附件，靠它把文件接上，TTL 内有效。
+        self._recent_files = {}
         # 第一轮（决策/调工具）可以换更快的模型；没配置就和回答轮同一个
         self.decision_llm = decision_llm
         self.items = items or Items()
@@ -282,6 +286,9 @@ class Assistant:
             return self._result("chat", "我没听清，能再说一遍吗？", "chat", "chat")
 
         conversation_id = (client_id or "cli").strip()
+        # 3.5) 没带新附件时，接上这个会话最近处理过的文件：「刚才的文件再打一份」
+        # 在网页上不会重新上传，不兜住就只能让用户重传一遍。
+        attachment = self._reuse_recent_file(conversation_id, attachment)
 
         # 0) 待确认动作优先：确认/取消/重新提问
         pending_confirm = self.confirmations.get_pending(conversation_id)
@@ -593,14 +600,55 @@ class Assistant:
         size = attachment.get("size")
         if size:
             parts.append("%.1f MB" % (float(size) / 1024 / 1024))
+        if attachment.get("recent"):
+            # 沿用上一轮的文件：这句话可能跟文件无关，别硬把文件拉进来
+            head = (
+                "用户刚才上传/处理过文件：《%s》（%s），这一轮没有重新上传，"
+                "但你要用随时可以（比如「再打一份」「改成横向」）。"
+                "如果这句话和文件无关，就当没有这个文件，正常回答。"
+                % (name, "，".join(parts))
+            )
+        else:
+            head = "用户这一轮在网页里上传了文件：《%s》（%s）。" % (
+                name, "，".join(parts)
+            )
         return (
-            "用户这一轮在网页里上传了文件：《%s》（%s）。"
-            "要知道里面写了什么就调 file_read；要改内容/排版/转格式，"
+            head
+            + "要知道里面写了什么就调 file_read；要改内容/排版/转格式，"
             "先 find_tools 看这台机器有什么，再用 run_python 生成新文件，"
             "然后打印那个新文件。要打印就调用 printer_print，份数和页码按用户说的填。"
             "没读过就不要编造文件里写了什么。"
-            % (name, "，".join(parts))
         )
+
+    def _remember_file(self, conversation_id, attachment):
+        """记住这个会话最近处理过的文件（含 run_python 产出的那份）。"""
+        if not attachment or not attachment.get("path"):
+            return
+        entry = dict(attachment)
+        entry["at"] = time.time()
+        self._recent_files[conversation_id] = entry
+
+    def _reuse_recent_file(self, conversation_id, attachment):
+        """没带新附件时接上最近那个文件；过期或已删就当没有。
+
+        「再打一份」「刚才那个改横向」是常事，网页的 📎 只跟着一条消息走。
+        命中的文件带 `recent` 标记，提示里会说明「上一轮的」，避免回复硬扯到文件。
+        """
+        if attachment:
+            return attachment
+        entry = self._recent_files.get(conversation_id)
+        if not entry:
+            return None
+        path = entry.get("path")
+        if time.time() - entry.get("at", 0) > PRINTER_FILE_TTL_SECONDS or not (
+            path and os.path.exists(path)
+        ):
+            self._recent_files.pop(conversation_id, None)
+            return None
+        reused = dict(entry)
+        reused.pop("at", None)
+        reused["recent"] = True
+        return reused
 
     # ---------- agent loop ----------
 
@@ -677,6 +725,8 @@ class Assistant:
         # 用户原始上传的文件：run_python 每次都以它为输入，产物只影响「接下来打印哪个」，
         # 否则一次「探测环境」的产物会把输入顶掉，后面再也读不到原表
         origin_attachment = attachment
+        if attachment:
+            self._remember_file((client_id or "cli").strip(), attachment)
         # 这一轮的思考决策，结束时由 process_text 记一条（D63）
         self._turn.state = {"thinking": False, "why": "", "tools": used_tools}
         query_total = 0
@@ -803,6 +853,9 @@ class Assistant:
                                 result, attachment = self._process_file(
                                     origin_attachment, args or {}
                                 )
+                                self._remember_file(
+                                    (client_id or "cli").strip(), attachment
+                                )
                         except documents.DocumentError as exc:
                             result = "错误：%s" % exc
                         messages.append({
@@ -817,8 +870,14 @@ class Assistant:
                     # 打印（D61）：文件只在内存/临时目录里，确认后由适配器出纸。
                     # 无条件确认——纸和墨花掉就回不来，和画像一样不跟弱模型开关走。
                     if name == "printer_print":
-                        if not attachment or not self.printer_ready:
-                            blocked_reply = "这一轮没有可打印的文件（或当前部署不支持打印）。"
+                        if not self.printer_ready:
+                            blocked_reply = "打印机现在连不上，等它恢复了再打。"
+                            break
+                        if not attachment:
+                            blocked_reply = (
+                                "我这边还没有文件，你点聊天框左边的 📎 传一个，"
+                                "再说要打印就行。"
+                            )
                             break
                         args, blocked = guard_print_args(args)
                         if blocked:
@@ -1114,21 +1173,20 @@ class Assistant:
         return note, updated
 
     def _print_file(self, payload):
-        """确认之后真正打印；成功就把临时文件删掉，失败留到 TTL 方便重试。"""
+        """确认之后真正打印。
+
+        打印成功后**不删**文件：纸卡了、想再要一份，用户下一句「再打一份」很常见，
+        而重新上传对手机不友好。文件留在临时目录里，按 `PRINTER_FILE_TTL_SECONDS`
+        到期清理（服务端 `_purge_print_files` 扫目录时一并清掉生成的文件）。
+        """
         payload = payload or {}
-        result = self.printer.print_file(
+        return self.printer.print_file(
             payload.get("path"),
             copies=payload.get("copies") or 1,
             pages=payload.get("page_indices"),
             printer_name=payload.get("printer") or "",
             doc_name=payload.get("name") or "",
         )
-        if result.get("ok"):
-            try:
-                os.remove(payload.get("path"))
-            except OSError:
-                pass
-        return result
 
     @staticmethod
     def _tool_metadata(used_tools):

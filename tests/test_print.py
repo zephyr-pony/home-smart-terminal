@@ -412,7 +412,8 @@ def test_print_requires_confirmation_then_prints(tmp_path):
     assert len(printer.calls) == 1
     assert printer.calls[0]["copies"] == 2
     assert printer.calls[0]["pages"] == [0]
-    assert not os.path.exists(attachment["path"])
+    # 打完不删：下一句「再打一份」还要靠它（TTL 到期由服务端清）
+    assert os.path.exists(attachment["path"])
 
 
 def test_run_python_output_becomes_printable_file(tmp_path):
@@ -440,7 +441,8 @@ def test_run_python_output_becomes_printable_file(tmp_path):
     printed = printer.calls[0]
     assert printed["doc_name"] == "汇总.txt"
     assert printed["path"].endswith(".txt")
-    assert not os.path.exists(printed["path"])
+    # 产物留着：确认后未打印，或想再打一份都还能用
+    assert os.path.exists(printed["path"])
 
 
 def test_file_tools_visibility(tmp_path):
@@ -469,6 +471,79 @@ def test_print_without_file_is_blocked(tmp_path):
 
     assert printer.calls == []
     assert "文件" in result["reply"]
+
+
+def test_recent_file_is_reused_for_next_message(tmp_path):
+    """网页的 📎 只跟一条消息走；下一句「再打一份」要能接上刚才的文件。"""
+    attachment = _attachment(tmp_path)
+    llm = ScriptedLLM([_stop("好的"), _tool_call("printer_print", {"copies": 1})])
+    printer = FakePrinter()
+    assistant = make_assistant(llm, printer)
+
+    assistant.process_text("这个文件先别打", "c1", attachment=attachment)
+    result = assistant.process_text("刚才的文件再重新打一份", "c1")
+
+    assert result["type"] == "confirm"
+    assert "报价单.txt" in result["reply"]
+    # 提示里要说明是「刚才的」文件，别让模型以为这一轮又上传了
+    notes = [
+        m["content"] for m in llm.calls[-1]["messages"]
+        if m.get("role") == "system" and "文件" in m.get("content", "")
+    ]
+    assert any("刚才" in note and "报价单.txt" in note for note in notes)
+    names = [tool["function"]["name"] for tool in llm.calls[-1]["tools"]]
+    assert "file_read" in names
+
+
+def test_reprint_after_print_success(tmp_path):
+    """打完不删文件：卡纸了、想再要一份，回一句「再打一份」就行。"""
+    attachment = _attachment(tmp_path)
+    llm = ScriptedLLM([_tool_call("printer_print", {"copies": 1})])
+    printer = FakePrinter()
+    assistant = make_assistant(llm, printer)
+
+    assistant.process_text("打印", "c1", attachment=attachment)
+    assistant.process_text("确认", "c1")
+    assert len(printer.calls) == 1
+    assert os.path.exists(attachment["path"])
+
+    llm.responses.append(_tool_call("printer_print", {"copies": 1}))
+    asked = assistant.process_text("再打一份", "c1")
+    assert asked["type"] == "confirm"
+    assistant.process_text("确认", "c1")
+    assert len(printer.calls) == 2
+
+
+def test_recent_file_not_shared_across_clients(tmp_path):
+    """别人的文件不能拿来打：换一个 client_id 就没有附件。"""
+    attachment = _attachment(tmp_path)
+    llm = ScriptedLLM([
+        _stop("好"),
+        _tool_call("printer_print", {"copies": 1}),
+    ])
+    printer = FakePrinter()
+    assistant = make_assistant(llm, printer)
+
+    assistant.process_text("先放着", "phone-a", attachment=attachment)
+    result = assistant.process_text("打印刚才那个", "phone-b")
+
+    names = [tool["function"]["name"] for tool in llm.calls[-1]["tools"]]
+    assert "file_read" not in names
+    assert printer.calls == []
+    assert "📎" in result["reply"]
+
+
+def test_recent_file_expires(tmp_path):
+    attachment = _attachment(tmp_path)
+    llm = ScriptedLLM([_stop("好"), _stop("好")])
+    assistant = make_assistant(llm)
+
+    assistant.process_text("先放着", "c1", attachment=attachment)
+    assistant._recent_files["c1"]["at"] -= 10 ** 6
+    assistant.process_text("刚才的文件呢", "c1")
+
+    names = [tool["function"]["name"] for tool in llm.calls[-1]["tools"]]
+    assert "file_read" not in names
 
 
 def test_set_thinking_raises_effort_for_rest_of_turn(tmp_path):

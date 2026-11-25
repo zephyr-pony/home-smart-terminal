@@ -162,16 +162,37 @@ _PRINT_LOCK = threading.Lock()
 
 
 def _purge_print_files(now=None):
-    """清掉过期/已删除的上传文件；顺手把磁盘上的临时文件删掉。"""
+    """清掉过期/已删除的上传文件；顺手把磁盘上的临时文件删掉。
+
+    `run_python` 生成的文件不登记在 `_PRINT_FILES` 里（它只接替这一轮的附件），
+    所以最后按 mtime 扫一遍打印目录，否则 /tmp 会一直涨。
+    """
     now = now or time.time()
     expired = []
     with _PRINT_LOCK:
         for file_id, item in list(_PRINT_FILES.items()):
             if now - item["at"] > PRINTER_FILE_TTL_SECONDS:
                 expired.append(_PRINT_FILES.pop(file_id))
+        keep = set(item["path"] for item in _PRINT_FILES.values())
     for item in expired:
         try:
             os.remove(item["path"])
+        except OSError:
+            pass
+    folder = os.path.join(_tmp_dir, "print") if _tmp_dir else ""
+    if not folder or not os.path.isdir(folder):
+        return
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        if path in keep:
+            continue
+        try:
+            if now - os.path.getmtime(path) <= PRINTER_FILE_TTL_SECONDS:
+                continue
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.remove(path)
         except OSError:
             pass
 
