@@ -213,6 +213,7 @@ pytest tests -q
   这个会话最近处理过的文件在 `PRINTER_FILE_TTL_SECONDS`（默认 30 分钟）内会被自动接上，
   所以「刚才的文件再打一份」「改成横向」不用重传；**打印成功也不删文件**（卡纸重打很常见），
   统一由服务端按 TTL 清（`_purge_print_files` 连 `run_python` 生成的产物一起扫）。
+  这份「最近文件」**各端共用**（D64）：单家庭阶段不分设备，上多用户再按 `space_id` 拆。
   服务器是 Linux，打印走 CUPS（`lp` / `lpstat`），Office 用 LibreOffice 转 PDF；
   不要写任何 Windows 专用代码（打印队列、GDI、Office COM 都不在支持范围）。
 

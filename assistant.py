@@ -146,9 +146,10 @@ class Assistant:
         self.llm = llm or LLM()
         # 每个请求一个线程，思考开关的临时状态放线程本地，避免多客户端串台
         self._turn = threading.local()
-        # 每个会话最近处理过的文件（D61 补充）：手机上传一次以后，「再打一份」
+        # 最近处理过的文件（D61 补充 / D64）：手机上传一次以后，「再打一份」
         # 「改成横向」这类话说的时候没有新附件，靠它把文件接上，TTL 内有效。
-        self._recent_files = {}
+        # 当前单家庭部署**各端共用一份**；上多用户时再按 space_id / 人分开。
+        self._recent_file = None
         # 第一轮（决策/调工具）可以换更快的模型；没配置就和回答轮同一个
         self.decision_llm = decision_llm
         self.items = items or Items()
@@ -286,9 +287,9 @@ class Assistant:
             return self._result("chat", "我没听清，能再说一遍吗？", "chat", "chat")
 
         conversation_id = (client_id or "cli").strip()
-        # 3.5) 没带新附件时，接上这个会话最近处理过的文件：「刚才的文件再打一份」
+        # 3.5) 没带新附件时，接上最近处理过的文件：「刚才的文件再打一份」
         # 在网页上不会重新上传，不兜住就只能让用户重传一遍。
-        attachment = self._reuse_recent_file(conversation_id, attachment)
+        attachment = self._reuse_recent_file(attachment)
 
         # 0) 待确认动作优先：确认/取消/重新提问
         pending_confirm = self.confirmations.get_pending(conversation_id)
@@ -620,15 +621,19 @@ class Assistant:
             "没读过就不要编造文件里写了什么。"
         )
 
-    def _remember_file(self, conversation_id, attachment):
-        """记住这个会话最近处理过的文件（含 run_python 产出的那份）。"""
+    def _remember_file(self, attachment):
+        """记住最近处理过的文件（含 run_python 产出的那份）。
+
+        只留一份、不按客户端分（D64）：当前是单家庭部署，手机传完想在电脑上
+        「再打一份」是正常需求；上多用户/多家庭时再按 `space_id` 分开。
+        """
         if not attachment or not attachment.get("path"):
             return
         entry = dict(attachment)
         entry["at"] = time.time()
-        self._recent_files[conversation_id] = entry
+        self._recent_file = entry
 
-    def _reuse_recent_file(self, conversation_id, attachment):
+    def _reuse_recent_file(self, attachment):
         """没带新附件时接上最近那个文件；过期或已删就当没有。
 
         「再打一份」「刚才那个改横向」是常事，网页的 📎 只跟着一条消息走。
@@ -636,14 +641,14 @@ class Assistant:
         """
         if attachment:
             return attachment
-        entry = self._recent_files.get(conversation_id)
+        entry = self._recent_file
         if not entry:
             return None
         path = entry.get("path")
         if time.time() - entry.get("at", 0) > PRINTER_FILE_TTL_SECONDS or not (
             path and os.path.exists(path)
         ):
-            self._recent_files.pop(conversation_id, None)
+            self._recent_file = None
             return None
         reused = dict(entry)
         reused.pop("at", None)
@@ -726,7 +731,7 @@ class Assistant:
         # 否则一次「探测环境」的产物会把输入顶掉，后面再也读不到原表
         origin_attachment = attachment
         if attachment:
-            self._remember_file((client_id or "cli").strip(), attachment)
+            self._remember_file(attachment)
         # 这一轮的思考决策，结束时由 process_text 记一条（D63）
         self._turn.state = {"thinking": False, "why": "", "tools": used_tools}
         query_total = 0
@@ -853,9 +858,7 @@ class Assistant:
                                 result, attachment = self._process_file(
                                     origin_attachment, args or {}
                                 )
-                                self._remember_file(
-                                    (client_id or "cli").strip(), attachment
-                                )
+                                self._remember_file(attachment)
                         except documents.DocumentError as exc:
                             result = "错误：%s" % exc
                         messages.append({

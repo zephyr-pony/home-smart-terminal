@@ -1488,4 +1488,6 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 - **打印成功不再删文件**：卡纸、想再要一份都很常见，删了就只能重传。
   统一由 `_purge_print_files` 按 `PRINTER_FILE_TTL_SECONDS`（默认 30 分钟）清，
   并按 mtime 扫 `print/` 目录，把 `run_python` 生成、没登记的产物一起清掉。
-- 文件仍按 `client_id` 隔离：手机上传的文件不会被另一个客户端的对话拿去打。
+- **不按设备隔离（D64）**：`_recent_file` 只留最近一份，手机传完在电脑上也能「再打一份」。
+  单家庭阶段先共用，上多用户/多家庭成员时再按 `space_id` 拆；
+  `POST /api/print/files` 的 file_id 仍然只对上传者有效（页面只用自己的 file_id）。

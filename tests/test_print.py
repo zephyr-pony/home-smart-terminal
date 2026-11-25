@@ -514,8 +514,8 @@ def test_reprint_after_print_success(tmp_path):
     assert len(printer.calls) == 2
 
 
-def test_recent_file_not_shared_across_clients(tmp_path):
-    """别人的文件不能拿来打：换一个 client_id 就没有附件。"""
+def test_recent_file_shared_across_clients(tmp_path):
+    """D64：单家庭部署先不分设备——手机上传的文件，电脑上也能「再打一份」。"""
     attachment = _attachment(tmp_path)
     llm = ScriptedLLM([
         _stop("好"),
@@ -528,9 +528,9 @@ def test_recent_file_not_shared_across_clients(tmp_path):
     result = assistant.process_text("打印刚才那个", "phone-b")
 
     names = [tool["function"]["name"] for tool in llm.calls[-1]["tools"]]
-    assert "file_read" not in names
-    assert printer.calls == []
-    assert "📎" in result["reply"]
+    assert "file_read" in names
+    assert result["type"] == "confirm"
+    assert "报价单.txt" in result["reply"]
 
 
 def test_recent_file_expires(tmp_path):
@@ -539,7 +539,7 @@ def test_recent_file_expires(tmp_path):
     assistant = make_assistant(llm)
 
     assistant.process_text("先放着", "c1", attachment=attachment)
-    assistant._recent_files["c1"]["at"] -= 10 ** 6
+    assistant._recent_file["at"] -= 10 ** 6
     assistant.process_text("刚才的文件呢", "c1")
 
     names = [tool["function"]["name"] for tool in llm.calls[-1]["tools"]]
