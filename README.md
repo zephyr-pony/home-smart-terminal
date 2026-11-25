@@ -364,6 +364,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `MEMORY_DISTILL_INTERVAL_HOURS` | `6` | 超阈值补跑的最小间隔（小时） |
 | `MEMORY_DISTILL_MAX_GROUPS` | `10` | 每轮最多合并几组（一组一次模型调用） |
 | `MEMORY_DISTILL_SUMMARY_CHARS` | `60` | 合并后的摘要最多多少字 |
+| `MEMORY_DISTILL_CHECK_SECONDS` | `900` | 后台检查是否该蒸馏的间隔（秒） |
 
 ## 使用方式
 
