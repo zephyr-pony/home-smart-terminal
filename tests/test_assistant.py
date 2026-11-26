@@ -745,3 +745,42 @@ def test_task_context_only_applies_to_that_turn():
         for m in llm.calls[-1] if m.get("role") == "system"
     ]
     assert not any("task_id=%d" % task["id"] in text for text in notes)
+
+
+class FakeHome:
+    """只关心一件事：这套网关让不让控制设备。"""
+
+    def __init__(self, control_enabled):
+        self.control_enabled = control_enabled
+
+    def query(self, keyword=""):
+        return ""
+
+    def control(self, device, action, value=None):
+        return ""
+
+
+def test_system_prompt_follows_whether_control_is_allowed():
+    """能控制时说「还不能控制」等于自己把工具藏起来（真踩过）。"""
+    allowed = Assistant(
+        memory=Memory(":memory:"), items=Items(":memory:"), llm=FakeLLM(),
+        tasks=Tasks(":memory:"), facts=Facts(":memory:"), home=FakeHome(True),
+    )
+    prompt = allowed._system_prompt()
+    assert "home_control" in prompt
+    assert "还不能控制" not in prompt
+
+    readonly = Assistant(
+        memory=Memory(":memory:"), items=Items(":memory:"), llm=FakeLLM(),
+        tasks=Tasks(":memory:"), facts=Facts(":memory:"), home=FakeHome(False),
+    )
+    prompt = readonly._system_prompt()
+    assert "还不能控制" in prompt
+    assert "home_control" not in prompt
+
+
+def test_system_prompt_without_home_has_no_device_lines():
+    prompt = make_assistant()._system_prompt()
+
+    assert "home_query" not in prompt
+    assert "home_control" not in prompt

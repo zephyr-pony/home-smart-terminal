@@ -117,7 +117,10 @@ AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记�
 
 # 接了设备网关时才追加，避免模型对着不存在的工具瞎调
 HOME_PROMPT_LINE = """
-- 智能设备状态（"客厅的灯开着吗""空调设的多少度""净水器滤芯还剩多少"）→ home_query，keyword 用设备名或房间名
+- 智能设备状态（"客厅的灯开着吗""空调设的多少度""净水器滤芯还剩多少"）→ home_query，keyword 用设备名或房间名"""
+
+# 只读网关才说这句。能控制时还说「只能查」，模型就会告诉用户「我还不能控制」。
+HOME_READONLY_PROMPT_LINE = """
 - home_query 只能查不能操作：用户要求开关设备时，如实说现在只能查、还不能控制"""
 
 # 白名单非空时才有 home_control
@@ -805,6 +808,25 @@ class Assistant:
 
     # ---------- agent loop ----------
 
+    def _system_prompt(self, device_camera=False):
+        """身份 + 这一轮的入口提示（设备网关、摄像头）；热点上下文由调用方另加。
+
+        为什么按 control_enabled 二选一：只读那句「只能查不能操作」以前是无条件
+        加的，控制开了以后它就变成假话，模型会回「我还不能控制」。
+        """
+        prompt = AGENT_SYSTEM_PROMPT.replace(
+            "{today}", datetime.now().strftime("%Y年%m月%d日")
+        )
+        if self.home is not None:
+            prompt += HOME_PROMPT_LINE
+            if getattr(self.home, "control_enabled", False):
+                prompt += HOME_CONTROL_PROMPT_LINE
+            else:
+                prompt += HOME_READONLY_PROMPT_LINE
+        if device_camera:
+            prompt += CAMERA_PROMPT_LINE
+        return prompt
+
     def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False,
                     task_id=None, attachment=None):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
@@ -818,15 +840,7 @@ class Assistant:
             (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）；
             device_camera 时还可能返回 device_call（这一轮交给设备端执行，不落库也不生成回复）。
         """
-        sys_prompt = AGENT_SYSTEM_PROMPT.replace(
-            "{today}", datetime.now().strftime("%Y年%m月%d日")
-        )
-        if self.home is not None:
-            sys_prompt += HOME_PROMPT_LINE
-            if getattr(self.home, "control_enabled", False):
-                sys_prompt += HOME_CONTROL_PROMPT_LINE
-        if device_camera:
-            sys_prompt += CAMERA_PROMPT_LINE
+        sys_prompt = self._system_prompt(device_camera)
         # 热点上下文（D58）：画像/常用事实/最近记忆，冻结快照，省掉查记忆那一轮
         hot = self._hot_context(client_id)
         if hot:
@@ -860,7 +874,7 @@ class Assistant:
         # file_read 只在有附件时露出来；run_python 任何时候都能生成文件，
         # 所以 printer_print 只要有打印机就给——没文件时调用会被拦下并说明原因。
         show_printer = self.printer_ready
-        file_tools = {"file_read", "file_process", "run_python"}
+        file_tools = {"file_read", "run_python"}
         schemas = [
             t["schema"] for t in self.tools
             if (device_camera or t["schema"]["function"]["name"] != "camera_look")

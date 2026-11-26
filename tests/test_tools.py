@@ -173,3 +173,16 @@ def test_item_delete_tool_deletes_exact_match():
 
     assert "已删除 1 个物品" in out
     assert [row["name"] for row in items.list_all()] == ["酸奶机"]
+# 描述里提到不存在的工具，模型会去调一个没有的（file_process 就这么留了很久）。
+_REMOVED_TOOLS = ("file_process", "get_current_date")
+
+
+def test_descriptions_do_not_reference_removed_tools():
+    from tools import get_all_tools, get_printer_tool
+
+    tools = get_all_tools(Memory(":memory:")) + [get_printer_tool()]
+    for tool in tools:
+        fn = tool["schema"]["function"]
+        text = fn.get("description", "") + str(fn.get("parameters", {}))
+        for removed in _REMOVED_TOOLS:
+            assert removed not in text, (fn["name"], removed)

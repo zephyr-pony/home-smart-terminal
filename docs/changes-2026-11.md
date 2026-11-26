@@ -1802,3 +1802,33 @@ compose 注释和 doctor 的提示里都写明了怎么开。
   `明年春节放假怎么安排` → `web_search` + `lunar_calendar` + `web_fetch`，答
   2月5日（除夕）到 2月13日、补班 1月31日与 2月14日——和 11 月 5 日那份
   `国办发明电〔2026〕10 号` 逐字一致；`今天晚饭吃啥好` 不搜，直接回话。
+
+## 三十八、2026-11-26：把 36 个工具的描述过一遍（D75）
+
+### 揪出来的同类问题
+
+| 工具 | 原来的描述 | 实际 | 后果 |
+|---|---|---|---|
+| `printer_print` | 「要改排版先调 `file_process`」「只有附带了文件才可用」 | `file_process` 早在 D62 就换成了 `run_python`；24 小时内「再打一份」也能用 | 模型去调一个不存在的工具；或说「这次没附件不能打」 |
+| `run_python` | 「没有网络」 | 容器直连能通（和 `web_fetch` 同一出口），实测 example.com 返回 200 | 模型拒绝调接口、拒绝下载，回「我这边不能联网」 |
+| `fact_search` | 「问户号、地址、品牌、型号时调用」 | wifi 密码、车牌、生日、保修期也都在事实库里 | 问「我家 wifi 密码」它去翻记忆库（`family_search`），查不到就说没记录 |
+| `memory_search` | 「关于家庭琐事的问题」 | 用户说过的话、经历过的事都算 | 问「上次他说那家店叫什么」不一定去查 |
+| `task_list` | 「我有哪些提醒 / 还有什么没做」 | 按日期问「这周有什么安排」也是它 | 问安排时不查任务，改去查记忆 |
+| 系统提示 | 「home_query 只能查不能操作」（无条件追加） | 控制白名单已配好，`home_control` 就在工具里 | 模型可能回「我还不能控制设备」 |
+
+### 改法
+
+- 五处工具描述按「真实能力 + 边界」重写，例子补到用户真会问的说法上
+  （wifi 密码、车牌、这周安排、画图表、批量改文件）。
+- `_system_prompt(device_camera)` 抽成方法：`HOME_PROMPT_LINE` 只留查询那句，
+  只读时追加 `HOME_READONLY_PROMPT_LINE`，能控制时追加 `HOME_CONTROL_PROMPT_LINE`。
+- `assistant.py` 里 `file_tools` 的死名字 `file_process` 删掉。
+
+### 验收
+
+- 单测 664 → 667：`test_tools.py` 加「描述里不许出现已删工具名（`file_process` /
+  `get_current_date`）」；`test_assistant.py` 加「能控制时提示词不说只能查」「没有网关就没有设备那两句」。
+- 容器实测：`你能控制家里的灯吗` → 「能啊，开灯关灯、调亮度都行」；
+  `我家 wifi 密码是多少` → 调 `fact_search`（不再是 `family_search`）；
+  `用 python 看看 example.com 能不能访问` → `run_python` 真跑通，答 200；
+  `这周有什么安排` → 调 `task_list`。

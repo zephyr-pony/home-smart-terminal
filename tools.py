@@ -55,7 +55,9 @@ def get_memory_tools(memory: Memory, proposals=None):
             name="memory_search",
             description=(
                 "搜索家庭记忆库，返回相关记忆片段（每条带 [存储日期] 前缀）。"
-                "用于回答用户关于家庭琐事的问题，如'酸奶还有几天过期''上次换鼠标电池是什么时候'。"
+                "用户以前说过的话、家里发生过的事、当时随口记下的原话，都从这里找——"
+                "包括'上次换鼠标电池是什么时候''酸奶还有几天过期''他说过那家店叫什么'这类。"
+                "不确定有没有记过就先查一次，别凭印象答；确实没有就如实说没记过。"
                 "keywords 用空格分隔多个关键词，如'酸奶 过期'。"
             ),
             properties={
@@ -622,7 +624,11 @@ def get_task_tools(tasks, proposals=None):
         ),
         _build(
             name="task_list",
-            description="列出任务。用户问'我有哪些提醒''还有什么没做'时调用。",
+            description=(
+                "列出任务/日程。用户问'我有哪些提醒''还有什么没做''这周有什么安排'"
+                "'周五有什么事''最近要交什么钱'时调用；status 可筛 pending/reminded/"
+                "done/cancelled，不传就全列。"
+            ),
             properties={
                 "status": {
                     "type": "string",
@@ -736,11 +742,16 @@ def get_fact_tools(facts, proposals=None):
         ),
         _build(
             name="fact_search",
-            description="查询结构化事实。用户问户号、地址、品牌、型号时调用。",
+            description=(
+                "查家里固定下来的信息（结构化事实）：户号、账号、密码、地址、电话、"
+                "车牌、品牌型号、保修期、尺寸、生日、纪念日……"
+                "用户问「我们家的某某是什么」时先查这里，查不到再让用户告诉你，不要猜。"
+                "query 用关键词，如 '电费户号'、'wifi 密码'、'车牌'。"
+            ),
             properties={
-                "query": {"type": "string", "description": "关键词"},
-                "subject": {"type": "string", "description": "主体筛选，可选"},
-                "predicate": {"type": "string", "description": "属性筛选，可选"},
+                "query": {"type": "string", "description": "关键词，如 '电费户号'、'wifi 密码'"},
+                "subject": {"type": "string", "description": "主体筛选，可选，如 '爸妈家'"},
+                "predicate": {"type": "string", "description": "属性筛选，可选，如 '电费户号'"},
             },
             required=[],
             execute=search_facts,
@@ -986,9 +997,10 @@ def get_printer_tool():
     return _build(
         name="printer_print",
         description=(
-            "打印这一轮用户上传的文件（PDF / 图片 / 文本 / Office）。"
-            "只有用户附带了文件时才可用；打印前系统会自动向用户确认，调用后不用再问。"
-            "不知道文件里是什么就先调 file_read；要改内容或排版就先调 file_process，"
+            "打印用户上传的文件（PDF / 图片 / 文本 / Office）。"
+            "这一轮有附件，或者刚上传/处理过、还在有效期（默认 24 小时）时可用；"
+            "打印前系统会自动向用户确认，调用后不用再问。"
+            "不知道文件里是什么就先调 file_read；要改内容或排版就先调 run_python，"
             "它产出的新文件才是这一步要打印的文件。不要编造文件里写了什么。"
         ),
         properties={
@@ -1023,9 +1035,11 @@ def get_file_tools():
         _build(
             name="file_read",
             description=(
-                "读取这一轮用户上传文件的内容。表格返回工作表名、行列数和前 40 行"
+                "读取用户上传文件的内容。表格返回工作表名、行列数和前 40 行"
                 "（带列字母，如 A=项目、B=一月），PDF 返回正文，Word 返回文字。"
                 "用户问文件里有什么、要按列运算或改版式之前，先调用它。"
+                "只认这一轮上传的附件；服务器上已有的文件（比如 run_python 以前生成的）"
+                "用 run_shell 的 ls/cat 或 run_python 去读。"
             ),
             properties={},
             required=[],
@@ -1050,14 +1064,16 @@ def get_file_tools():
         _build(
             name="run_python",
             description=(
-                "跑一段 Python 处理附件（或从零生成一个文件），产出新文件用于打印。"
+                "跑一段 Python：处理附件、批量改文件、算复杂的东西、画图表，"
+                "或者从零生成一个文件，产出物自动成为这一轮的打印文件。"
                 "输入路径在环境变量 XIAOMA_IN（没有附件时为空字符串），把结果存到 "
                 "环境变量 XIAOMA_OUT 指向的**文件路径**（它不是一个目录，直接 "
                 "wb.save(os.environ['XIAOMA_OUT']) 就行）；运行完这个文件自动成为"
                 "这一步的打印文件。XIAOMA_IN 始终是用户上传的原件，不会因为上一步"
                 "的产物而改变。"
                 "可以用容器里已装的库和命令行（先 find_tools 查），也可以用 subprocess "
-                "调 soffice 转格式。没有网络。"
+                "调 soffice 转格式。能联网（和 web_fetch 同一个出口，容器直连），"
+                "偶尔取个小接口没问题，别下大文件——容易超时。"
                 "用户只是问内容时用 file_read 就够，不必跑代码。"
             ),
             properties={

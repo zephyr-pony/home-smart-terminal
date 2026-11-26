@@ -213,6 +213,9 @@ pytest tests -q
 
 - 新工具在 `tools.py` 用 `_build(...)` 注册，返回 `{"schema", "execute"}`；`assistant` 会自动聚合，核心循环不用改。
 - `execute(**kwargs)` 必须返回**字符串**（直接进 LLM 上下文）。
+- **工具描述也是代码（D75）**：只写真实能力和边界，不写「只有…才可用」「没有网络」这类没核实的话，
+  也不许提已经删掉的工具（`file_process` 就这样让模型空调过）。删工具或改行为时，
+  全仓搜一遍描述；`tests/test_tools.py` 有一条守卫拦已删工具名。
 - 参数名与 JSON Schema 保持一致；`assistant` 会把 `memory_store` 的 `summary`、`memory_search` 的关键词提取进返回值，改动工具名/参数时注意同步。
 - `camera_look` 是摄像头入口的例外：照片在设备上，`execute` 只在没有摄像头的入口（CLI / 网页）被调用，回一句「看不到」。`/v1` 只在请求 `tools` 里出现 `self.camera.take_photo` 时才把它的 schema 给模型；模型一调用就转成 `device_call` 收尾，不执行、不落库、不写会话（写进去下一句会被带着继续拍）。
 - 小智会把设备工具名的点换成下划线（`self.camera.take_photo` → `self_camera_take_photo`）再给 LLM；`/v1` 回 `tool_calls` 时**必须用请求里那个名字**，用带点的原始名它查不到工具，拍照会静默失败。判断有没有摄像头也要按归一化后的名字比。
