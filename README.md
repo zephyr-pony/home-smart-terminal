@@ -112,7 +112,7 @@ start.bat            # Windows 一键启动
 > **手机想用推送和「添加到主屏」就必须走 HTTPS**（两者只在安全上下文可用，`http://<局域网IP>` 不行）。
 > 推荐 Tailscale Serve：`tailscale serve --bg http://127.0.0.1:8000` 之后，手机装 Tailscale 加入同一
 > tailnet，用 `https://<主机名>.<tailnet>.ts.net` 打开即可，证书由 Tailscale 自动签发。
-> 详见 `docs/server-migration.md` 阶段 5。
+> 换机或换域名等于换源：每台设备要重新开启通知、重新「添加到主屏」。
 
 > 若 `8000` 端口被占用或被系统保留（Windows 上可用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查看），改 `.env` 的 `SERVER_PORT` 即可。
 

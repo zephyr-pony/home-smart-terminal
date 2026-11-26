@@ -388,7 +388,7 @@ id=6 爸妈家·电费户号 123456  valid_to=NULL
 
 两份可执行清单，都不动代码。
 
-### 服务器迁移（`docs/server-migration.md`）
+### 服务器迁移（清单已移出仓库）
 
 按「前置体检 → 装系统 → 依赖与服务 → 数据迁移 → 网络地址 → HTTPS → 验收 → 回滚」
 拆成可勾选步骤。补了 §22 里没写到的几件事：
@@ -758,7 +758,7 @@ https://win-od68q9v0uct.tail8025f9.ts.net (tailnet only)
 | `/api/events` | 立刻收到 `: connected`，Tailscale 不缓冲 SSE |
 
 手机侧（2026-11-23 **用户实测通过**）：装 Tailscale → 用 ts.net 地址打开 → 添加到主屏 →
-设置里开通知 → 锁屏收提醒、点开显示原文。清单写在 `docs/server-migration.md` 阶段 5。
+设置里开通知 → 锁屏收提醒、点开显示原文。换源（换机/换域名）后要重新订阅，否则收不到。
 
 代价说清楚：推送由浏览器推送服务送达，**不需要 VPN 常开也能收到**；但点开应用要能连上
 tailnet，否则页面打不开。主机改名/换机等于换源，订阅和 PWA 安装都要重来。
@@ -1721,10 +1721,11 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 
 ### 搬家清单
 
-- `docs/server-migration.md` 原来是「旧笔记本 + systemd + venv」的清单，和现在的
-  Docker 部署对不上。按 Gen10 Plus 重写：Debian 12 + Compose、4 个网口的分工、
-  iLO 可选、12TB 单盘挂 `/srv`（UUID + noatime，不用 S100i 软 RAID）、
-  CUPS 客户端验收、Tailscale 换源后重新订阅推送、加密备份 + systemd timer、断电/回滚。
+- 清单**不放在仓库里**（容易让看代码的人以为是通用部署文档）：内容移到本机
+  `docs/server-migration.local.md`，已由 `*.local.md` 忽略。
+- 按 Gen10 Plus 重写：Debian 12 + Compose、4 个网口的分工、iLO 可选、
+  12TB 单盘挂 `/srv`（UUID + noatime，不用 S100i 软 RAID）、CUPS 客户端验收、
+  Tailscale 换源后重新订阅推送、加密备份 + systemd timer、断电/回滚。
 
 ### 验收
 
