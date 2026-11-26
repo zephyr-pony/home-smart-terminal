@@ -17,6 +17,9 @@ config.local.*
 docker-compose.yml
 docker-compose.override.yml
 
+# ---- 本机笔记（服务器规划、私有记录，不提交）----
+*.local.md
+
 # ---- 内部工具 ----
 .sisyphus/
 
