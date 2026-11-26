@@ -142,9 +142,13 @@ class _TokenRedactingFilter(logging.Filter):
 
 
 def _install_log_redaction():
-    access = logging.getLogger("uvicorn.access")
-    if not any(isinstance(f, _TokenRedactingFilter) for f in access.filters):
-        access.addFilter(_TokenRedactingFilter())
+    # 两个都要挂：HTTP 请求走 `uvicorn.access`，但 WebSocket 握手（MCP 接入点就靠它）
+    # 是 `uvicorn.error` 打的 `%s - "WebSocket %s" [accepted]`，只挂 access 会漏掉
+    # `?token=`，容器日志里就是明文。
+    for name in ("uvicorn.access", "uvicorn.error"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, _TokenRedactingFilter) for f in logger.filters):
+            logger.addFilter(_TokenRedactingFilter())
 
 
 _install_log_redaction()

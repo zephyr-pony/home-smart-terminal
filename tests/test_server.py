@@ -1573,3 +1573,28 @@ def test_access_log_redaction_keeps_substrings():
     server._TokenRedactingFilter().filter(record)
 
     assert "monkey=1" in record.getMessage()
+
+
+def test_websocket_handshake_log_redaction():
+    """WS 握手走 uvicorn.error（MCP 的 token 就在这条 URL 里），同样要打码。"""
+    record = logging.LogRecord(
+        "uvicorn.error", logging.INFO, __file__, 1,
+        '%s - "WebSocket %s" [accepted]',
+        ("172.20.0.1:48814", "/mcp_endpoint/mcp/?token=secret-456"),
+        None,
+    )
+
+    server._TokenRedactingFilter().filter(record)
+
+    rendered = record.getMessage()
+    assert "secret-456" not in rendered
+    assert "token=***" in rendered
+
+
+def test_redaction_filter_is_installed_on_both_loggers():
+    """只挂 uvicorn.access 会漏掉 WS 握手那行（真实踩过）。"""
+    server._install_log_redaction()
+
+    for name in ("uvicorn.access", "uvicorn.error"):
+        filters = logging.getLogger(name).filters
+        assert any(isinstance(f, server._TokenRedactingFilter) for f in filters), name
