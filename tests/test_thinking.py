@@ -96,3 +96,13 @@ def test_api_thinking_requires_token(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "API_TOKEN", "secret")
     client = TestClient(server.app)
     assert client.get("/api/thinking").status_code == 401
+
+
+def test_overview_page_shows_thinking_panel(monkeypatch):
+    """概览页要有「思考开关」面板：手机上也看得到开了几轮、各自多快。"""
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    client = TestClient(server.app)
+    html = client.get("/").text
+    assert 'id="thinking-list"' in html
+    assert 'id="thinking-summary"' in html
+    assert "思考开关" in html

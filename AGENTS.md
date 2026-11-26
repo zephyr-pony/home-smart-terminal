@@ -242,8 +242,8 @@ pytest tests -q
 - `set_thinking` 在 `assistant._agent_loop` 里拦，不落 `execute`、不进会话历史；
   开关只影响本轮后续请求，不跨轮记忆。
 - 每轮记一行 `data/thinking.jsonl`（问题 / 开没开 / 原因 / 工具 / 耗时），
-  `GET /api/thinking` 看最近记录和统计。这是调试观测数据，不是用户资产，
-  可随时删，`THINKING_LOG_ENABLED=0` 关闭；写失败不许影响回答。
+  `GET /api/thinking` 看最近记录和统计，网页「概览 → 思考开关」也能看；
+  这是调试观测数据，不是用户资产，可随时删，`THINKING_LOG_ENABLED=0` 关闭；写失败不许影响回答。
 - 观察到某类问题长期不开思考却总答错，改工具描述，不要加关键词路由。
 
 ### 工具输出：给事实，不给话术

@@ -189,6 +189,13 @@ html, body {
   font-size: 14px; line-height: 1.5;
 }
 .list-row .meta { color: var(--text-secondary); font-size: 12px; margin-top: 3px; }
+/* 思考开关观察：开/没开用颜色分开，扫一眼就能看出比例 */
+.think-pill {
+  display: inline-block; margin-right: 6px; padding: 1px 6px;
+  border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: var(--surface-alt); color: var(--text-secondary);
+}
+.think-pill.on { background: var(--accent-weak, rgba(90, 160, 240, .16)); color: var(--accent); }
 .row-actions { display: flex; gap: 8px; margin-top: 8px; }
 .small-btn {
   padding: 5px 10px; border: 1px solid var(--border);
@@ -417,6 +424,9 @@ html, body {
         <div id="stat-detail" class="muted stat-detail"></div>
         <h3 class="section-title">到期提醒</h3>
         <div id="overview-due" class="list"></div>
+        <h3 class="section-title">思考开关</h3>
+        <div id="thinking-summary" class="muted stat-detail"></div>
+        <div id="thinking-list" class="list"></div>
       </div>
     </section>
 
@@ -542,6 +552,8 @@ html, body {
   var statCards  = document.getElementById('stat-cards');
   var statDetail = document.getElementById('stat-detail');
   var overviewDue = document.getElementById('overview-due');
+  var thinkingSummary = document.getElementById('thinking-summary');
+  var thinkingList = document.getElementById('thinking-list');
   var dataTabs   = document.getElementById('data-tabs');
   var dataList   = document.getElementById('data-list');
   var dataSearch = document.getElementById('data-search');
@@ -873,6 +885,42 @@ html, body {
       overviewDue.innerHTML = rows.length ? rows.join('') : '<div class="empty">暂无到期提醒</div>';
     }).catch(function(err) {
       overviewDue.innerHTML = '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
+    });
+    loadThinking();
+  }
+
+  // 「模型自己决定要不要开思考」的观察（D63）：只看最近 20 轮，新的在上。
+  function loadThinking() {
+    if (!thinkingList) return;
+    apiFetch('/api/thinking?limit=20').then(function(d) {
+      var s = d.summary || {};
+      if (d.enabled === false) {
+        thinkingSummary.textContent = '记录已关闭（THINKING_LOG_ENABLED=0）';
+        thinkingList.innerHTML = '';
+        return;
+      }
+      thinkingSummary.textContent =
+        '最近 ' + (s.total || 0) + ' 轮 · 开思考 ' + (s.thinking || 0) +
+        ' 轮（平均 ' + (s.avg_seconds_thinking || 0) + ' s）· 没开 ' +
+        (s.no_thinking || 0) + ' 轮（平均 ' +
+        (s.avg_seconds_no_thinking || 0) + ' s）';
+      var rows = (d.items || []).slice().reverse();
+      thinkingList.innerHTML = rows.length ? rows.map(function(it) {
+        var meta = [];
+        if (it.why) meta.push(it.why);
+        if (it.tools && it.tools.length) meta.push(it.tools.join('、'));
+        meta.push((it.seconds || 0) + ' s');
+        if (it.at) meta.push(String(it.at).replace('T', ' ').slice(5, 16));
+        return '<div class="list-row">' +
+          '<span class="think-pill ' + (it.thinking ? 'on' : 'off') + '">' +
+          (it.thinking ? '开' : '没开') + '</span>' +
+          esc(it.text || '') +
+          '<div class="meta">' + esc(meta.join(' · ')) + '</div></div>';
+      }).join('') : '<div class="empty">还没有记录。</div>';
+    }).catch(function(err) {
+      thinkingSummary.textContent = '';
+      thinkingList.innerHTML =
+        '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
     });
   }
 
