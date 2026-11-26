@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import server
 from adapters import printer as printer_mod
+from domain import prints as print_store_mod
 from adapters.printer import (
     PrintError,
     Printer,
@@ -369,6 +370,22 @@ def _attachment(tmp_path, pages=1):
     }
 
 
+def test_printer_availability_refreshes(tmp_path):
+    """打印机晚开机：不用重启小马，下一次请求自己就能打。"""
+    printer = FakePrinter(ready=False)
+    llm = ScriptedLLM([_stop("好")])
+    assistant = make_assistant(llm, printer)
+    assert assistant.printer_ready is False
+
+    printer.ready = True
+    assert assistant.refresh_printer(force=True) is True
+    names = [t["schema"]["function"]["name"] for t in assistant.tools]
+    assert "printer_print" in names
+
+    printer.ready = False
+    assert assistant.refresh_printer(force=True) is False
+
+
 def test_print_tool_follows_printer_availability(tmp_path):
     """printer_print 跟着打印机可用性走，不再要求「这一轮先有附件」——
     模型可能先 run_python 生成文件再打印（D62）。"""
@@ -546,6 +563,83 @@ def test_recent_file_expires(tmp_path):
     assert "file_read" not in names
 
 
+def _assistant_with_store(llm, store, printer=None):
+    items = Items(":memory:")
+    return Assistant(
+        memory=Memory(":memory:"), items=items, llm=llm,
+        clarifier=Clarifier(store=AgentStore(":memory:"), items=items),
+        tasks=Tasks(":memory:"), facts=Facts(":memory:"),
+        printer=printer or FakePrinter(), print_store=store,
+    )
+
+
+def test_recent_file_survives_restart(tmp_path):
+    """重启后内存是空的，靠 prints.db 接上「刚才的文件」。"""
+    path = tmp_path / "重启前.txt"
+    path.write_text("x", encoding="utf-8")
+    store = print_store_mod.PrintStore(str(tmp_path / "prints.db"))
+    store.add("f1", "重启前.txt", str(path), kind="text", size=1)
+
+    llm = ScriptedLLM([_tool_call("printer_print", {"copies": 1})])
+    assistant = _assistant_with_store(llm, store)
+    result = assistant.process_text("刚才的文件再打一份", "web")
+
+    assert result["type"] == "confirm"
+    assert "重启前.txt" in result["reply"]
+    names = [tool["function"]["name"] for tool in llm.calls[-1]["tools"]]
+    assert "file_read" in names
+
+
+def test_print_result_is_recorded(tmp_path):
+    """出纸成功后历史里能看到 printed 和 CUPS 任务号。"""
+    attachment = _attachment(tmp_path)
+    store = print_store_mod.PrintStore(str(tmp_path / "prints.db"))
+    store.add("f1", attachment["name"], attachment["path"], kind="text",
+              size=attachment["size"])
+    llm = ScriptedLLM([_tool_call("printer_print", {"copies": 1})])
+    assistant = _assistant_with_store(llm, store)
+
+    assistant.process_text("打印", "c1", attachment=attachment)
+    assistant.process_text("确认", "c1")
+
+    row = store.get("f1")
+    assert row["status"] == "printed"
+    assert row["job_id"] == "xiaoma-1"
+
+
+def test_cancel_marks_record_cancelled(tmp_path):
+    attachment = _attachment(tmp_path)
+    store = print_store_mod.PrintStore(str(tmp_path / "prints.db"))
+    store.add("f1", attachment["name"], attachment["path"], kind="text")
+    llm = ScriptedLLM([_tool_call("printer_print", {"copies": 1})])
+    assistant = _assistant_with_store(llm, store)
+
+    assistant.process_text("打印", "c1", attachment=attachment)
+    assistant.process_text("取消", "c1")
+
+    assert store.get("f1")["status"] == "cancelled"
+
+
+def test_failed_print_is_recorded(tmp_path):
+    attachment = _attachment(tmp_path)
+    store = print_store_mod.PrintStore(str(tmp_path / "prints.db"))
+    store.add("f1", attachment["name"], attachment["path"], kind="text")
+
+    class BrokenPrinter(FakePrinter):
+        def print_file(self, path, **kwargs):
+            return {"ok": False, "error": "纸没了"}
+
+    llm = ScriptedLLM([_tool_call("printer_print", {"copies": 1})])
+    assistant = _assistant_with_store(llm, store, BrokenPrinter())
+
+    assistant.process_text("打印", "c1", attachment=attachment)
+    assistant.process_text("确认", "c1")
+
+    row = store.get("f1")
+    assert row["status"] == "failed"
+    assert "纸没了" in row["error"]
+
+
 def test_set_thinking_raises_effort_for_rest_of_turn(tmp_path):
     """模型自己要求「深度思考」后，同一轮后续调用改用 thinking 档位（D63）。"""
     class EffortLLM:
@@ -623,7 +717,11 @@ class UploadAssistant:
 def upload_server(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "API_TOKEN", "secret")
     monkeypatch.setattr(server, "_tmp_dir", str(tmp_path))
-    monkeypatch.setattr(server, "_PRINT_FILES", {})
+    monkeypatch.setattr(server, "PRINT_FILES_DIR", str(tmp_path / "print"))
+    monkeypatch.setattr(
+        server, "print_store",
+        print_store_mod.PrintStore(str(tmp_path / "prints.db")),
+    )
     assistant = UploadAssistant()
     monkeypatch.setattr(server, "assistant", assistant)
 

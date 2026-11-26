@@ -51,7 +51,10 @@ from config import (
     MEMORY_DISTILL_MAX_GROUPS,
     MEMORY_DISTILL_SUMMARY_CHARS,
     MEMORY_DISTILL_THRESHOLD,
-    PRINTER_FILE_TTL_SECONDS,
+    PRINTER_MAX_PAGES,
+    PRINTER_NAME,
+    PRINTER_SERVER,
+    PRINT_FILES_DIR,
     PUSH_ENABLED,
     PUSH_MAX_FAILURES,
     PUSH_TTL_SECONDS,
@@ -77,6 +80,7 @@ from assistant import Assistant
 from adapters.home_ws import run_event_stream
 from adapters.mcp_endpoint import MCPEndpoint
 from domain.push import PushStore
+from domain.prints import PrintStore, STATUSES as PRINT_STATUSES
 from push_sender import WebPushSender
 from stt import STT
 from llm import LLM, build_decision_llm
@@ -155,62 +159,23 @@ push_sender: WebPushSender = None
 # 记忆蒸馏（D60）：lifespan 里建，后台循环按深夜/阈值触发
 distiller: MemoryDistiller = None
 
-# 待打印文件（D61）：file_id -> {id, path, name, kind, size, pages, at, client_id}
-# 只在内存里登记，文件落 _tmp_dir；打印成功或过期就删。
-_PRINT_FILES = {}
-_PRINT_LOCK = threading.Lock()
+# 待打印文件（D61/D65）：元数据在 prints.db，文件在 PRINT_FILES_DIR（卷里）。
+# 重启后记录和文件都还在，「再打一份」不用重传；过期由 `_purge_print_files` 清。
+print_store = None
 
 
 def _purge_print_files(now=None):
-    """清掉过期/已删除的上传文件；顺手把磁盘上的临时文件删掉。
-
-    `run_python` 生成的文件不登记在 `_PRINT_FILES` 里（它只接替这一轮的附件），
-    所以最后按 mtime 扫一遍打印目录，否则 /tmp 会一直涨。
-    """
-    now = now or time.time()
-    expired = []
-    with _PRINT_LOCK:
-        for file_id, item in list(_PRINT_FILES.items()):
-            if now - item["at"] > PRINTER_FILE_TTL_SECONDS:
-                expired.append(_PRINT_FILES.pop(file_id))
-        keep = set(item["path"] for item in _PRINT_FILES.values())
-    for item in expired:
-        try:
-            os.remove(item["path"])
-        except OSError:
-            pass
-    folder = os.path.join(_tmp_dir, "print") if _tmp_dir else ""
-    if not folder or not os.path.isdir(folder):
-        return
-    for name in os.listdir(folder):
-        path = os.path.join(folder, name)
-        if path in keep:
-            continue
-        try:
-            if now - os.path.getmtime(path) <= PRINTER_FILE_TTL_SECONDS:
-                continue
-            if os.path.isdir(path):
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                os.remove(path)
-        except OSError:
-            pass
+    """清掉过期文件（默认留 PRINT_KEEP_DAYS 天）。文件没了只留历史记录。"""
+    if print_store is not None:
+        print_store.prune(now)
 
 
 def _get_print_file(file_id, client_id=""):
-    """取一个待打印文件；不存在/过期/不属于这个客户端都返回 None。"""
-    _purge_print_files()
-    with _PRINT_LOCK:
-        item = _PRINT_FILES.get(str(file_id or ""))
-        if not item:
-            return None
-        owner = item.get("client_id") or ""
-        if owner and client_id and owner != str(client_id).strip():
-            return None
-        if not os.path.exists(item["path"]):
-            _PRINT_FILES.pop(item["id"], None)
-            return None
-        return dict(item)
+    """取一个待打印文件；不存在/已过期/不属于这个客户端都返回 None。"""
+    if print_store is None:
+        return None
+    return print_store.get(file_id, client_id)
+
 
 # 到期提醒缓存（提醒循环按 REMINDER_INTERVAL_SECONDS 刷新）
 due_items = []
@@ -711,14 +676,17 @@ async def distill_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global stt, tts, assistant, _tmp_dir, push_store, push_sender, distiller
+    global stt, tts, assistant, _tmp_dir, push_store, push_sender, distiller, print_store
     _check_exposure()
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
+    os.makedirs(PRINT_FILES_DIR, exist_ok=True)
+    print_store = PrintStore()
+    _purge_print_files()
     tts = TTS()
     decision_llm = build_decision_llm()
     assistant = Assistant(memory=Memory(), llm=LLM(), items=Items(),
-                          decision_llm=decision_llm)
+                          decision_llm=decision_llm, print_store=print_store)
     print("🧠 决策轮模型：%s" % (decision_llm.model_name if decision_llm else "同回答轮"))
     # 记忆蒸馏（D60）：只重算摘要，不删原文；跑在后台，失败不影响对话
     distiller = None
@@ -792,6 +760,8 @@ async def lifespan(app: FastAPI):
                 pass
         if assistant is not None:
             assistant.close()
+        if print_store is not None:
+            print_store.close()
         if push_store is not None:
             push_store.close()
         if _tmp_dir:
@@ -800,9 +770,11 @@ async def lifespan(app: FastAPI):
         stt = None
         tts = None
         assistant = None
+        print_store = None
         push_store = None
         push_sender = None
         distiller = None
+        print_store = None
         _tmp_dir = None
         print("🛑 服务关闭")
 
@@ -1229,6 +1201,30 @@ async def api_thinking(limit: int = 50, _auth=Depends(require_api_token)):
         "enabled": bool(thinking.ENABLED),
         "items": rows,
         "summary": stats,
+    }
+
+
+@app.get("/api/prints")
+async def api_prints(q: str = "", status: str = "", limit: int = 20,
+                     offset: int = 0, _auth=Depends(require_api_token)):
+    """打印历史（D65）：名字、时间、份数、结果。不返回容器内路径。
+
+    `status` 取 ready / printing / printed / failed / cancelled。
+    返回里的 `id` 就是上传时的 file_id，可以带回去再打一份。
+    """
+    if print_store is None:
+        raise HTTPException(status_code=503, detail="服务尚未就绪")
+    if status and status not in PRINT_STATUSES:
+        raise HTTPException(status_code=400, detail="status 不认识")
+    rows, total = await asyncio.to_thread(
+        print_store.list, q, status, limit, offset
+    )
+    keep = ("id", "created_at", "name", "kind", "size", "pages",
+            "copies", "status", "printer", "job_id", "error", "source")
+    return {
+        "ok": True,
+        "total": total,
+        "items": [{key: row.get(key) for key in keep} for row in rows],
     }
 
 
@@ -1822,9 +1818,12 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
 @app.post("/api/print/files")
 async def api_print_upload(file: UploadFile = File(...), client_id: str = Form(""),
                            _auth=Depends(require_api_token)):
-    """接收待打印文件（D61）：落临时目录，返回 file_id，随下一条聊天消息使用。"""
-    if assistant is None or _tmp_dir is None:
+    """接收待打印文件（D61/D65）：落持久目录，返回 file_id，随下一条聊天消息使用。"""
+    if assistant is None or print_store is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪")
+    refresh = getattr(assistant, "refresh_printer", None)
+    if refresh is not None:
+        refresh()
     if not assistant.printer_ready:
         raise HTTPException(status_code=503, detail="当前部署没有可用的打印机（Linux 服务器需要 CUPS）")
     if len(client_id) > MAX_CLIENT_ID_CHARS:
@@ -1845,7 +1844,7 @@ async def api_print_upload(file: UploadFile = File(...), client_id: str = Form("
         raise HTTPException(status_code=413, detail="文件太大，最多 10MB")
 
     file_id = uuid.uuid4().hex
-    folder = os.path.join(_tmp_dir, "print")
+    folder = PRINT_FILES_DIR
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, file_id + ext)
     with open(path, "wb") as fh:
@@ -1871,17 +1870,10 @@ async def api_print_upload(file: UploadFile = File(...), client_id: str = Form("
         )
     pages = pdf_page_count(path) if kind == "pdf" else None
     _purge_print_files()
-    with _PRINT_LOCK:
-        _PRINT_FILES[file_id] = {
-            "id": file_id,
-            "path": path,
-            "name": original,
-            "kind": kind,
-            "size": len(data),
-            "pages": pages,
-            "at": time.time(),
-            "client_id": (client_id or "").strip(),
-        }
+    print_store.add(
+        file_id, original, path, kind=kind, size=len(data),
+        pages=pages, client_id=(client_id or "").strip(), source="upload",
+    )
     return {
         "file_id": file_id,
         "name": original,

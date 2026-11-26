@@ -46,6 +46,20 @@ def test_backup_contains_core_state_only(project):
     assert backup.MANIFEST in names
 
 
+def test_print_files_are_backed_up_by_default(project):
+    """打印文件是用户原件（D65），不像 work/home 那样可重建，默认要备。"""
+    folder = os.path.join(project, "data", "print")
+    os.makedirs(folder)
+    with open(os.path.join(folder, "quote.txt"), "w", encoding="utf-8") as fh:
+        fh.write("报价单")
+
+    zip_path = backup.create_backup(root=project, out_dir=os.path.join(project, "backups"))
+    with zipfile.ZipFile(zip_path) as zf:
+        names = set(zf.namelist())
+    assert "data/print/quote.txt" in names
+    assert "data/chroma/index.bin" not in names
+
+
 def test_all_data_includes_subdirs(project):
     zip_path = backup.create_backup(
         root=project, out_dir=os.path.join(project, "backups"), all_data=True

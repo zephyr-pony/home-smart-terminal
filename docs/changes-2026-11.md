@@ -1538,3 +1538,41 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 - 演练（容器在跑时）：备份 18.4 KB → 恢复到临时卷 `xiaoma-restore-test` →
   记忆 3/3、任务 8/8、事实 6/6、实体 1/1、提案 59/59、待澄清 3/3、推送订阅 1/1，
   全部一致；测试卷已删，生产卷没动。单测新增 `tests/test_backup_docker.py`（6 条）。
+
+## 三十、2026-11-26：打印记录落库（D65）
+
+### 问题
+
+打印文件原来放 `/tmp/home_terminal_*/print`，容器一重建就没了；「刚才的文件再打一份」
+在重启后必然失败（只能重传）。而且「打过什么、成没成功」查不到 —— 出纸只写一行日志。
+
+### 做法
+
+- 文件落 `DATA_DIR/print`（Docker 里就是命名卷），重启/重建容器都还在。
+- 新增 `domain/prints.py`（`prints.db`，和别的库一样带 `RLock`）：
+  `add/get/latest/mark/list/prune`。行里有名字、时间、份数、页数、状态、
+  打印机、CUPS 任务号、失败原因、来源（upload / generated）。
+- 状态机：`ready` → `printing` → `printed` / `failed`；用户回「取消」标 `cancelled`。
+  都在 `Assistant._print_file` 和取消分支里写，不指望模型自觉。
+- `Assistant._recent_file` 内存命中就先用；没有（例如刚重启）就查 `PrintStore.latest()`，
+  `PRINT_REUSE_HOURS`（默认 24 小时）内都算「刚才的文件」，各端共用（D64）。
+- 生命周期：`PRINT_KEEP_DAYS`（默认 7 天）到期删文件，记录留着当历史；
+  `PRINT_REUSE_HOURS` 决定「刚才」的窗口。旧的 `PRINTER_FILE_TTL_SECONDS` 删除。
+- 打印机可用性改成每 30 秒重查（`Assistant.refresh_printer`）：打印机是另一台机器，
+  小马启动时它没开、过一会儿开了也能打，不用重启服务。
+- 接口：`GET /api/prints?q=&status=&limit=&offset=`（不返回容器内路径）。
+- 网页概览新增「最近打印」：状态、时间、份数、任务号；点「再打一份」带着原 `file_id`
+  发一句「再打一份」，照旧走模型 + 确认，**没有**新开直接出纸的接口。
+- 备份顺带纳入 `data/print`（用户原件，不像 work/home 可重建），默认就备，不用 `--all-data`。
+
+### 验收
+
+- 重启持久化（真容器）：写入一条记录 + 文件 → `docker compose restart xiaoma` →
+  `GET /api/prints` 仍返回同一条；问「刚才那个文件第一行写的是什么」，
+  模型用 `file_read` 读到「小马的打印记录」——说明「最近文件」不靠内存。
+- 「再打一份 → 确认 → 出纸 / 取消标 cancelled」由单测覆盖
+  （`test_reprint_after_print_success`、`test_cancel_marks_record_cancelled`、
+  `test_print_result_is_recorded`、`test_failed_print_is_recorded`）。
+  验收时打印机所在机器正好关机，真机出纸等它开机再补一次。
+- `GET /api/prints` 在重启后返回记录；概览页「最近打印」能看到并再打。
+- 单测 573 → 585（新增 `tests/test_prints.py` 9 条 + 打印记录相关 3 条 + 备份 1 条）。

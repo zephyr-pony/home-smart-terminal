@@ -427,6 +427,8 @@ html, body {
         <h3 class="section-title">思考开关</h3>
         <div id="thinking-summary" class="muted stat-detail"></div>
         <div id="thinking-list" class="list"></div>
+        <h3 class="section-title">最近打印</h3>
+        <div id="prints-list" class="list"></div>
       </div>
     </section>
 
@@ -554,6 +556,7 @@ html, body {
   var overviewDue = document.getElementById('overview-due');
   var thinkingSummary = document.getElementById('thinking-summary');
   var thinkingList = document.getElementById('thinking-list');
+  var printsList = document.getElementById('prints-list');
   var dataTabs   = document.getElementById('data-tabs');
   var dataList   = document.getElementById('data-list');
   var dataSearch = document.getElementById('data-search');
@@ -887,6 +890,7 @@ html, body {
       overviewDue.innerHTML = '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
     });
     loadThinking();
+    loadPrints();
   }
 
   // 「模型自己决定要不要开思考」的观察（D63）：只看最近 20 轮，新的在上。
@@ -921,6 +925,59 @@ html, body {
       thinkingSummary.textContent = '';
       thinkingList.innerHTML =
         '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
+    });
+  }
+
+  // ---- 打印历史（D65）：重启后也能看到打过什么，点一下再打一份 ----
+
+  var PRINT_STATUS_TEXT = {
+    ready: '待打印', printing: '打印中', printed: '已打印',
+    failed: '失败', cancelled: '已取消'
+  };
+
+  function fmtTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts * 1000);
+    function two(n) { return (n < 10 ? '0' : '') + n; }
+    return (d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' +
+      two(d.getHours()) + ':' + two(d.getMinutes());
+  }
+
+  function loadPrints() {
+    if (!printsList) return;
+    apiFetch('/api/prints?limit=5').then(function(d) {
+      var rows = d.items || [];
+      if (!rows.length) {
+        printsList.innerHTML = '<div class="empty">还没有打印记录。</div>';
+        return;
+      }
+      printsList.innerHTML = rows.map(function(it) {
+        var meta = [PRINT_STATUS_TEXT[it.status] || it.status, fmtTime(it.created_at)];
+        if (it.copies > 1) meta.push(it.copies + ' 份');
+        if (it.pages) meta.push(it.pages + ' 页');
+        if (it.job_id) meta.push(it.job_id);
+        if (it.status === 'failed' && it.error) meta.push(it.error);
+        var action = it.status === 'printing' ? '' :
+          '<div class="row-actions"><button type="button" class="small-btn" ' +
+          'data-reprint="' + esc(it.id) + '">再打一份</button></div>';
+        return '<div class="list-row">' + esc(it.name) +
+          '<div class="meta">' + esc(meta.join(' · ')) + '</div>' + action + '</div>';
+      }).join('');
+    }).catch(function(err) {
+      printsList.innerHTML =
+        '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
+    });
+  }
+
+  if (printsList) {
+    printsList.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-reprint]');
+      if (!btn || busy) return;
+      // 带上原来那条记录的 file_id 发一句「再打一份」，后端照样走确认
+      pendingFile = { file_id: btn.getAttribute('data-reprint'), name: '' };
+      textInput.value = '再打一份';
+      switchTab('chat');
+      sendText();
     });
   }
 

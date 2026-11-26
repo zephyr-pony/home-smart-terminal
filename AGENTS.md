@@ -216,10 +216,12 @@ pytest tests -q
 - 打印（D61）：`printer_print` 只要有打印机就把 schema 给模型（D62 起不要求本轮先有附件，
   否则「run_python 生成文件再打印」走不通）；不经过 `execute`，确认后由
   `ConfirmationManager.print_runner` 调 `adapters/printer.py`。
-  文件经 `POST /api/print/files` 落临时目录，只对上传者 `client_id` 有效；
-  这个会话最近处理过的文件在 `PRINTER_FILE_TTL_SECONDS`（默认 30 分钟）内会被自动接上，
-  所以「刚才的文件再打一份」「改成横向」不用重传；**打印成功也不删文件**（卡纸重打很常见），
-  统一由服务端按 TTL 清（`_purge_print_files` 连 `run_python` 生成的产物一起扫）。
+  文件经 `POST /api/print/files` 落到 `PRINT_FILES_DIR`（默认 `DATA_DIR/print`，容器里在卷上），
+  元数据进 `prints.db`（`domain/prints.py`，D65）；上传时登记的 `client_id` 只约束按 file_id 直接取。
+  重启/重建容器后「刚才的文件再打一份」仍然认得（`PRINT_REUSE_HOURS`，默认 24 小时），
+  默认留 `PRINT_KEEP_DAYS` 天；**打印成功不删文件**（卡纸重打很常见）。
+  每次出纸/失败/取消都要 `PrintStore.mark(...)`，`GET /api/prints` 和概览页「最近打印」
+  靠它；概览的「再打一份」就是带着原 `file_id` 再走一次确认，不要新开直接出纸的接口。
   这份「最近文件」**各端共用**（D64）：单家庭阶段不分设备，上多用户再按 `space_id` 拆。
   服务器是 Linux，打印走 CUPS（`lp` / `lpstat`），Office 用 LibreOffice 转 PDF；
   不要写任何 Windows 专用代码（打印队列、GDI、Office COM 都不在支持范围）。

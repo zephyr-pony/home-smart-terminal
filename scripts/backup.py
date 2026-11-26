@@ -34,6 +34,8 @@ KEEP = 7
 # 备份里不放的东西：日志（天天变、没价值）、备份目录自己
 SKIP_SUFFIXES = (".log",)
 SKIP_DIRS = ("backups",)
+# 打印文件是用户上传/生成的原件（D65），和历史记录一起备；不像 work/home 那样可重建
+ALWAYS_DIRS = ("print",)
 
 MANIFEST = "manifest.json"
 
@@ -73,7 +75,7 @@ def collect_sources(root=ROOT, all_data=False, data_dir=None):
     for name in sorted(os.listdir(data_dir)):
         path = os.path.join(data_dir, name)
         if os.path.isdir(path):
-            if not all_data or name in SKIP_DIRS:
+            if name in SKIP_DIRS or (not all_data and name not in ALWAYS_DIRS):
                 continue
             for base, _dirs, files in os.walk(path):
                 for filename in files:

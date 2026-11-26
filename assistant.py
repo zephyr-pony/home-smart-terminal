@@ -22,7 +22,8 @@ from config import (
     MAX_SESSIONS,
     PRINTER_ALLOWED,
     PRINTER_ENABLED,
-    PRINTER_FILE_TTL_SECONDS,
+    PRINT_FILES_DIR,
+    PRINT_REUSE_HOURS,
     PRINTER_MAX_COPIES,
     PRINTER_MAX_PAGES,
     PRINTER_NAME,
@@ -141,9 +142,11 @@ class Assistant:
 
     def __init__(self, memory=None, llm=None, items=None, clarifier=None,
                  tasks=None, facts=None, home=None, decision_llm=None,
-                 printer=None):
+                 printer=None, print_store=None):
         self.memory = memory or Memory()
         self.llm = llm or LLM()
+        # 打印记录（D65）：重启后还能接上「刚才的文件」、能查历史
+        self.print_store = print_store
         # 每个请求一个线程，思考开关的临时状态放线程本地，避免多客户端串台
         self._turn = threading.local()
         # 最近处理过的文件（D61 补充 / D64）：手机上传一次以后，「再打一份」
@@ -193,6 +196,8 @@ class Assistant:
             enabled=PRINTER_ENABLED,
         )
         self.printer_ready = self.printer.available()
+        self._printer_checked_at = time.time()
+        self._printer_tool = get_printer_tool()
         # 工具注册表（memory + 日期 + items + 实体）
         self.tools = get_all_tools(
             self.memory,
@@ -205,7 +210,7 @@ class Assistant:
             weather=self.weather,
         )
         if self.printer_ready:
-            self.tools.append(get_printer_tool())
+            self.tools.append(self._printer_tool)
         self._tools_by_name = {
             t["schema"]["function"]["name"]: t["execute"] for t in self.tools
         }
@@ -287,6 +292,8 @@ class Assistant:
             return self._result("chat", "我没听清，能再说一遍吗？", "chat", "chat")
 
         conversation_id = (client_id or "cli").strip()
+        # 打印机是另一台机器：启动时没开、后来开了也要能打，别要求重启小马
+        self.refresh_printer()
         # 3.5) 没带新附件时，接上最近处理过的文件：「刚才的文件再打一份」
         # 在网页上不会重新上传，不兜住就只能让用户重传一遍。
         attachment = self._reuse_recent_file(attachment)
@@ -308,6 +315,11 @@ class Assistant:
                 )
             if kind == "cancelled":
                 reply = outcome.get("reply", "")
+                payload = pending_confirm.get("payload") or {}
+                file_id = payload.get("file_id") if isinstance(payload, dict) else ""
+                if pending_confirm.get("action_type") == "print_file" and file_id \
+                        and self.print_store is not None:
+                    self.print_store.mark(str(file_id), "cancelled")
                 self._record_turn(client_id, text, reply)
                 return self._result("chat", reply, "confirm", "cancel")
             if kind == "done":
@@ -637,23 +649,56 @@ class Assistant:
         """没带新附件时接上最近那个文件；过期或已删就当没有。
 
         「再打一份」「刚才那个改横向」是常事，网页的 📎 只跟着一条消息走。
+        内存里没有（比如刚重启）就查打印记录（D65），`PRINT_REUSE_HOURS` 内都算。
         命中的文件带 `recent` 标记，提示里会说明「上一轮的」，避免回复硬扯到文件。
         """
         if attachment:
             return attachment
         entry = self._recent_file
-        if not entry:
-            return None
+        if entry and self._fresh_file(entry):
+            return self._as_recent(entry)
+        self._recent_file = None
+        if self.print_store is not None:
+            row = self.print_store.latest()
+            if row and self._fresh_file(row):
+                return self._as_recent(row)
+        return None
+
+    @staticmethod
+    def _fresh_file(entry):
         path = entry.get("path")
-        if time.time() - entry.get("at", 0) > PRINTER_FILE_TTL_SECONDS or not (
+        at = entry.get("at") or entry.get("created_at") or 0
+        return bool(
             path and os.path.exists(path)
-        ):
-            self._recent_file = None
-            return None
+            and time.time() - float(at) <= max(1, PRINT_REUSE_HOURS) * 3600
+        )
+
+    @staticmethod
+    def _as_recent(entry):
         reused = dict(entry)
         reused.pop("at", None)
+        reused.pop("created_at", None)
         reused["recent"] = True
         return reused
+
+    def refresh_printer(self, force=False):
+        """打印机可用性每 30 秒重查一次。
+
+        打印机是另一台机器，开机时间和小马无关：启动时没开、过一会儿开了，
+        不该让人重启小马；反过来拔了线也别一直假装能打。
+        """
+        now = time.time()
+        if not force and now - self._printer_checked_at < 30:
+            return self.printer_ready
+        self._printer_checked_at = now
+        ready = bool(self.printer and self.printer.available())
+        if ready and self._printer_tool not in self.tools:
+            self.tools.append(self._printer_tool)
+            self._tools_by_name = {
+                t["schema"]["function"]["name"]: t["execute"] for t in self.tools
+            }
+        self.printer_ready = ready
+        return ready
 
     # ---------- agent loop ----------
 
@@ -889,6 +934,7 @@ class Assistant:
                         payload = dict(args)
                         payload["path"] = attachment.get("path")
                         payload["name"] = attachment.get("name")
+                        payload["file_id"] = attachment.get("id") or ""
                         payload["printer"] = self.printer.name
                         question = wording.print_question(payload, user_text)
                         conversation_id = (client_id or "cli").strip()
@@ -1149,7 +1195,9 @@ class Assistant:
             )
         source_dir = os.path.dirname(attachment.get("path") or "")
         if not source_dir or not os.path.isdir(source_dir):
-            source_dir = tempfile.mkdtemp(prefix="xiaoma_out_")
+            # 没有附件时从零生成：放持久目录（D65），别落 /tmp，否则重启就没了
+            source_dir = PRINT_FILES_DIR
+            os.makedirs(source_dir, exist_ok=True)
         stem = os.path.splitext(attachment.get("name") or "file")[0]
         if requested:
             final_name = os.path.splitext(requested)[0] + actual_ext
@@ -1168,6 +1216,14 @@ class Assistant:
             "size": os.path.getsize(final_path),
             "pages": pdf_page_count(final_path) if kind_of(final_name) == "pdf" else None,
         }
+        if self.print_store is not None:
+            file_id = uuid.uuid4().hex
+            self.print_store.add(
+                file_id, final_name, final_path,
+                kind=updated["kind"], size=updated["size"],
+                pages=updated["pages"], source="generated",
+            )
+            updated["id"] = file_id
         note = "已生成《%s》（%d 字节），这一步要打印的就是它。" % (
             final_name, updated["size"],
         )
@@ -1176,20 +1232,40 @@ class Assistant:
         return note, updated
 
     def _print_file(self, payload):
-        """确认之后真正打印。
+        """确认之后真正打印，并把结果记进打印记录（D65）。
 
         打印成功后**不删**文件：纸卡了、想再要一份，用户下一句「再打一份」很常见，
-        而重新上传对手机不友好。文件留在临时目录里，按 `PRINTER_FILE_TTL_SECONDS`
-        到期清理（服务端 `_purge_print_files` 扫目录时一并清掉生成的文件）。
+        而重新上传对手机不友好。文件按 `PRINT_KEEP_DAYS` 到期清理，重启后还在。
         """
         payload = payload or {}
-        return self.printer.print_file(
+        file_id = payload.get("file_id") or ""
+        copies = payload.get("copies") or 1
+        printer = payload.get("printer") or ""
+        if file_id and self.print_store is not None:
+            self.print_store.mark(
+                file_id, "printing", copies=copies,
+                printer=self.printer.name or printer,
+            )
+        result = self.printer.print_file(
             payload.get("path"),
-            copies=payload.get("copies") or 1,
+            copies=copies,
             pages=payload.get("page_indices"),
-            printer_name=payload.get("printer") or "",
+            printer_name=printer,
             doc_name=payload.get("name") or "",
         )
+        if file_id and self.print_store is not None:
+            if result.get("ok"):
+                self.print_store.mark(
+                    file_id, "printed", copies=copies,
+                    printer=result.get("printer") or self.printer.name or printer,
+                    job_id=result.get("job_id") or "",
+                    error="",
+                )
+            else:
+                self.print_store.mark(
+                    file_id, "failed", error=str(result.get("error") or "")[:300],
+                )
+        return result
 
     @staticmethod
     def _tool_metadata(used_tools):

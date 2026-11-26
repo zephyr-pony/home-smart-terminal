@@ -178,6 +178,7 @@ docker compose up -d --build
 | `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`） |
 | `/api/stats` | GET | 概览统计：数量、任务状态、到期物品/任务 |
 | `/api/thinking` | GET | 「这轮有没有开思考」的观察记录（最近 20 轮 + 统计），`limit` 可调 |
+| `/api/prints` | GET | 打印历史：名字、时间、份数、结果、CUPS 任务号；`q` / `status` / `limit` / `offset` |
 | `/api/memories` | GET | 记忆列表，支持 `q` / `limit` / `offset` |
 | `/api/items` | GET | 物品列表，支持 `q` / `status` / `limit` / `offset` |
 | `/api/tasks` | GET | 任务列表，支持 `q` / `status` / `limit` / `offset` |
@@ -391,7 +392,8 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `PRINTER_ALLOWED` | 空 | 允许使用的队列（逗号分隔）；空 = 只允许默认那个 |
 | `PRINTER_MAX_PAGES` | `50` | 一次最多打印多少页 |
 | `PRINTER_MAX_COPIES` | `20` | 一次最多打印多少份 |
-| `PRINTER_FILE_TTL_SECONDS` | `1800` | 上传文件保留多久（秒）；期间「再打一份」不用重传，到期自动清 |
+| `PRINT_KEEP_DAYS` | `7` | 打印文件保留几天（`DATA_DIR/print`），过期连文件一起清；历史记录一直在 |
+| `PRINT_REUSE_HOURS` | `24` | 多久内算「刚才的文件」；「再打一份」不用重传，重启后也算 |
 
 ## 使用方式
 
@@ -407,6 +409,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 聊天    文字 / 语音对话，保留 SSE 提醒
 概览    记忆 / 物品 / 任务 / 事实 / 实体数量，到期提醒
         思考开关：最近 20 轮开没开、原因、工具、耗时（GET /api/thinking）
+        最近打印：结果、时间、份数，点「再打一份」回到确认（GET /api/prints）
 数据    记忆 / 物品 / 任务 / 事实 / 实体列表
         支持搜索、状态筛选、分页
         任务可完成 / 取消 / 编辑；删除需二次确认
@@ -430,7 +433,9 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - 打印机可以挂在别的机器上：`PRINTER_SERVER=192.168.1.15:631`、`PRINTER_NAME=HP1020`，
   容器只发 IPP 任务，不用自己跑 cupsd
 - PDF / 图片 / 纯文本直接交给 CUPS 过滤器转换；Office 先由 LibreOffice 转 PDF
-- 文件只落临时目录，按 `PRINTER_FILE_TTL_SECONDS` 过期清理；这段时间里「刚才的文件再打一份」不用重新上传
+- 文件存 `DATA_DIR/print`（Docker 里在卷上），默认留 `PRINT_KEEP_DAYS` 天；「刚才的文件再打一份」
+  在 `PRINT_REUSE_HOURS` 内不用重传，**重启/重建容器也认得**（记录在 `prints.db`）
+- 概览页有「最近打印」：打过什么、成没成功、CUPS 任务号，点「再打一份」直接回到确认那一步
 - 语音终端只能确认，不能传文件；文件必须从网页或 API 上传
 - 不支持 Windows 打印队列：服务器部署是 Linux（D61）
 
@@ -529,6 +534,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - [x] 通用文件能力（D62）：`file_read` / `find_tools` / `run_python` / `run_shell` / `web_search` / `web_fetch`，读表、改表、装环境、上网查都由模型现场组合，不为单个需求加工具
 - [x] 思考开关交给模型（D63）：默认快，模型判断需要多步推理时自己开；每轮记录开没开（`GET /api/thinking`）
 - [x] 最近文件各端共用 30 分钟（D64）：「刚才的文件再打一份」「改成横向」不用重新上传
+- [x] 打印记录落库（D65）：文件留在卷上、历史进 `prints.db`，重启/重建容器后「再打一份」照用，概览页能查打印历史
 
 下一步：
 
@@ -538,7 +544,6 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - [ ] Android App / 小程序
 - [ ] 记忆分层 + RAG + 本地生活工具（延后）
 - [ ] 多空间 `space_id`（多家庭/多成员隔离；届时文件隔离也按它拆）
-- [ ] 打印文件与「最近文件」落库（现在在内存里，容器重启要重传）
 - [ ] 更远：菜谱推荐、蓝牙音箱联动、图像连续理解（单张已支持）
 
 ## License

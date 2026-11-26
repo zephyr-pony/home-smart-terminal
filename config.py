@@ -194,7 +194,13 @@ PRINTER_SERVER = _get("PRINTER_SERVER", "")
 PRINTER_ALLOWED = _get("PRINTER_ALLOWED", "")
 PRINTER_MAX_PAGES = _get_int("PRINTER_MAX_PAGES", 50)
 PRINTER_MAX_COPIES = _get_int("PRINTER_MAX_COPIES", 20)
-PRINTER_FILE_TTL_SECONDS = _get_int("PRINTER_FILE_TTL_SECONDS", 30 * 60)
+# 打印记录（D65）：文件留几天（在 DATA_DIR/print 里，连历史一起进 prints.db）
+PRINTS_DB_PATH = _db_path("prints.db", "PRINTS_DB_PATH")
+PRINT_KEEP_DAYS = _get_int("PRINT_KEEP_DAYS", 7)
+# 打印文件放哪（要在卷里，容器重建不丢；/tmp 会被清掉）
+PRINT_FILES_DIR = _get("PRINT_FILES_DIR", os.path.join(DATA_DIR, "print"))
+# 多久内算「刚才的文件」；说「再打一份」时自动接上（重启后也算）
+PRINT_REUSE_HOURS = _get_int("PRINT_REUSE_HOURS", 24)
 
 # ---- 到期提醒 ----
 REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"
