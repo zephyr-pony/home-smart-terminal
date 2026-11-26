@@ -30,6 +30,7 @@
 | `adapters/shell.py` | 通用命令通道：`/data/work` 持久工作目录、清空环境变量、非 root（D62） |
 | `adapters/web.py` | 上网查：DuckDuckGo 搜索 + 抓页面正文，不抓内网（D62） |
 | `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
+| `infra/device-firmware/` | ESP32 固件补丁（待机保连接、开机自连、断线重连，D78） |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
@@ -232,6 +233,9 @@ pytest tests -q
   这份「最近文件」**各端共用**（D64）：单家庭阶段不分设备，上多用户再按 `space_id` 拆。
   服务器是 Linux，打印走 CUPS（`lp` / `lpstat`），Office 用 LibreOffice 转 PDF；
   不要写任何 Windows 专用代码（打印队列、GDI、Office COM 都不在支持范围）。
+  **纯文本里有非 ASCII（中文）必须先转 PDF**（D77）：CUPS 的文本过滤器只认单字节字体，
+  中文 txt 直打是一页乱码；`text_needs_pdf()` 判断，纯 ASCII 仍直打。没装 LibreOffice
+  就明说「会乱码、请另存为 PDF」，别打废纸。
 - 打印机状态（`GET /api/printer`）给概览页用：在线/队列/积压/原因，30 秒缓存
   （`Assistant.printer_status`），打印机断电时 `lpstat` 会等到超时，轮询不能每次去碰它。
   `Printer.status()` 不抛异常，原因放 `error`；上传接口的 503 也带上这个原因，
@@ -328,6 +332,10 @@ pytest tests -q
 - 提醒循环同时扫描 `items`（物品到期）和 `tasks`（账单/日程/自定义）。
 - 投递顺序固定为 **设备 → 网页 → Web Push**，同一提醒只走一条：设备在线时页面不弹、手机不推。
 - 设备通道是同一 SSE 端点的 `?role=device`（小智提醒桥用）；设备事件**不带 mp3**，设备用自己的 TTS 念。
+- 桥的两条硬约束（D76，真机踩出来的）：①**说话前必须发 `{"type":"tts","state":"start"}`**
+  ——固件只在 `kDeviceStateSpeaking` 时才解码收到的 Opus 包，不发 start 就只显示文字、没声音；
+  ②**设备全断要立刻退订**——桥挂着 SSE 而设备已经没了，小马会把提醒投进空通道并标成已提醒，
+  24 小时内既不重发也不回落 push。桥里 1 秒看门狗负责这件事。
 - 只有存在「在线设备、在线 SSE 订阅者或未停用的 push 订阅」时才 `claim_due_reminders`，避免没送达却消耗提醒额度。
 - 提醒状态落库（`reminded_at`），冷却由 `REMINDER_COOLDOWN_HOURS` 控制。
 - 周期任务（`recur=daily/weekly/monthly`）**到点才提醒**，领取后滚到下一次并清 `reminded_at`（否则 24h 冷却会挡住第二天）；完成是跳过本次，取消才停整个系列；周期必须有具体时间，缺时间就追问，不替用户定。

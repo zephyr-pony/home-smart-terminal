@@ -107,10 +107,51 @@ def patch_weather_tool_desc():
     )
 
 
+def patch_idle_session():
+    """安静一会儿先让设备回待机，而不是一直开着麦克风。
+
+    上游只有「无语音超时就挂断」这一条路；我们要的是常连：设备进待机后
+    麦克风关掉、WebSocket 留着，提醒随时能推下来（D78）。待机由固件处理，
+    这里只负责在真的安静下来时发一句 `{"type":"session","state":"idle"}`。
+    """
+    _replace_once(
+        "core/handle/receiveAudioHandle.py",
+        "    if have_voice:\n"
+        "        conn.last_activity_time = time.time() * 1000\n"
+        "        return\n",
+        "    if have_voice:\n"
+        "        conn.last_activity_time = time.time() * 1000\n"
+        "        conn.idle_sent = False\n"
+        "        return\n",
+        "有声音时清待机标记",
+    )
+    _replace_once(
+        "core/handle/receiveAudioHandle.py",
+        "        no_voice_time = time.time() * 1000 - conn.last_activity_time\n",
+        "        no_voice_time = time.time() * 1000 - conn.last_activity_time\n"
+        "        # 小马：安静一会儿先让设备回待机（连接不关），别一直开着麦克风\n"
+        "        idle_after = int(conn.config.get(\"idle_after_voice_time\", 15) or 0)\n"
+        "        if (\n"
+        "            idle_after > 0\n"
+        "            and no_voice_time > 1000 * idle_after\n"
+        "            and not getattr(conn, \"idle_sent\", False)\n"
+        "        ):\n"
+        "            conn.idle_sent = True\n"
+        "            try:\n"
+        "                await conn.websocket.send(\n"
+        "                    json.dumps({\"type\": \"session\", \"state\": \"idle\"})\n"
+        "                )\n"
+        "            except Exception:\n"
+        "                pass\n",
+        "无语音时下发待机指令",
+    )
+
+
 if __name__ == "__main__":
     patch_websocket_server()
     patch_app()
     patch_intent_exit()
     patch_weather_tool_desc()
+    patch_idle_session()
     print("小智提醒桥补丁完成")
     sys.exit(0)

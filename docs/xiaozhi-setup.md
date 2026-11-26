@@ -43,6 +43,11 @@ ports:
 ## 配置（data/.config.yaml）
 
 ```yaml
+# 保持连接（D78）：设备待机时不挂断，提醒才能随时推到设备。
+# 沉默多久让设备回待机（麦克风关、WebSocket 留）——由小马补丁下发 session idle。
+close_connection_no_voice_time: 86400
+idle_after_voice_time: 15
+
 server:
   ip: 0.0.0.0
   port: 8000
