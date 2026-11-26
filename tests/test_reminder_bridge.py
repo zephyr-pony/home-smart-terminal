@@ -1,4 +1,5 @@
 """提醒桥的排队与选设备逻辑（不依赖 xiaozhi 运行时）。"""
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -65,12 +66,12 @@ def test_delivers_to_idle_device_then_waits_for_it():
     bridge.enqueue("提醒：牛奶今天到期")
     bridge.enqueue("提醒：电费明天到期")
 
-    assert bridge.deliver_pending() == 1
+    assert asyncio.run(bridge.deliver_pending()) == 1
     assert said == ["提醒：牛奶今天到期"]
     assert bridge.pending_count() == 1
 
     # 冷却期内再跑一次：还是发不出去
-    assert bridge.deliver_pending() == 0
+    assert asyncio.run(bridge.deliver_pending()) == 0
 
 
 def test_second_device_picks_up_the_queue():
@@ -81,7 +82,7 @@ def test_second_device_picks_up_the_queue():
     bridge.enqueue("第一条")
     bridge.enqueue("第二条")
 
-    assert bridge.deliver_pending() == 2
+    assert asyncio.run(bridge.deliver_pending()) == 2
     assert said == ["第一条", "第二条"]
 
 
@@ -93,7 +94,7 @@ def test_expired_reminders_are_dropped():
     bridge.enqueue("提醒：早就过期了")
     clock[0] += bridge_module.QUEUE_TTL_SECONDS + 1
 
-    assert bridge.deliver_pending() == 0
+    assert asyncio.run(bridge.deliver_pending()) == 0
     assert said == []
     assert bridge.pending_count() == 0
 
@@ -121,7 +122,7 @@ def test_speaker_failure_does_not_block_the_queue():
     bridge.enqueue("提醒：第一条")
     bridge.enqueue("提醒：第二条")
 
-    assert bridge.deliver_pending() == 0
+    assert asyncio.run(bridge.deliver_pending()) == 0
     # 两条都失败并丢弃，不会卡在队里反复重试
     assert bridge.pending_count() == 0
 
@@ -131,3 +132,51 @@ def test_start_from_env_is_noop_when_unconfigured(monkeypatch):
     monkeypatch.delenv("XIAOMA_API_TOKEN", raising=False)
 
     assert bridge_module.start_from_env() is None
+
+
+def test_async_speaker_is_awaited():
+    """真机口播要先 await 发 tts start，异步的 speaker 不能被当成同步丢掉。"""
+    devices = bridge_module.DeviceRegistry()
+    devices.add(FakeConn())
+    said = []
+
+    async def speaker(_conn, text):
+        await asyncio.sleep(0)
+        said.append(text)
+
+    bridge = bridge_module.ReminderBridge("http://x", "t", speaker=speaker, devices=devices)
+    bridge.enqueue("提醒：牛奶今天到期")
+
+    assert asyncio.run(bridge.deliver_pending()) == 1
+    assert said == ["提醒：牛奶今天到期"]
+
+
+def test_watchdog_closes_sse_when_devices_go_away(monkeypatch):
+    """设备全断要主动退订，否则小马会把提醒投进没人收的通道（D76）。"""
+    monkeypatch.setattr(bridge_module, "DEVICE_CHECK_SECONDS", 0.01)
+    devices = bridge_module.DeviceRegistry()
+    conn = FakeConn()
+    devices.add(conn)
+    bridge = bridge_module.ReminderBridge(
+        "http://x", "t", speaker=lambda c, t: None, devices=devices,
+    )
+
+    class FakeResponse:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    response = FakeResponse()
+
+    async def scenario():
+        task = asyncio.create_task(bridge._close_when_no_devices(response))
+        await asyncio.sleep(0.05)
+        assert response.closed is False
+        devices.discard(conn)
+        await asyncio.sleep(0.05)
+        assert response.closed is True
+        assert bridge._idle_closed is True
+        task.cancel()
+
+    asyncio.run(scenario())

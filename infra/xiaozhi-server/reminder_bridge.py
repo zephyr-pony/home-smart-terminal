@@ -15,6 +15,7 @@ xiaozhi-server 进程里；小马那边只能通过 MCP 回结果，推不动设
 - 这里只做桥接，不改小智的语音链路
 """
 import asyncio
+import inspect
 import json
 import os
 import time
@@ -25,6 +26,8 @@ MAX_QUEUE = 20
 QUEUE_TTL_SECONDS = 600
 BUSY_RETRY_SECONDS = 2
 RECONNECT_MAX_SECONDS = 30
+# 多久检查一次“设备还在不在”：设备断开后桥要尽快退订，让小马回落网页 / push
+DEVICE_CHECK_SECONDS = 1.0
 
 
 class DeviceRegistry:
@@ -65,16 +68,24 @@ class DeviceRegistry:
 registry = DeviceRegistry()
 
 
-def speak_via_xiaozhi(conn, text):
+async def speak_via_xiaozhi(conn, text):
     """走小智现成的“让这台设备念一句”。
 
     照 `intentHandler` 的做法先开一个新句子：`speak_txt` 依赖 `sentence_id`
     和 TTS 状态，不初始化会把话塞进上一轮。
+
+    必须先发 `{"type":"tts","state":"start"}`：固件只在 speaking 状态下才把收到的
+    Opus 包推进解码队列（`application.cc` 里那句 `if (GetDeviceState() ==
+    kDeviceStateSpeaking)`）。不发 start 的结果是**屏幕上出现文字、一点声音都没有**
+    （2026-11-26 真机实测）。
     """
     from core.handle.intentHandler import speak_txt
+    from core.handle.sendAudioHandle import send_tts_message
 
     conn.sentence_id = uuid.uuid4().hex
     conn.client_abort = False
+    await send_tts_message(conn, "start")
+    conn.client_is_speaking = True
     speak_txt(conn, text)
 
 
@@ -88,6 +99,8 @@ class ReminderBridge:
         self._pending = []
         # 同一台设备刚念完，给它一点时间真正进入 speaking 状态
         self._busy_until = {}
+        # SSE 是我们自己因为“设备全断了”关掉的，不是故障
+        self._idle_closed = False
 
     # ---------- 队列 ----------
 
@@ -109,7 +122,7 @@ class ReminderBridge:
                 return conn
         return None
 
-    def deliver_pending(self):
+    async def deliver_pending(self):
         """把排队中的提醒尽量发出去，返回本次发了多少条。"""
         now = self._now()
         self._pending = [
@@ -122,7 +135,9 @@ class ReminderBridge:
             if conn is None:
                 break
             try:
-                self._speaker(conn, item["text"])
+                result = self._speaker(conn, item["text"])
+                if inspect.isawaitable(result):
+                    await result
             except Exception as exc:  # 单条失败不拖垮整队
                 print("⚠️ 提醒下发失败，丢弃：%s（%s）" % (item["text"][:30], exc))
                 self._pending.remove(item)
@@ -147,6 +162,12 @@ class ReminderBridge:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if self._idle_closed:
+                    # 自己关的：设备回来再订，不该刷成告警
+                    self._idle_closed = False
+                    backoff = 1
+                    await asyncio.sleep(BUSY_RETRY_SECONDS)
+                    continue
                 print("⚠️ 提醒桥断开：%s，%s 秒后重连" % (exc, backoff))
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX_SECONDS)
@@ -165,7 +186,9 @@ class ReminderBridge:
                 if response.status != 200:
                     raise RuntimeError("SSE 返回 %s" % response.status)
                 print("🔔 提醒桥已连接：%s" % self.base_url)
+                self._idle_closed = False
                 ticker = asyncio.create_task(self._tick())
+                watcher = asyncio.create_task(self._close_when_no_devices(response))
                 try:
                     async for raw in response.content:
                         if len(self._devices) == 0:
@@ -181,16 +204,32 @@ class ReminderBridge:
                         text = str(event.get("reply") or "").strip()
                         if text:
                             self.enqueue(text)
-                            self.deliver_pending()
+                            await self.deliver_pending()
                 finally:
                     ticker.cancel()
+                    watcher.cancel()
+
+    async def _close_when_no_devices(self, response):
+        """设备全断了就自己把 SSE 关掉，让小马回落网页 / Web Push。
+
+        只在收到下一条事件时才检查是不够的：设备说完「再见」断开后，桥的 SSE
+        还挂着，小马照样以为「有设备在听」，把提醒投进来——桥发现没有设备就
+        丢掉，而小马那边已经把它标成已提醒，24 小时内既不重发也不回落
+        （2026-11-26 真机实测踩到）。
+        """
+        while True:
+            await asyncio.sleep(DEVICE_CHECK_SECONDS)
+            if len(self._devices) == 0:
+                self._idle_closed = True
+                response.close()
+                return
 
     async def _tick(self):
         """设备忙时排队的那部分，每 2 秒试一次。"""
         while True:
             await asyncio.sleep(BUSY_RETRY_SECONDS)
             if self._pending:
-                self.deliver_pending()
+                await self.deliver_pending()
 
 
 def _speak_seconds(text):
