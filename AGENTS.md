@@ -133,6 +133,9 @@ pytest tests -q
 - 生产数据在 Docker 命名卷里，备份用 `scripts/backup_docker.py`（容器里 sqlite 热备 →
   宿主机打包）；`scripts/backup.py --data-dir` 是它复用的底层，单独跑只备仓库 `data/`。
   恢复要求 `--yes`（会先停用该卷的容器），演练用临时卷，见 `docs/backup.md`。
+  **离开本机的那一份必须加密**：`--encrypt`，口令只走 `BACKUP_PASSPHRASE` 或
+  `--passphrase-file`（别写进命令行历史），产物是 `.zip.enc`，明文 zip 加密后立即删除。
+  备份不能只留在同一块盘上——单盘部署时盘坏了原数据和备份一起没。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
 - 摄像头整条链用 `scripts/fake_camera_device.py --image 图.jpg`：假设备报工具、收调用、把图 POST 到
   `vision_explain`，验证 `tool_calls` 名字、设备驱动和播报。它先试 LAN 地址再退 `127.0.0.1`，
@@ -226,6 +229,10 @@ pytest tests -q
   这份「最近文件」**各端共用**（D64）：单家庭阶段不分设备，上多用户再按 `space_id` 拆。
   服务器是 Linux，打印走 CUPS（`lp` / `lpstat`），Office 用 LibreOffice 转 PDF；
   不要写任何 Windows 专用代码（打印队列、GDI、Office COM 都不在支持范围）。
+- 打印机状态（`GET /api/printer`）给概览页用：在线/队列/积压/原因，30 秒缓存
+  （`Assistant.printer_status`），打印机断电时 `lpstat` 会等到超时，轮询不能每次去碰它。
+  `Printer.status()` 不抛异常，原因放 `error`；上传接口的 503 也带上这个原因，
+  别只说「没有可用的打印机」。网页是「先看能不能打，再传文件」，不是传完才报错。
 
 ### 通用能力，不按需求加工具（D62）
 

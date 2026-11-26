@@ -1279,6 +1279,21 @@ async def api_prints(q: str = "", status: str = "", limit: int = 20,
     }
 
 
+@app.get("/api/printer")
+async def api_printer(refresh: int = 0, _auth=Depends(require_api_token)):
+    """打印机状态：网页先看能不能打，别等传完文件才报错。
+
+    `refresh=1` 绕过 30 秒缓存（概览页的重查按钮）；打印机断电时
+    `lpstat` 可能等到超时，所以状态本身带缓存，别让轮询把请求线程占住。
+    """
+    if assistant is None:
+        raise HTTPException(status_code=503, detail="服务尚未就绪")
+    detail = await asyncio.to_thread(assistant.printer_status, bool(refresh))
+    payload = {"ok": True}
+    payload.update(detail)
+    return payload
+
+
 @app.get("/api/memories")
 async def api_memories(q: str = "", sort: str = "newest", limit: int = 20,
                        offset: int = 0, _auth=Depends(require_api_token)):
@@ -1872,11 +1887,17 @@ async def api_print_upload(file: UploadFile = File(...), client_id: str = Form("
     """接收待打印文件（D61/D65）：落持久目录，返回 file_id，随下一条聊天消息使用。"""
     if assistant is None or print_store is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪")
-    refresh = getattr(assistant, "refresh_printer", None)
-    if refresh is not None:
-        refresh()
-    if not assistant.printer_ready:
-        raise HTTPException(status_code=503, detail="当前部署没有可用的打印机（Linux 服务器需要 CUPS）")
+    detail = await asyncio.to_thread(assistant.printer_status)
+    available = detail.get("available")
+    if not available and detail.get("state") == "checking":
+        # 后台正在检测（打印机断电要等超时）：别急着拒绝，用启动时的结论兜一下
+        available = bool(getattr(assistant, "printer_ready", False))
+    if not available:
+        reason = detail.get("error") or (
+            "正在检测打印机，稍后再试"
+            if detail.get("state") == "checking" else "Linux 服务器需要 CUPS"
+        )
+        raise HTTPException(status_code=503, detail="打印机不可用：%s" % reason)
     if len(client_id) > MAX_CLIENT_ID_CHARS:
         raise HTTPException(status_code=422, detail="client_id 过长")
 

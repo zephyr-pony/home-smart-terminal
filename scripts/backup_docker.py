@@ -172,9 +172,10 @@ def container_using(volume):
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def restore(zip_path, volume, image=DEFAULT_IMAGE, with_env=False, yes=False):
+def restore(zip_path, volume, image=DEFAULT_IMAGE, with_env=False, yes=False,
+            passphrase=None):
     """把备份写回卷。正在用这个卷的容器要先停，写完再起。"""
-    ok, problems = backup_mod.verify_archive(zip_path)
+    ok, problems = backup_mod.verify_archive(zip_path, passphrase=passphrase)
     if not ok:
         raise SystemExit("备份不可用：\n  " + "\n  ".join(problems))
 
@@ -187,7 +188,8 @@ def restore(zip_path, volume, image=DEFAULT_IMAGE, with_env=False, yes=False):
 
     tmp_dir = tempfile.mkdtemp(prefix="xiaoma-restore-")
     try:
-        _safe_unzip(zip_path, tmp_dir)
+        with backup_mod.open_archive(zip_path, passphrase) as archive:
+            _safe_unzip(archive, tmp_dir)
         data_dir = os.path.join(tmp_dir, "data")
         if not os.path.isdir(data_dir):
             raise SystemExit("备份里没有 data/ 目录，不是小马的备份？")
@@ -228,7 +230,16 @@ def main(argv=None):
     parser.add_argument("--with-env", action="store_true",
                         help="恢复时一并覆盖仓库 .env（换机器时慎用）")
     parser.add_argument("--yes", action="store_true", help="确认覆盖正在使用的卷")
+    parser.add_argument("--encrypt", action="store_true",
+                        help="加密备份（口令取 %s 或 --passphrase-file）"
+                             % backup_mod.PASSPHRASE_ENV)
+    parser.add_argument("--passphrase-file", metavar="FILE",
+                        help="从文件读口令（建议 chmod 600）")
     args = parser.parse_args(argv)
+
+    passphrase = backup_mod.resolve_passphrase(
+        passphrase_file=args.passphrase_file
+    )
 
     if args.list:
         for name in list_volumes():
@@ -237,7 +248,7 @@ def main(argv=None):
         return 0
 
     if args.check:
-        ok, problems = backup_mod.verify_archive(args.check)
+        ok, problems = backup_mod.verify_archive(args.check, passphrase=passphrase)
         if ok:
             print("✅ 备份可用：%s" % args.check)
             return 0
@@ -250,25 +261,32 @@ def main(argv=None):
 
     if args.restore:
         restore(args.restore, volume, image=args.image,
-                with_env=args.with_env, yes=args.yes)
+                with_env=args.with_env, yes=args.yes, passphrase=passphrase)
         print("✅ 已恢复到卷：%s" % volume)
         print("   容器已经按原状态停/起；没在跑的记得手动 up。")
         return 0
 
+    if args.encrypt and not passphrase:
+        raise SystemExit(
+            "要做加密备份，先设 %s 或给 --passphrase-file"
+            % backup_mod.PASSPHRASE_ENV
+        )
     tmp_dir = snapshot(volume, image=args.image, all_data=args.all_data)
     try:
         zip_path = backup_mod.create_backup(
             out_dir=args.out, all_data=args.all_data,
             data_dir=os.path.join(tmp_dir, "data"),
             note="docker:%s" % volume,
+            passphrase=passphrase if args.encrypt else None,
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    ok, problems = backup_mod.verify_archive(zip_path)
+    ok, problems = backup_mod.verify_archive(zip_path, passphrase=passphrase)
     removed = backup_mod.prune(args.out, args.keep)
-    print("✅ 备份：%s（%.1f MB，卷 %s）" % (
+    print("✅ 备份：%s（%.1f MB，卷 %s）%s" % (
         zip_path, os.path.getsize(zip_path) / 1024 / 1024, volume,
+        "（已加密）" if backup_mod.is_encrypted(zip_path) else "",
     ))
     print("   校验：%s" % ("通过" if ok else "失败 " + "；".join(problems)))
     if removed:

@@ -292,6 +292,73 @@ class Printer:
         except Exception:
             return None
 
+    def status(self):
+        """给网页/接口看的状态：能不能打、队列在不在、有没有积压。
+
+        刻意不抛异常：打印机断电是常态，概览页每 30 秒问一次，
+        每次都冒堆栈没有意义；原因放 `error` 里给人看。
+        `jobs` 是队列里未完成的任务数（None 表示查不到）。
+        """
+        detail = {
+            "enabled": bool(self.enabled),
+            "configured": bool(self.name or self.server),
+            "available": False,
+            "name": self.name,
+            "server": self.server,
+            "queue": "",
+            "state": "unknown",
+            "jobs": None,
+            "error": "",
+        }
+        if not self.enabled:
+            detail["error"] = "打印功能已关闭（PRINTER_ENABLED=0）"
+            return detail
+
+        missing = [cmd for cmd in (self.lp, self.lpstat) if not shutil.which(cmd)]
+        if missing:
+            detail["error"] = "服务器上没有 %s，打印需要先装 CUPS" % missing[0]
+            return detail
+
+        try:
+            queue = self._resolve_queue()
+        except PrintError as exc:
+            detail["error"] = str(exc)
+            return detail
+        detail["queue"] = queue
+        detail["available"] = True
+
+        try:
+            result = _run(
+                [self.lpstat] + self._host_args() + ["-p", queue], timeout=10,
+            )
+            text = (result.stdout or "").strip()
+            if "disabled" in text:
+                detail["state"] = "disabled"
+                detail["error"] = "队列被停用了，在 CUPS 里重新启用一下"
+            elif "now printing" in text:
+                detail["state"] = "printing"
+            elif "is idle" in text:
+                detail["state"] = "idle"
+            elif result.returncode != 0:
+                detail["error"] = (
+                    result.stderr or text or "lpstat 返回 %d" % result.returncode
+                ).strip()[:200]
+        except PrintError as exc:
+            detail["available"] = False
+            detail["error"] = str(exc)
+            return detail
+
+        try:
+            jobs = _run(
+                [self.lpstat] + self._host_args() + ["-o", queue], timeout=10,
+            )
+            detail["jobs"] = len([
+                line for line in (jobs.stdout or "").splitlines() if line.strip()
+            ])
+        except PrintError:
+            pass
+        return detail
+
     def list_printers(self):
         try:
             result = _run(

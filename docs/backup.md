@@ -31,11 +31,15 @@ python scripts/backup.py --check backups/xiaoma-20261123-155308.zip
 # 恢复演练：解到空目录，不动本机数据
 python scripts/backup.py --restore backups/xiaoma-20261123-155308.zip --to D:/tmp/drill
 
+# 加密备份（口令取 BACKUP_PASSPHRASE 或 --passphrase-file）
+python scripts/backup.py --encrypt
+
 # 真正恢复（会先自动把当前状态另存一份到 backups/pre-restore/）
 python scripts/backup.py --restore backups/xiaoma-<时间>.zip --yes
 ```
 
-落地位置：`backups/xiaoma-<YYYYMMDD-HHMMSS>.zip`（已进 `.gitignore`，因为里面有 `.env`）。
+落地位置：`backups/xiaoma-<YYYYMMDD-HHMMSS>.zip`（已进 `.gitignore`，因为里面有 `.env`）；
+加密时是 `.zip.enc`，同一目录不会同时留明文。
 
 ## 数据在 Docker 命名卷里时（当前部署）
 
@@ -91,12 +95,84 @@ schtasks /Create /TN "xiaoma-backup" /SC DAILY /ST 03:00 /RL HIGHEST `
 0 3 * * * cd /opt/xiaoma && .venv/bin/python scripts/backup.py >> data/backup.log 2>&1
 ```
 
+## 加密（2026-11-26）
+
+备份里有 `.env`（VAPID 私钥）；接上文档/照片后还会有体检报告、账单扫描件这类身份信息。
+**离开自家硬盘的那一份必须加密**，本机目录里也建议默认加密。
+
+```bash
+# 口令走环境变量（交互式终端），或用 --passphrase-file 指向一个 chmod 600 的文件
+export BACKUP_PASSPHRASE='一串足够长的口令'
+python scripts/backup_docker.py --encrypt        # 产出 xiaoma-…zip.enc，明文 zip 立刻删除
+python scripts/backup_docker.py --check backups/xiaoma-….zip.enc
+python scripts/backup_docker.py --restore backups/xiaoma-….zip.enc --volume … --yes
+```
+
+- 格式：`magic(5) + salt(16) + nonce(12) + AES-256-GCM 密文`，密钥由口令经 scrypt 派生，
+  换机器也能解，不依赖本机任何密钥文件。
+- **口令丢了备份就打不开**，没有任何后门。把口令记在密码库（Vaultwarden）里，别和备份放同一个目录。
+- CLI 上 `--encrypt` 没给口令会直接报错退出，不会悄悄产出明文包。
+- `--check` / `--restore` 认文件头：`.zip` 和 `.zip.enc` 都能直接传，加密的才要口令。
+- 加密靠 `cryptography`（已经是 `pywebpush` 的依赖，这里显式钉版本）。
+
+## 定时（Linux，迁移后）
+
+Windows 这台继续按需手动跑（上面那节）。上了家庭服务器就交给 systemd timer，
+别用 cron 拼长命令——日志进 journal，失败也看得见。
+
+`/etc/xiaoma/backup.env`（`chmod 600`，只 root 可读）：
+
+```ini
+BACKUP_PASSPHRASE=一串足够长的口令
+```
+
+`/etc/systemd/system/xiaoma-backup.service`：
+
+```ini
+[Unit]
+Description=小马数据卷备份（加密）
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/xiaoma
+EnvironmentFile=/etc/xiaoma/backup.env
+ExecStart=/usr/bin/python3 /opt/xiaoma/scripts/backup_docker.py --encrypt --keep 14
+```
+
+`/etc/systemd/system/xiaoma-backup.timer`：
+
+```ini
+[Unit]
+Description=每天 03:30 备份小马数据
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now xiaoma-backup.timer
+systemctl list-timers xiaoma-backup.timer      # 看下次触发
+journalctl -u xiaoma-backup.service -n 50      # 看最近一次结果
+```
+
+`--keep 14` 保留两周；内存/磁盘都吃得下，出问题时能往回多看几天。
+
 ## 异地那一份
 
 脚本**不碰网络**（备份里有密钥，自动上传等于扩大暴露面）。目前是手动：
 
-- 每月一次把最新的 `backups/xiaoma-*.zip` 拷到手机或网盘（zip 里有 `.env`，别放公共网盘）
+- 每月一次把最新的 `backups/xiaoma-*.zip.enc` 拷到手机、网盘或另一台机器
+  （加密包可以放公共网盘；**别把口令和它放在一起**）
 - 或者等迁移到家庭服务器后，插一块移动硬盘每周 rsync 一次
+- 单盘部署（Gen10 只有一块 SSD）尤其要注意：**备份不能只留在同一台机器上**，
+  否则盘坏了两份一起没
 
 ## 演练记录（2026-11-23）
 

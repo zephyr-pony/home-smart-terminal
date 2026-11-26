@@ -1667,3 +1667,37 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 - 服务端启动后 `/api/status` 的 `space_id` 为 `default`，现有库路径与之前一致。
 - 单测 594 → 601。
 - 单测 573 → 585（新增 `tests/test_prints.py` 9 条 + 打印记录相关 3 条 + 备份 1 条）。
+
+## 三十四、2026-11-26：打印机状态可见 + 备份加密与定时
+
+### 打印机状态（概览页先看能不能打）
+
+- 之前只有 `POST /api/print/files` 里检查 `printer_ready`：用户传完文件才被告知打印机离线。
+- `adapters/printer.py` 新增 `Printer.status()`：队列名、状态（idle/printing/disabled）、
+  积压份数、失败原因，**不抛异常**（打印机断电是常态）。
+- `Assistant.printer_status()` 带 30 秒缓存，并且**不在请求里同步等 CUPS**：打印机断电时
+  `lpstat` 要等 10 秒，概览页会被卡住。现在过期后先返回旧值（`stale=True`）并在后台线程
+  重新查，网页 3 秒后再取；启动后第一次返回 `state="checking"`，2.5 秒后自动再取。
+  实测首次 0.04 秒返回，11 秒后拿到真实结果（`命令超时：lpstat -h`）。
+- `GET /api/printer`（`refresh=1` 绕过缓存）；上传接口的 503 改成带上具体原因
+  （「打印机不可用：命令超时：lpstat」），不再只说不清楚的一句。
+- 概览「最近打印」上方加一行：绿点/红点 + 队列 + 积压 + 原因 + 重查按钮。
+
+### 备份加密（AES-256-GCM）与定时
+
+- 备份里迟早有身份信息（体检报告、账单扫描件），异地副本必须加密：
+  `magic(5) + salt(16) + nonce(12) + 密文`，密钥由口令经 scrypt 派生，产物 `.zip.enc`。
+- 明文 zip 加密后**立即删除**，同一目录不留两份；`is_encrypted` 按文件头判断，不看扩展名。
+- 口令来源：`BACKUP_PASSPHRASE` 或 `--passphrase-file`；`--encrypt` 没口令直接退出，
+  不会悄悄产出明文包。口令丢了备份打不开（没有后门）。
+- `--check` / `--restore` 两种包都认；`prune` / `--list` 把 `.enc` 一起算进去。
+- `docs/backup.md` 补了 systemd timer（`--keep 14`、`EnvironmentFile` 放口令、日志进 journal）
+  和「备份不能只留在同一块盘上」。
+
+### 验收
+
+- 单测 601 → 616：`Printer.status()`（idle/disabled/没装 CUPS/超时）、状态缓存只查一次、
+  首次不阻塞、过期给旧值后后台刷新、`/api/printer` 在线与离线、加密包无明文残留、
+  错口令报错、恢复演练、`.enc` 参与保留策略、CLI `--encrypt` 无口令拒绝。
+- 容器重建后 `GET /api/printer` 在打印机断电时返回 `available=false` 和 `lpstat` 超时原因，
+  页面显示红点；打印机开机后 30 秒内变绿（真机出纸验收仍等打印机开机）。

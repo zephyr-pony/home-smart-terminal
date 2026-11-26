@@ -8,6 +8,7 @@ import os
 import shutil
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime
 
@@ -74,6 +75,10 @@ def _float_or_none(value):
     except (TypeError, ValueError):
         return None
 
+
+# 打印机状态的缓存时长：打印机是另一台机器，断电时 lpstat 要等到超时才返回，
+# 概览页轮询不能每次都去碰它（D61 补充）。
+PRINTER_STATUS_TTL_SECONDS = 30
 
 # 内置命令识别（宽泛匹配，兼容语音变体）
 # 查看记忆：对象词（记忆/记录）+ 查看类动词，或直接点名命令
@@ -207,6 +212,11 @@ class Assistant:
         )
         self.printer_ready = self.printer.available()
         self._printer_checked_at = time.time()
+        # 概览页要看的完整状态（可不可用 / 队列 / 积压 / 原因）；30 秒缓存
+        self._printer_detail = None
+        self._printer_detail_at = 0.0
+        self._printer_lock = threading.Lock()
+        self._printer_checking = False
         self._printer_tool = get_printer_tool()
         # 工具注册表（memory + 日期 + items + 实体）
         self.tools = get_all_tools(
@@ -709,6 +719,89 @@ class Assistant:
             }
         self.printer_ready = ready
         return ready
+
+    def printer_status(self, force=False):
+        """打印机状态（概览页/接口用）：能不能打、队列名、积压、原因。
+
+        为什么不能每次都同步查：打印机断电时 `lpstat` 会一直等到超时（实测 10 秒），
+        概览页每 30 秒问一次，不能把页面卡在那儿。所以：
+        - 有缓存就立刻返回（30 秒内算新鲜；过期时顺手起一个后台检查，先给旧值）；
+        - 从来没查过（刚启动）才同步查一次，否则第一个请求拿不到任何东西。
+        返回里的 `stale=True` 表示「这是旧值，后台正在更新」，网页据此再拉一次。
+        """
+        now = time.time()
+        if force:
+            return self._check_printer()
+        if (self._printer_detail is not None
+                and now - self._printer_detail_at < PRINTER_STATUS_TTL_SECONDS):
+            return dict(self._printer_detail)
+
+        if self._printer_detail is None:
+            # 启动后第一次：不能同步等 CUPS（断电时要 10 秒），先给「检测中」，
+            # 后台查完网页再来取一次
+            self._start_printer_check()
+            return {
+                "enabled": bool(getattr(self.printer, "enabled", False)),
+                "configured": bool(
+                    getattr(self.printer, "name", "") or
+                    getattr(self.printer, "server", "")
+                ),
+                "available": False,
+                "name": getattr(self.printer, "name", "") or "",
+                "server": getattr(self.printer, "server", "") or "",
+                "queue": "",
+                "state": "checking",
+                "jobs": None,
+                "error": "",
+                "stale": True,
+            }
+
+        self._start_printer_check()
+        detail = dict(self._printer_detail)
+        detail["stale"] = True
+        return detail
+
+    def _check_printer(self):
+        """真正去问 CUPS，结果写回缓存；可能阻塞几秒，别在轮询里直接调。"""
+        if self.printer is None:
+            detail = {
+                "enabled": False, "configured": False, "available": False,
+                "name": "", "server": "", "queue": "", "state": "unknown",
+                "jobs": None, "error": "没有配置打印机",
+            }
+        else:
+            detail = self.printer.status()
+        detail["stale"] = False
+
+        self._printer_detail = detail
+        self._printer_detail_at = time.time()
+        # 状态和「模型能不能看到 printer_print」用同一个结论，不要各查各的
+        self._printer_checked_at = self._printer_detail_at
+        self.printer_ready = bool(detail.get("available"))
+        if self.printer_ready and self._printer_tool not in self.tools:
+            self.tools.append(self._printer_tool)
+            self._tools_by_name = {
+                t["schema"]["function"]["name"]: t["execute"] for t in self.tools
+            }
+        return dict(detail)
+
+    def _start_printer_check(self):
+        """后台查一次；已经在查就不重复起线程。"""
+        with self._printer_lock:
+            if self._printer_checking:
+                return
+            self._printer_checking = True
+
+        def run():
+            try:
+                self._check_printer()
+            except Exception:  # 后台线程不能把异常抛给没人接的地方
+                traceback.print_exc()
+            finally:
+                with self._printer_lock:
+                    self._printer_checking = False
+
+        threading.Thread(target=run, name="printer-check", daemon=True).start()
 
     # ---------- agent loop ----------
 

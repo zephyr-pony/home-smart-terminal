@@ -10,6 +10,8 @@ aiohttp==3.13.5
 # MCP 接入点的 WebSocket 由 uvicorn 交给它实现；探针脚本也用它当客户端
 websockets==15.0.1
 pywebpush==2.1.2
+# 备份加密（AES-256-GCM）：pywebpush 已经依赖它，这里显式钉住版本
+cryptography==50.0.0
 # 打印（D61）：Linux CUPS 队列 + PDF 页数 + 图片校验
 pypdfium2==5.15.2
 pillow==11.3.0

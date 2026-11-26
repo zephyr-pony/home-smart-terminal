@@ -196,6 +196,17 @@ html, body {
   background: var(--surface-alt); color: var(--text-secondary);
 }
 .think-pill.on { background: var(--accent-weak, rgba(90, 160, 240, .16)); color: var(--accent); }
+/* 打印机状态：在线/离线用点的颜色区分，别等上传完才发现打不了 */
+.printer-line {
+  font-size: 13px; line-height: 1.6; margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+.printer-line .printer-dot {
+  display: inline-block; width: 7px; height: 7px; margin-right: 6px;
+  border-radius: 50%; background: var(--text-secondary); vertical-align: 1px;
+}
+.printer-line .printer-dot.on { background: #3fa45b; }
+.printer-line .printer-dot.off { background: #d2665a; }
 .row-actions { display: flex; gap: 8px; margin-top: 8px; }
 .small-btn {
   padding: 5px 10px; border: 1px solid var(--border);
@@ -428,6 +439,7 @@ html, body {
         <div id="thinking-summary" class="muted stat-detail"></div>
         <div id="thinking-list" class="list"></div>
         <h3 class="section-title">最近打印</h3>
+        <div id="printer-status" class="printer-line"></div>
         <div id="prints-list" class="list"></div>
         <h3 class="section-title">运行状态</h3>
         <div id="runtime-info" class="muted stat-detail"></div>
@@ -559,6 +571,7 @@ html, body {
   var thinkingSummary = document.getElementById('thinking-summary');
   var thinkingList = document.getElementById('thinking-list');
   var printsList = document.getElementById('prints-list');
+  var printerStatus = document.getElementById('printer-status');
   var runtimeInfo = document.getElementById('runtime-info');
   var dataTabs   = document.getElementById('data-tabs');
   var dataList   = document.getElementById('data-list');
@@ -903,6 +916,7 @@ html, body {
       overviewDue.innerHTML = '<div class="empty">加载失败：' + esc(requestErrorText(err)) + '</div>';
     });
     loadThinking();
+    loadPrinterStatus();
     loadPrints();
   }
 
@@ -965,6 +979,39 @@ html, body {
     function two(n) { return (n < 10 ? '0' : '') + n; }
     return (d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' +
       two(d.getHours()) + ':' + two(d.getMinutes());
+  }
+
+  // 打印机状态（D61 补充）：概览页先看能不能打，别等传完文件才报错。
+  // 服务端状态有 30 秒缓存，「重查」按钮用 refresh=1 绕过它。
+  function loadPrinterStatus(refresh) {
+    if (!printerStatus) return;
+    // 断电时这次请求要等 CUPS 超时，先给一句，别看起来像没反应
+    if (refresh) printerStatus.textContent = '正在检测打印机…';
+    apiFetch('/api/printer' + (refresh ? '?refresh=1' : '')).then(function(d) {
+      if (!d.configured) { printerStatus.textContent = ''; return; }
+      if (d.state === 'checking') {
+        // 服务端在后台问 CUPS（打印机断电时要等超时），先给一句，过几秒再来取
+        printerStatus.textContent = '正在检测打印机…';
+        setTimeout(function() { loadPrinterStatus(); }, 2500);
+        return;
+      }
+      var state = d.available
+        ? (d.state === 'printing' ? '正在打印' : '在线')
+        : '不可用';
+      var parts = ['打印机 ' + (d.queue || d.name || '默认队列') + '：' + state];
+      if (d.available && d.jobs) parts.push('队列里 ' + d.jobs + ' 份');
+      if (d.error) parts.push(d.error);
+      printerStatus.innerHTML =
+        '<span class="printer-dot ' + (d.available ? 'on' : 'off') + '"></span>' +
+        esc(parts.join(' · ')) +
+        ' <button id="printer-refresh" class="small-btn" type="button">重查</button>';
+      var btn = document.getElementById('printer-refresh');
+      if (btn) btn.addEventListener('click', function() { loadPrinterStatus(true); });
+      // 服务端返回旧值并在后台更新时，隔几秒再拉一次，别让页面一直显示旧状态
+      if (d.stale) setTimeout(function() { loadPrinterStatus(); }, 3000);
+    }).catch(function() {
+      printerStatus.textContent = '';
+    });
   }
 
   function loadPrints() {

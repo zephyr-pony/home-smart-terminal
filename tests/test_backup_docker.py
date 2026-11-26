@@ -106,7 +106,10 @@ def test_backup_from_data_dir_packs_data_prefix(tmp_path):
 
 
 def test_restore_to_busy_volume_needs_yes(tmp_path, monkeypatch):
-    monkeypatch.setattr(bd.backup_mod, "verify_archive", lambda path: (True, []))
+    monkeypatch.setattr(
+        bd.backup_mod, "verify_archive",
+        lambda path, passphrase=None: (True, []),
+    )
     monkeypatch.setattr(bd, "container_using", lambda volume: ["xiaoma"])
 
     with pytest.raises(SystemExit):

@@ -143,3 +143,87 @@ def test_manifest_lists_items_with_hashes(project):
     names = {item["name"] for item in manifest["items"]}
     assert ".env" in names and "data/memory.db" in names
     assert all(len(item["sha256"]) == 64 for item in manifest["items"])
+
+
+# ---------- 加密备份（AES-256-GCM） ----------
+
+def test_encrypted_backup_leaves_no_plaintext(project):
+    out = os.path.join(project, "backups")
+    path = backup.create_backup(root=project, out_dir=out, passphrase="正确口令")
+
+    assert path.endswith(".zip.enc")
+    assert backup.is_encrypted(path)
+    # 同一目录不能同时留明文 zip：加密完就删
+    assert [n for n in os.listdir(out) if n.endswith(".zip")] == []
+    with open(path, "rb") as fh:
+        assert fh.read(5) == backup.BACKUP_MAGIC
+    # 密文里不该出现原文
+    with open(path, "rb") as fh:
+        assert "牛奶快喝完了".encode("utf-8") not in fh.read()
+
+
+def test_encrypted_backup_verifies_and_restores(project):
+    out = os.path.join(project, "backups")
+    path = backup.create_backup(root=project, out_dir=out, passphrase="正确口令")
+
+    ok, problems = backup.verify_archive(path, passphrase="正确口令")
+    assert ok, problems
+
+    target = os.path.join(project, "drill")
+    backup.restore_archive(path, target, passphrase="正确口令")
+    assert os.path.exists(os.path.join(target, ".env"))
+    assert os.path.exists(os.path.join(target, "data", "memory.db"))
+
+
+def test_wrong_passphrase_is_reported(project):
+    out = os.path.join(project, "backups")
+    path = backup.create_backup(root=project, out_dir=out, passphrase="正确口令")
+
+    ok, problems = backup.verify_archive(path, passphrase="错误口令")
+    assert ok is False
+    assert any("口令" in item for item in problems)
+
+    with pytest.raises(SystemExit):
+        backup.restore_archive(path, os.path.join(project, "drill"),
+                               passphrase="错误口令")
+
+
+def test_empty_passphrase_means_plain_backup(project):
+    """空口令不是错误，只是「不加密」；拒绝发生在 CLI 的 --encrypt 上。"""
+    out = os.path.join(project, "backups")
+    path = backup.create_backup(root=project, out_dir=out, passphrase="")
+    assert path.endswith(".zip")
+    assert backup.is_encrypted(path) is False
+
+
+def test_passphrase_from_env_and_file(project, tmp_path, monkeypatch):
+    key_file = tmp_path / "backup.key"
+    key_file.write_text("文件口令\n", encoding="utf-8")
+    monkeypatch.delenv(backup.PASSPHRASE_ENV, raising=False)
+
+    assert backup.resolve_passphrase(passphrase_file=str(key_file)) == "文件口令"
+
+    monkeypatch.setenv(backup.PASSPHRASE_ENV, "环境口令")
+    assert backup.resolve_passphrase() == "环境口令"
+    # 显式参数优先
+    assert backup.resolve_passphrase("显式口令") == "显式口令"
+
+
+def test_cli_encrypt_requires_passphrase(tmp_path, monkeypatch):
+    """CLI 上 --encrypt 没给口令就退出，不悄悄产出明文包。"""
+    monkeypatch.delenv(backup.PASSPHRASE_ENV, raising=False)
+    with pytest.raises(SystemExit):
+        backup.main(["--encrypt", "--out", str(tmp_path)])
+
+
+def test_prune_counts_encrypted_archives(project):
+    out = os.path.join(project, "backups")
+    os.makedirs(out, exist_ok=True)
+    for stamp in ("20260101-030000", "20260102-030000", "20260103-030000"):
+        with open(os.path.join(out, "xiaoma-%s.zip.enc" % stamp), "wb") as fh:
+            fh.write(backup.BACKUP_MAGIC + b"x" * 40)
+
+    removed = backup.prune(out, keep=2)
+
+    assert removed == ["xiaoma-20260101-030000.zip.enc"]
+    assert len(backup.list_backups(out)) == 2

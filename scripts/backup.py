@@ -5,18 +5,23 @@
 
 为什么带上 .env：VAPID 私钥在里面，丢了所有推送订阅全部作废，手机要重新开一遍通知。
 
+加密（2026-11-26）：备份里迟早会有身份信息（体检报告、账单扫描件），
+异地副本一旦离开自家硬盘就必须加密。用 AES-256-GCM，密钥由口令经 scrypt 派生，
+输出 `.zip.enc`；明文 zip 加密后立即删除，同一目录里不会同时留两份。
+
 用法：
     python scripts/backup.py                     # 备份到 backups/，保留 7 份
-    python scripts/backup.py --list              # 看现有备份
-    python scripts/backup.py --check <zip>       # 校验一份备份（sha256 + integrity_check）
-    python scripts/backup.py --restore <zip> --to D:/tmp/drill   # 恢复到指定目录（演练用）
-    python scripts/backup.py --restore <zip> --yes               # 恢复回本机（会先自备份）
+    python scripts/backup.py --encrypt           # 加密备份（口令取 BACKUP_PASSPHRASE）
+    python scripts/backup.py --check <zip|enc>   # 校验（加密备份需要口令）
+    python scripts/backup.py --restore <zip|enc> --to D:/tmp/drill   # 恢复到指定目录（演练用）
+    python scripts/backup.py --restore <zip|enc> --yes               # 恢复回本机（会先自备份）
     python scripts/backup.py --all-data          # 连 data/ 下的目录一起备份（chroma、HA 配置）
 
 默认只备「核心状态」：`.env` + `data/` 顶层的非日志文件（记忆、事实、任务、物品、推送订阅）。
 `data/homeassistant` 是 HA 的运行时目录，由 HA 自己的快照负责，默认不掺进来。
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -40,6 +45,13 @@ ALWAYS_DIRS = ("print", "spaces")
 
 MANIFEST = "manifest.json"
 
+# 加密容器格式（自己定，够用就行）：magic(5) + salt(16) + nonce(12) + AES-GCM 密文。
+# 口令不落盘；密钥每次由 scrypt 现算，所以备份文件搬到别的机器也能解。
+BACKUP_MAGIC = b"XMBK1"
+ENCRYPT_SUFFIX = ".enc"
+PASSPHRASE_ENV = "BACKUP_PASSPHRASE"
+SCRYPT_N = 2 ** 14  # 约 16MB 内存、50ms 一轮，够挡住离线穷举又不拖慢定时任务
+
 
 def _sha256(path):
     h = hashlib.sha256()
@@ -58,6 +70,96 @@ def _snapshot_sqlite(src, dst):
     except sqlite3.DatabaseError:
         shutil.copy2(src, dst)
         return False
+
+
+# ---------- 加密（AES-256-GCM + scrypt 口令派生） ----------
+
+def is_encrypted(path):
+    """按文件头判断，不看扩展名（改名/去掉后缀也能认出来）。"""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(len(BACKUP_MAGIC)) == BACKUP_MAGIC
+    except OSError:
+        return False
+
+
+def _derive_key(passphrase, salt):
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+    return Scrypt(salt=salt, length=32, n=SCRYPT_N, r=8, p=1).derive(
+        str(passphrase).encode("utf-8")
+    )
+
+
+def encrypt_file(src, dst, passphrase):
+    """把 zip 加密成 `.zip.enc`；口令为空直接拒绝，不留半个明文包。"""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    if not passphrase:
+        raise SystemExit(
+            "没有口令，不能加密备份：设 %s 或用 --passphrase-file" % PASSPHRASE_ENV
+        )
+    salt = os.urandom(16)
+    nonce = os.urandom(12)
+    with open(src, "rb") as fh:
+        data = fh.read()
+    ciphertext = AESGCM(_derive_key(passphrase, salt)).encrypt(
+        nonce, data, BACKUP_MAGIC
+    )
+    with open(dst, "wb") as fh:
+        fh.write(BACKUP_MAGIC + salt + nonce + ciphertext)
+    return dst
+
+
+def decrypt_file(src, dst, passphrase):
+    """解密到 dst；口令错和文件被改过都报同一句，别泄露是哪一种。"""
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    if not passphrase:
+        raise SystemExit(
+            "这是加密备份，需要口令：设 %s 或用 --passphrase-file" % PASSPHRASE_ENV
+        )
+    with open(src, "rb") as fh:
+        blob = fh.read()
+    if blob[:len(BACKUP_MAGIC)] != BACKUP_MAGIC:
+        raise SystemExit("不是加密的小马备份：%s" % src)
+    body = blob[len(BACKUP_MAGIC):]
+    salt, nonce, ciphertext = body[:16], body[16:28], body[28:]
+    try:
+        data = AESGCM(_derive_key(passphrase, salt)).decrypt(
+            nonce, ciphertext, BACKUP_MAGIC
+        )
+    except InvalidTag:
+        raise SystemExit("口令不对，或备份文件被改过")
+    with open(dst, "wb") as fh:
+        fh.write(data)
+    return dst
+
+
+@contextlib.contextmanager
+def open_archive(path, passphrase=None):
+    """返回一个可以当普通 zip 读的路径：明文直接用，加密的先解到临时文件。
+
+    临时明文只活在这个 with 里，退出即删；不要改成长久落盘。
+    """
+    if not is_encrypted(path):
+        yield path
+        return
+    tmp_dir = tempfile.mkdtemp(prefix="xiaoma-decrypt-")
+    try:
+        target = os.path.join(tmp_dir, "backup.zip")
+        decrypt_file(path, target, passphrase)
+        yield target
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def resolve_passphrase(passphrase=None, passphrase_file=None):
+    """口令来源优先级：显式参数 > 文件 > 环境变量。"""
+    if passphrase:
+        return str(passphrase)
+    if passphrase_file:
+        with open(passphrase_file, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    return os.environ.get(PASSPHRASE_ENV, "").strip()
 
 
 def collect_sources(root=ROOT, all_data=False, data_dir=None):
@@ -91,8 +193,11 @@ def collect_sources(root=ROOT, all_data=False, data_dir=None):
 
 
 def create_backup(root=ROOT, out_dir=DEFAULT_OUT, keep=KEEP, all_data=False, now=None,
-                  data_dir=None, note=None):
-    """打一份备份，返回 zip 路径。内容先落到临时目录，再整体写入，避免半份文件。"""
+                  data_dir=None, note=None, passphrase=None):
+    """打一份备份，返回路径（加密时是 `.zip.enc`）。
+
+    内容先落到临时目录，再整体写入，避免半份文件；加密时写完立刻删明文 zip。
+    """
     now = now or datetime.now()
     os.makedirs(out_dir, exist_ok=True)
     stamp = now.strftime("%Y%m%d-%H%M%S")
@@ -130,14 +235,28 @@ def create_backup(root=ROOT, out_dir=DEFAULT_OUT, keep=KEEP, all_data=False, now
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    if passphrase:
+        enc_path = zip_path + ENCRYPT_SUFFIX
+        encrypt_file(zip_path, enc_path, passphrase)
+        os.remove(zip_path)  # 同一目录不留明文副本
+        return enc_path
     return zip_path
 
 
-def verify_archive(zip_path):
-    """返回 (ok, problems)。校验 sha256 与每个 .db 的 integrity_check。"""
+def verify_archive(zip_path, passphrase=None):
+    """返回 (ok, problems)。校验 sha256 与每个 .db 的 integrity_check。
+
+    加密备份会先解到临时目录再验；口令错在这里就报出来，不会去覆盖数据。
+    """
     problems = []
     if not os.path.exists(zip_path):
         return False, ["文件不存在：%s" % zip_path]
+    if is_encrypted(zip_path):
+        try:
+            with open_archive(zip_path, passphrase) as archive:
+                return verify_archive(archive)
+        except SystemExit as exc:
+            return False, [str(exc)]
     tmp_dir = tempfile.mkdtemp(prefix="xiaoma-verify-")
     try:
         with zipfile.ZipFile(zip_path) as zf:
@@ -171,9 +290,9 @@ def verify_archive(zip_path):
     return not problems, problems
 
 
-def restore_archive(zip_path, target_root=ROOT, force=False):
+def restore_archive(zip_path, target_root=ROOT, force=False, passphrase=None):
     """把备份解回目标目录；不覆盖正在运行的服务数据，除非 force。"""
-    ok, problems = verify_archive(zip_path)
+    ok, problems = verify_archive(zip_path, passphrase=passphrase)
     if not ok:
         raise SystemExit("备份不可用：\n  " + "\n  ".join(problems))
 
@@ -187,24 +306,32 @@ def restore_archive(zip_path, target_root=ROOT, force=False):
         print("已先备份当前状态：%s" % safety)
 
     os.makedirs(target_root, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        for name in zf.namelist():
-            if name == MANIFEST:
-                continue
-            zf.extract(name, target_root)
+    with open_archive(zip_path, passphrase) as archive:
+        with zipfile.ZipFile(archive) as zf:
+            for name in zf.namelist():
+                if name == MANIFEST:
+                    continue
+                zf.extract(name, target_root)
     return target_root
 
 
-def list_backups(out_dir=DEFAULT_OUT):
+def _backup_names(out_dir):
     if not os.path.isdir(out_dir):
         return []
-    names = [n for n in os.listdir(out_dir) if n.startswith("xiaoma-") and n.endswith(".zip")]
-    return sorted(names)
+    return sorted(
+        name for name in os.listdir(out_dir)
+        if name.startswith("xiaoma-")
+        and (name.endswith(".zip") or name.endswith(".zip" + ENCRYPT_SUFFIX))
+    )
+
+
+def list_backups(out_dir=DEFAULT_OUT):
+    return _backup_names(out_dir)
 
 
 def prune(out_dir=DEFAULT_OUT, keep=KEEP):
     """只留最近 keep 份；按文件名里的时间戳排序，不依赖文件修改时间。"""
-    names = list_backups(out_dir)
+    names = _backup_names(out_dir)
     removed = []
     for name in names[:-keep] if keep > 0 else names:
         os.remove(os.path.join(out_dir, name))
@@ -224,7 +351,13 @@ def main(argv=None):
     parser.add_argument("--restore", metavar="ZIP", help="从备份恢复")
     parser.add_argument("--to", metavar="DIR", help="恢复到指定目录（演练用，不动本机数据）")
     parser.add_argument("--yes", action="store_true", help="确认覆盖本机数据")
+    parser.add_argument("--encrypt", action="store_true",
+                        help="加密备份（口令取 %s 或 --passphrase-file）" % PASSPHRASE_ENV)
+    parser.add_argument("--passphrase-file", metavar="FILE",
+                        help="从文件读口令（建议 chmod 600；别写进命令行历史）")
     args = parser.parse_args(argv)
+
+    passphrase = resolve_passphrase(passphrase_file=args.passphrase_file)
 
     if args.list:
         names = list_backups(args.out)
@@ -236,7 +369,7 @@ def main(argv=None):
         return 0
 
     if args.check:
-        ok, problems = verify_archive(args.check)
+        ok, problems = verify_archive(args.check, passphrase=passphrase)
         if ok:
             print("✅ 备份可用：%s" % args.check)
             return 0
@@ -249,7 +382,8 @@ def main(argv=None):
         target = args.to or ROOT
         if args.to:
             os.makedirs(args.to, exist_ok=True)
-        path = restore_archive(args.restore, target, force=args.yes)
+        path = restore_archive(args.restore, target, force=args.yes,
+                               passphrase=passphrase)
         print("✅ 已恢复到：%s" % path)
         if target != ROOT:
             print("演练完成：这是独立副本，本机数据没动。")
@@ -257,11 +391,21 @@ def main(argv=None):
             print("记得重启 server.py 才会读回这些数据。")
         return 0
 
-    zip_path = create_backup(out_dir=args.out, keep=args.keep, all_data=args.all_data,
-                             data_dir=args.data_dir)
-    ok, problems = verify_archive(zip_path)
+    if args.encrypt and not passphrase:
+        raise SystemExit(
+            "要做加密备份，先设 %s 或给 --passphrase-file" % PASSPHRASE_ENV
+        )
+    zip_path = create_backup(
+        out_dir=args.out, keep=args.keep, all_data=args.all_data,
+        data_dir=args.data_dir,
+        passphrase=passphrase if args.encrypt else None,
+    )
+    ok, problems = verify_archive(zip_path, passphrase=passphrase)
     removed = prune(args.out, args.keep)
-    print("✅ 备份：%s（%.1f MB）" % (zip_path, os.path.getsize(zip_path) / 1024 / 1024))
+    print("✅ 备份：%s（%.1f MB）%s" % (
+        zip_path, os.path.getsize(zip_path) / 1024 / 1024,
+        "（已加密）" if is_encrypted(zip_path) else "",
+    ))
     print("   校验：%s" % ("通过" if ok else "失败 " + "；".join(problems)))
     if removed:
         print("   清理旧备份：%s" % "、".join(removed))

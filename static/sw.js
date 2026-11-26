@@ -8,7 +8,7 @@
  * 策略：页面导航用「网络优先，失败回退缓存」；静态资源缓存优先；
  * /api/ 一律走网络，不缓存（数据实时性优先）。
  */
-var CACHE_NAME = 'xiaoma-shell-v4';
+var CACHE_NAME = 'xiaoma-shell-v5';
 var SHELL = [
   '/',
   '/manifest.json',

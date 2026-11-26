@@ -4,6 +4,7 @@
 """
 import json
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +21,7 @@ from adapters.printer import (
 )
 from agent.clarify import Clarifier
 from agent import guard
-from assistant import Assistant
+from assistant import Assistant, PRINTER_STATUS_TTL_SECONDS
 from domain.facts import Facts
 from domain.store import AgentStore
 from domain.tasks import Tasks
@@ -331,9 +332,24 @@ class FakePrinter:
         self.name = "xiaoma"
         self.ready = ready
         self.calls = []
+        self.status_calls = 0
 
     def available(self):
         return self.ready
+
+    def status(self):
+        self.status_calls += 1
+        if self.ready:
+            return {
+                "enabled": True, "configured": True, "available": True,
+                "name": self.name, "server": "", "queue": self.name,
+                "state": "idle", "jobs": 0, "error": "",
+            }
+        return {
+            "enabled": True, "configured": True, "available": False,
+            "name": self.name, "server": "192.168.1.15:631", "queue": "",
+            "state": "unknown", "jobs": None, "error": "命令超时：lpstat",
+        }
 
     def print_file(self, path, copies=1, pages=None, printer_name="", doc_name=""):
         self.calls.append({
@@ -708,6 +724,14 @@ class UploadAssistant:
     def __init__(self):
         self.attachments = []
 
+    def printer_status(self, force=False):
+        if self.printer_ready:
+            return {"available": True, "configured": True, "queue": "xiaoma",
+                    "state": "idle", "jobs": 0, "error": ""}
+        return {"available": False, "configured": True, "queue": "",
+                "state": "unknown", "jobs": None,
+                "error": "连不上 CUPS（192.168.1.15:631）"}
+
     def process_text(self, text, client_id=None, task_id=None, attachment=None):
         self.attachments.append(attachment)
         return {"type": "chat", "reply": "好"}
@@ -810,3 +834,140 @@ def test_file_belongs_to_uploader(upload_server):
         json={"text": "打印", "client_id": "c2", "file_id": file_id},
     )
     assert other.status_code == 400
+
+
+# ---------- 打印机状态（概览页先看能不能打） ----------
+
+def _status_handler(jobs=0, disabled=False, queues=("xiaoma",)):
+    def handler(cmd):
+        if cmd[0] == "lpstat" and "-a" in cmd:
+            text = "".join("%s accepting requests since now\n" % q for q in queues)
+            return 0, text, ""
+        if cmd[0] == "lpstat" and "-d" in cmd:
+            return 0, "system default destination: %s\n" % queues[0], ""
+        if cmd[0] == "lpstat" and "-p" in cmd:
+            if disabled:
+                return 0, "printer %s disabled since now\n" % queues[0], ""
+            return 0, "printer %s is idle.  enabled since now\n" % queues[0], ""
+        if cmd[0] == "lpstat" and "-o" in cmd:
+            text = "".join("%s-%d user 1024 now\n" % (queues[0], i)
+                           for i in range(jobs))
+            return 0, text, ""
+        return 0, "", ""
+    return handler
+
+
+def test_status_reports_idle_queue(monkeypatch):
+    monkeypatch.setattr(printer_mod.shutil, "which", _fake_which)
+    monkeypatch.setattr(printer_mod, "_run", FakeRun(_status_handler(jobs=2)))
+
+    detail = Printer(name="xiaoma").status()
+
+    assert detail["available"] is True
+    assert detail["queue"] == "xiaoma"
+    assert detail["state"] == "idle"
+    assert detail["jobs"] == 2
+    assert detail["error"] == ""
+
+
+def test_status_reports_disabled_queue(monkeypatch):
+    monkeypatch.setattr(printer_mod.shutil, "which", _fake_which)
+    monkeypatch.setattr(printer_mod, "_run", FakeRun(_status_handler(disabled=True)))
+
+    detail = Printer(name="xiaoma").status()
+
+    assert detail["available"] is True
+    assert detail["state"] == "disabled"
+    assert "停用" in detail["error"]
+
+
+def test_status_without_cups_says_so(monkeypatch):
+    monkeypatch.setattr(printer_mod.shutil, "which", lambda name: None)
+
+    detail = Printer(name="xiaoma").status()
+
+    assert detail["available"] is False
+    assert "CUPS" in detail["error"]
+
+
+def test_status_survives_unreachable_server(monkeypatch):
+    """打印机断电时 lpstat 会超时；状态查询不能因此抛异常。"""
+    monkeypatch.setattr(printer_mod.shutil, "which", _fake_which)
+
+    def boom(cmd, timeout=60):
+        raise PrintError("命令超时：lpstat")
+
+    monkeypatch.setattr(printer_mod, "_run", boom)
+
+    detail = Printer(name="xiaoma", server="192.168.1.15:631").status()
+
+    assert detail["available"] is False
+    assert "超时" in detail["error"]
+    assert detail["server"] == "192.168.1.15:631"
+
+
+def test_assistant_caches_printer_status():
+    printer = FakePrinter()
+    assistant = make_assistant(SimpleNamespace(), printer=printer)
+
+    first = assistant.printer_status(force=True)  # 网页「重查」走同步那条
+    second = assistant.printer_status()
+
+    assert first["available"] is True
+    assert second["available"] is True
+    assert printer.status_calls == 1  # 30 秒内不重复问 CUPS
+    assistant.printer_status(force=True)
+    assert printer.status_calls == 2
+
+
+def test_first_printer_status_does_not_block():
+    """启动后第一次也不能同步等 CUPS：先回「检测中」，后台查。"""
+    printer = FakePrinter()
+    assistant = make_assistant(SimpleNamespace(), printer=printer)
+
+    detail = assistant.printer_status()
+
+    assert detail["state"] == "checking"
+    assert detail["stale"] is True
+
+    deadline = time.time() + 2
+    while printer.status_calls < 1 and time.time() < deadline:
+        time.sleep(0.01)
+    deadline = time.time() + 2
+    while assistant.printer_status()["state"] == "checking" and time.time() < deadline:
+        time.sleep(0.01)
+    assert assistant.printer_status()["available"] is True
+
+
+def test_stale_printer_status_returns_old_value_then_refreshes():
+    """过期后先给旧值（不让页面等 lpstat 超时），后台再更新。"""
+    printer = FakePrinter()
+    assistant = make_assistant(SimpleNamespace(), printer=printer)
+    assistant.printer_status(force=True)  # 写入缓存
+
+    assistant._printer_detail_at -= PRINTER_STATUS_TTL_SECONDS + 1
+    stale = assistant.printer_status()
+
+    assert stale["stale"] is True
+    assert stale["available"] is True  # 旧值照给
+
+    deadline = time.time() + 2
+    while printer.status_calls < 2 and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert printer.status_calls == 2
+    assert assistant.printer_status()["stale"] is False
+
+
+def test_printer_endpoint_reports_offline(upload_server):
+    client, assistant, _tmp = upload_server
+
+    online = client.get("/api/printer", headers=AUTH).json()
+    assert online["ok"] is True
+    assert online["available"] is True
+    assert online["queue"] == "xiaoma"
+
+    assistant.printer_ready = False
+    offline = client.get("/api/printer", headers=AUTH).json()
+    assert offline["available"] is False
+    assert "CUPS" in offline["error"]
