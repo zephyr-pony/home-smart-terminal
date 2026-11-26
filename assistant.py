@@ -22,7 +22,6 @@ from config import (
     MAX_SESSIONS,
     PRINTER_ALLOWED,
     PRINTER_ENABLED,
-    PRINT_FILES_DIR,
     PRINT_REUSE_HOURS,
     PRINTER_MAX_COPIES,
     PRINTER_MAX_PAGES,
@@ -59,6 +58,8 @@ from adapters.printer import build_printer, kind_of, pdf_page_count
 from adapters import documents
 from adapters.weather import Weather
 from domain.facts import Facts, profile_subject
+from domain.space import normalize_space_id, space_paths
+from domain.store import AgentStore
 from domain.tasks import Tasks
 from memory import Memory
 from items import Items
@@ -142,8 +143,10 @@ class Assistant:
 
     def __init__(self, memory=None, llm=None, items=None, clarifier=None,
                  tasks=None, facts=None, home=None, decision_llm=None,
-                 printer=None, print_store=None):
-        self.memory = memory or Memory()
+                 printer=None, print_store=None, space_id="default"):
+        self.space_id = normalize_space_id(space_id)
+        self.space = space_paths(self.space_id)
+        self.memory = memory or Memory(self.space["memory"])
         self.llm = llm or LLM()
         # 打印记录（D65）：重启后还能接上「刚才的文件」、能查历史
         self.print_store = print_store
@@ -155,13 +158,17 @@ class Assistant:
         self._recent_file = None
         # 第一轮（决策/调工具）可以换更快的模型；没配置就和回答轮同一个
         self.decision_llm = decision_llm
-        self.items = items or Items()
-        self.tasks = tasks or Tasks()
-        self.facts = facts or Facts()
+        self.items = items or Items(self.space["items"])
+        self.tasks = tasks or Tasks(self.space["tasks"])
+        self.facts = facts or Facts(self.space["facts"])
         # 设备网关（Home Assistant）：没配 HOME_TOKEN 就是 None，工具不注册
         self.home = home if home is not None else build_home()
         # 歧义澄清（实体 + 待澄清动作），写操作前先过一遍
-        self.clarifier = clarifier or Clarifier(items=self.items)
+        self.clarifier = clarifier or Clarifier(
+            store=AgentStore(self.space["agent"]), items=self.items
+        )
+        # 打印文件目录跟着空间走（D68）；没传 print_store 的测试/CLI 落临时目录
+        self.print_files_dir = self.space["print_files"]
         # 写操作统一走「提案 → 提交」，带幂等和审计
         self.proposals = ProposalService(
             self.clarifier.store,
@@ -1198,9 +1205,13 @@ class Assistant:
             )
         source_dir = os.path.dirname(attachment.get("path") or "")
         if not source_dir or not os.path.isdir(source_dir):
-            # 没有附件时从零生成：放持久目录（D65），别落 /tmp，否则重启就没了
-            source_dir = PRINT_FILES_DIR
-            os.makedirs(source_dir, exist_ok=True)
+            # 有打印记录（生产）就放持久目录；没有（CLI/测试）仍用临时目录，
+            # 别让单测往仓库 data/ 里写文件。
+            if self.print_store is not None:
+                source_dir = self.print_files_dir
+                os.makedirs(source_dir, exist_ok=True)
+            else:
+                source_dir = tempfile.mkdtemp(prefix="xiaoma_out_")
         stem = os.path.splitext(attachment.get("name") or "file")[0]
         if requested:
             final_name = os.path.splitext(requested)[0] + actual_ext

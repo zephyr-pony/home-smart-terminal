@@ -274,6 +274,12 @@ pytest tests -q
 
 ### 存储与并发
 
+- **空间隔离（D68）**：一个空间一套库文件，不往每张表加 `space_id` 列。
+  `domain/space.py` 管 `space_id` 规则、路径组合和 `ensure_space`；
+  默认空间仍是 `DATA_DIR` 下的现有库（升级不搬家），其它空间在
+  `DATA_DIR/spaces/<id>/`。`Assistant(space_id=...)` 按空间建默认 store；
+  请求级「谁用哪个空间」还没做，接多成员时在入口层换 `space_id`。
+  新增库/目录时必须走 `space_paths(...)`，不要自己拼 `DATA_DIR` 子路径。
 - `Memory` / `Items` / `Tasks` / `Facts` / `AgentStore` 的连接是 `check_same_thread=False`，所有数据库操作必须持有 `RLock`。
 - 服务端用 `asyncio.to_thread` 跑同步编排；不要在 async handler 里直接做重 IO。
 - 到期状态同步、筛选、标记必须在同一把锁内完成（见 `Items.claim_due_reminders`），避免并发窗口。

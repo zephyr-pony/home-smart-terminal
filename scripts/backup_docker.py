@@ -49,7 +49,7 @@ os.makedirs(dst, exist_ok=True)
 for name in sorted(os.listdir(src)):
     path = os.path.join(src, name)
     if os.path.isdir(path):
-        if name == "backups" or (not all_data and name != "print"):
+        if name == "backups" or (not all_data and name not in ("print", "spaces")):
             continue
         for base, _dirs, files in os.walk(path):
             for filename in files:

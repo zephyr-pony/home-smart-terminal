@@ -34,8 +34,9 @@ KEEP = 7
 # 备份里不放的东西：日志（天天变、没价值）、备份目录自己
 SKIP_SUFFIXES = (".log",)
 SKIP_DIRS = ("backups",)
-# 打印文件是用户上传/生成的原件（D65），和历史记录一起备；不像 work/home 那样可重建
-ALWAYS_DIRS = ("print",)
+# 打印文件是用户上传/生成的原件（D65），和历史记录一起备；不像 work/home 那样可重建。
+# spaces 是其它空间（D68）的一整套库，默认空间之外的数据只在这里，必须备。
+ALWAYS_DIRS = ("print", "spaces")
 
 MANIFEST = "manifest.json"
 

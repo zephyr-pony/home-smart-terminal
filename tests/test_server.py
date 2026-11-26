@@ -11,6 +11,7 @@ import server
 from agent.clarify import Clarifier
 from assistant import Assistant
 from domain.facts import Facts
+from domain.space import DEFAULT_SPACE_ID
 from domain.store import AgentStore
 from domain.tasks import Tasks
 from items import Items
@@ -476,9 +477,10 @@ def test_status_reports_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "started_at", time.time() - 125)
 
     client = TestClient(server.app)
-    runtime = client.get(
+    body = client.get(
         "/api/status", headers={"Authorization": "Bearer secret"}
-    ).json()["runtime"]
+    ).json()
+    runtime = body["runtime"]
 
     assert runtime["uptime_seconds"] >= 120
     assert runtime["core_mb"] >= 0
@@ -486,6 +488,7 @@ def test_status_reports_runtime(monkeypatch, tmp_path):
     assert runtime["print_mb"] >= 0
     assert runtime["disk_total_gb"] > 0
     assert runtime["disk_free_gb"] >= 0
+    assert body["space_id"] == DEFAULT_SPACE_ID
 
 
 # ---------- Web Push ----------

@@ -81,6 +81,7 @@ from adapters.home_ws import run_event_stream
 from adapters.mcp_endpoint import MCPEndpoint
 from domain.push import PushStore
 from domain.prints import PrintStore, STATUSES as PRINT_STATUSES
+from domain.space import DEFAULT_SPACE_ID, ensure_space
 from push_sender import WebPushSender
 from stt import STT
 from llm import LLM, build_decision_llm
@@ -681,18 +682,20 @@ async def distill_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global stt, tts, assistant, _tmp_dir, push_store, push_sender, distiller, print_store
-    global started_at
+    global started_at, PRINT_FILES_DIR
     _check_exposure()
     started_at = time.time()
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
-    os.makedirs(PRINT_FILES_DIR, exist_ok=True)
-    print_store = PrintStore()
+    # 空间（D68）：单家庭先只有 default，路径与升级前一致；接多成员时按人换 space_id
+    space = ensure_space(DEFAULT_SPACE_ID)
+    PRINT_FILES_DIR = space["print_files"]
+    print_store = PrintStore(path=space["prints"])
     _purge_print_files()
     tts = TTS()
     decision_llm = build_decision_llm()
-    assistant = Assistant(memory=Memory(), llm=LLM(), items=Items(),
-                          decision_llm=decision_llm, print_store=print_store)
+    assistant = Assistant(llm=LLM(), decision_llm=decision_llm,
+                          print_store=print_store, space_id=DEFAULT_SPACE_ID)
     print("🧠 决策轮模型：%s" % (decision_llm.model_name if decision_llm else "同回答轮"))
     # 记忆蒸馏（D60）：只重算摘要，不删原文；跑在后台，失败不影响对话
     distiller = None
@@ -1224,6 +1227,7 @@ async def api_status(_auth=Depends(require_api_token)):
         "push_subscriptions": push_count,
         "device_channels": len(_device_subscribers),  # 小智提醒桥接器在线数
         "sessions": len(assistant.sessions),
+        "space_id": getattr(assistant, "space_id", DEFAULT_SPACE_ID),
         "runtime": runtime,  # 跑多久 / 数据多大 / 磁盘还剩多少（D67）
     }
 

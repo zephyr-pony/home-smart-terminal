@@ -1635,4 +1635,35 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 - `GET /api/status` 返回 `runtime`：跑了几分钟、核心数据 0.x MB、打印目录 0 个、
   盘剩余 xx GB；概览页同样显示。
 - 单测新增 `test_status_reports_runtime` + 页面断言，共 593 → 594。
+
+## 三十三、2026-11-26：空间隔离的地基（D68）
+
+### 做法
+
+- 新增 `domain/space.py`：`DEFAULT_SPACE_ID`、`normalize_space_id`（小写字母/数字/
+  `_`/`-`，≤32，挡 `..` 和分隔符）、`space_paths`、`ensure_space`、`list_spaces`。
+- **一个空间一套库文件**，不往每张表加 `space_id` 列：现有约一百条 SQL 逐条加
+  `WHERE space_id=?`，漏一处就串数据且平时看不出来；家里数据量小，目录级隔离
+  备份、导出、删空间都是一步。
+- 默认空间继续用现有 `DATA_DIR` 路径（以及各 `*_DB_PATH` 覆盖），升级不搬家；
+  其它空间落 `DATA_DIR/spaces/<id>/`，打印文件也在各自目录。
+- `Assistant(space_id=...)` 按空间建默认的 memory/items/tasks/facts/agent store；
+  服务端启动时用 `ensure_space(DEFAULT_SPACE_ID)`，`/api/status` 增加 `space_id`。
+- 备份把 `data/spaces` 当作必须项（和 `data/print` 一样），不会因为默认只备
+  顶层文件而漏掉其它空间。
+- 顺手修了一个测试卫生问题：没有 `print_store` 时（CLI/单测）`run_python` 的产物
+  落临时目录，不再往仓库 `data/print` 里写（之前跑单测留了 17 个文件，已清）。
+
+### 边界
+
+- 请求级「谁用哪个空间」还没做：单家庭阶段所有入口都是 `default`。
+  接多成员时在入口（网页/设备/MCP）把 speaker/设备映射成 `space_id` 即可。
+- `space_id` 只是数据分区，**不参与鉴权**；谁能用哪个空间由入口层决定。
+
+### 验收
+
+- 单测 `tests/test_space.py` 7 条：命名规则、默认路径不变、其它空间在
+  `spaces/<id>/`、显式 `data_dir`、两套库互不串、`list_spaces`、路径穿越。
+- 服务端启动后 `/api/status` 的 `space_id` 为 `default`，现有库路径与之前一致。
+- 单测 594 → 601。
 - 单测 573 → 585（新增 `tests/test_prints.py` 9 条 + 打印记录相关 3 条 + 备份 1 条）。

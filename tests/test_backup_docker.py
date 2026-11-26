@@ -38,8 +38,8 @@ def test_snapshot_script_only_takes_books_and_skips_logs():
     assert 'all_data = False' in script
     assert '.db' in script and 'source.backup(tgt)' in script
     assert '.log' in script
-    # 非 all_data 时，除了 print/ 不碰其它目录
-    assert 'if name == "backups" or (not all_data and name != "print")' in script
+    # 非 all_data 时，除了 print/、spaces/ 不碰其它目录
+    assert 'if name == "backups" or (not all_data and name not in ("print", "spaces"))' in script
     assert 'all_data = True' in bd._snapshot_py(True)
 
 
