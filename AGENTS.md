@@ -126,6 +126,10 @@ pytest tests -q
   卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
   已知问题的用例标 `known=True`，不计入失败。`case()` 的 `device_camera=True` 走「终端带摄像头」分支；
   `bound_task="latest"`（或具体 id）模拟「点开提醒」，配合 `not_tools` 断言没有多调 `task_list`。
+  热点上下文（D59）已把事实/记忆塞进提示词，答案正确、只是没调工具的用例可以用
+  `context_ok=True` 放行（回复内容和库状态照验，通过行会标「上下文作答」）。
+  别把日期写死；「下周三」用脚本里的 `NEXT_WEEK_WED`（2026-11-26 修过一次：
+  周四~周日会多算一周）。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
 - 摄像头整条链用 `scripts/fake_camera_device.py --image 图.jpg`：假设备报工具、收调用、把图 POST 到
   `vision_explain`，验证 `tool_calls` 名字、设备驱动和播报。它先试 LAN 地址再退 `127.0.0.1`，

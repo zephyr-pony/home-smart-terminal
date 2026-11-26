@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 from agent.clarify import Clarifier
 from agent.propose import ProposalService
 from assistant import Assistant
@@ -6,6 +8,10 @@ from domain.store import AgentStore
 from domain.tasks import Tasks
 from items import Items
 from memory import Memory
+
+# 别写死日期：物品合并只对「还没过期」的记录生效，写死的月末日期过几天就失效
+SOON = (date.today() + timedelta(days=5)).isoformat()
+LATER = (date.today() + timedelta(days=8)).isoformat()
 
 
 def make_service():
@@ -98,30 +104,30 @@ def test_assistant_memory_tool_uses_proposal_service():
 def test_item_add_merges_same_name_with_new_expiry():
     """同名物品再报一次日期应该更新，而不是多出一条。"""
     service, _ = make_service()
-    service.add_item("牛奶", "2026-11-25")
-    message = service.add_item("牛奶", "2026-11-28")
+    service.add_item("牛奶", SOON)
+    message = service.add_item("牛奶", LATER)
 
     rows = service.items.list_all()
     assert len(rows) == 1
-    assert rows[0]["expiry_date"] == "2026-11-28"
+    assert rows[0]["expiry_date"] == LATER
     assert "已更新" in message
 
 
 def test_item_add_same_name_without_date_keeps_old():
     service, _ = make_service()
-    service.add_item("牛奶", "2026-11-25")
+    service.add_item("牛奶", SOON)
     message = service.add_item("牛奶")
 
     rows = service.items.list_all()
     assert len(rows) == 1
-    assert rows[0]["expiry_date"] == "2026-11-25"
+    assert rows[0]["expiry_date"] == SOON
     assert "未重复添加" in message
 
 
 def test_item_add_same_name_same_date_is_noop():
     service, _ = make_service()
-    service.add_item("牛奶", "2026-11-25")
-    message = service.add_item("牛奶", "2026-11-25")
+    service.add_item("牛奶", SOON)
+    message = service.add_item("牛奶", SOON)
 
     assert len(service.items.list_all()) == 1
     assert "未重复添加" in message
@@ -150,8 +156,8 @@ def test_item_add_after_expired_creates_new_row():
 
 def test_item_merge_records_audit_status():
     service, store = make_service()
-    service.add_item("牛奶", "2026-11-25")
-    service.add_item("牛奶", "2026-11-28")
+    service.add_item("牛奶", SOON)
+    service.add_item("牛奶", LATER)
 
     statuses = [p.get("status") for p in store.list_proposals()]
     assert "merged" in statuses

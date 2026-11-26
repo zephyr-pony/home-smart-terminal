@@ -155,3 +155,39 @@ def test_cancel_bill_reminder_not_clarified():
     assert clarifier.check("把电费提醒取消掉", "c1") is None
     # 新建账单仍然要追问
     assert clarifier.check("明天交电费", "c1") is not None
+
+
+def test_recurring_without_time_asks_clock():
+    """「每天提醒我吃药」缺时刻：先问几点，别让模型自己编一个。"""
+    clarifier = make_clarifier()
+    result = clarifier.check("每天提醒我吃药", "c1")
+
+    assert result["kind"] == "clarify"
+    assert "几点" in result["reply"]
+    assert "每天" in result["reply"]
+    assert result["pending_action"]["missing_slot"] == "time"
+
+    resolved = clarifier.check("早上八点", "c1")
+    assert resolved["kind"] == "resolved"
+    assert resolved["text"] == "每天提醒我吃药，早上八点"
+
+
+def test_recurring_weekday_keeps_the_day_in_question():
+    clarifier = make_clarifier()
+    result = clarifier.check("每周三提醒我开会", "c1")
+    assert result["kind"] == "clarify"
+    assert "每周三" in result["reply"]
+
+
+def test_recurring_with_time_is_not_clarified():
+    clarifier = make_clarifier()
+    assert clarifier.check("每天早上八点提醒我吃药", "c1") is None
+    assert clarifier.check("每周三下午三点提醒我开会", "c1") is None
+    assert clarifier.check("每天提醒我喝水，8:30", "c1") is None
+
+
+def test_time_rule_ignores_non_reminders():
+    """「每天省点钱」不是安排提醒，不能弹「几点提醒你」。"""
+    clarifier = make_clarifier()
+    assert clarifier.check("每天省点钱", "c1") is None
+    assert clarifier.check("每天都很忙", "c1") is None

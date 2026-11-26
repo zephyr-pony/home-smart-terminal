@@ -6,6 +6,8 @@
 
 只做确定性判断和问题生成，真正的记录仍交给 agent loop。
 """
+import re
+
 from config import PENDING_ACTION_TTL_SECONDS
 from domain.store import AgentStore, normalize_text
 
@@ -13,6 +15,11 @@ BILL_TRIGGERS = ("电费", "水费", "燃气费", "煤气费", "物业费", "暖
 BILL_COMPLETION_WORDS = ("交了", "付了", "缴了", "完成", "搞定", "已经交", "已交")
 EXPIRY_TRIGGERS = ("过期", "保质期", "到期")
 CANCEL_WORDS = ("算了", "不用了", "取消", "先不记", "不记了", "没事")
+# 周期提醒必须落到具体时刻：只问「几点」，不替用户定（D63 之前的既定约定）
+RECUR_TRIGGERS = (
+    "每天", "每日", "每晚", "每周", "每星期", "每月", "每年", "天天", "每个星期",
+)
+REMIND_WORDS = ("提醒", "叫我", "喊我", "通知我")
 
 # 规则注册表：新增一类歧义 = 加一条规则，不用改主流程
 RULES = (
@@ -30,6 +37,14 @@ RULES = (
         "missing_slot": "product",
         "candidates": "items",
         "question": "是哪一件？",
+    },
+    {
+        # 「每天提醒我吃药」这种：周期有了、时刻没有，先问一句再落库，
+        # 否则模型会替用户编一个 9 点，或者嘴上说「记下了」手里啥也没写。
+        "name": "recur_time",
+        "triggers": RECUR_TRIGGERS,
+        "missing_slot": "time",
+        "question": "{trigger}几点提醒你？",
     },
 )
 
@@ -79,7 +94,35 @@ class Clarifier:
                 )
             if rule.get("candidates") == "items":
                 return self._check_item_rule(rule, text, conversation_id)
+            if rule.get("missing_slot") == "time":
+                return self._check_time_rule(rule, trigger, text, conversation_id)
         return None
+
+    def _check_time_rule(self, rule, trigger, text, conversation_id):
+        """周期提醒没说几点：只问时刻，不替用户定。
+
+        只认「提醒/叫我」这类确实在安排提醒的话，避免「每天省点钱」被追问。
+        句子里有点、时、`8:30` 之类就当作说了时刻；「每月1号」只有日期，仍要问。
+        """
+        normalized = normalize_text(text)
+        if not any(word in normalized for word in REMIND_WORDS):
+            return None
+        if "几点" in normalized:
+            return None
+        if re.search(r"[点时]|\d{1,2}\s*[:：]\s*\d{1,2}", normalized):
+            return None
+        # 问句里带上具体是哪一天：「每周三几点」「每月1号几点」
+        idx = normalized.find(trigger)
+        display = trigger
+        rest = normalized[idx + len(trigger):] if idx >= 0 else ""
+        if rest[:1] and rest[:1] in "一二三四五六日天末":
+            display += rest[:1]
+        else:
+            day = re.match(r"(\d{1,2})号", rest)
+            if day:
+                display += day.group(0)
+        question = rule["question"].format(trigger=display)
+        return self._ask(conversation_id, text, "time", question, [])
 
     def _check_entity_rule(self, rule, trigger, text, conversation_id):
         entity_type = rule["entity_type"]
@@ -222,6 +265,13 @@ class Clarifier:
             self.store.add_entity("property", canonical, aliases=[answer])
         elif pending["missing_slot"] == "product":
             self.store.add_entity("product", canonical, aliases=[answer])
+        elif pending["missing_slot"] == "time":
+            # 「每天提醒我吃药，八点」比把时刻放前面更自然
+            self.store.clear_pending(pending["id"])
+            return {
+                "kind": "resolved",
+                "text": f"{pending['original_text']}，{canonical}",
+            }
 
         self.store.clear_pending(pending["id"])
         return {
