@@ -1396,11 +1396,11 @@ class Assistant:
             "fact_list": ("facts", "list"),
             "profile_set": ("profile", "store"),
             "printer_print": ("printer", "print"),
-            "get_current_date": ("date", "query"),
+            "time_now": ("date", "query"),
         }
-        business = [mappings[name] for name in used_tools if name in mappings and name != "get_current_date"]
+        business = [mappings[name] for name in used_tools if name in mappings and name != "time_now"]
         if not business:
-            return ("date", "query") if "get_current_date" in used_tools else ("chat", "chat")
+            return ("date", "query") if "time_now" in used_tools else ("chat", "chat")
         domains = {domain for domain, _action in business}
         domain = next(iter(domains)) if len(domains) == 1 else "mixed"
         if "task_complete" in used_tools:

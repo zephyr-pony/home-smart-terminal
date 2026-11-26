@@ -99,7 +99,7 @@ def test_no_decision_llm_keeps_single_model():
 
 
 def test_tool_metadata():
-    assert Assistant._tool_metadata(["item_search", "get_current_date"]) == ("items", "search")
+    assert Assistant._tool_metadata(["item_search", "time_now"]) == ("items", "search")
     assert Assistant._tool_metadata(["memory_store"]) == ("memory", "store")
     assert Assistant._tool_metadata([]) == ("chat", "chat")
 

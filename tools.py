@@ -4,9 +4,12 @@
 模块自治：memory/items 各自导出工具定义，assistant.py 聚合注册。
 新增工具只需在此处注册，agent loop 核心循环无需改动。
 """
-from datetime import datetime
+import ast
+import re
+from datetime import datetime, timedelta
 
 from agent import wording
+from agent import lunar as lunar_mod
 from domain.facts import profile_subject
 from memory import Memory
 
@@ -109,17 +112,179 @@ def get_memory_tools(memory: Memory, proposals=None):
     ]
 
 
-def get_current_date_tool():
-    """获取当前日期工具（时间推理必需）。"""
+_WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _cn_date(when):
+    """中文日期（语音里念得出来的那种）：2026年11月26日（周四）。"""
+    return "%d年%d月%d日（%s）" % (
+        when.year, when.month, when.day, _WEEKDAYS[when.weekday()]
+    )
+
+
+def _utc_offset(when):
+    """时区偏移写成 UTC+08:00，别只给 CST（它有好几种含义）。"""
+    offset = when.utcoffset()
+    if offset is None:
+        return ""
+    minutes = int(offset.total_seconds() // 60)
+    sign = "+" if minutes >= 0 else "-"
+    minutes = abs(minutes)
+    return "UTC%s%02d:%02d" % (sign, minutes // 60, minutes % 60)
+
+
+def get_time_tool(now_provider=None):
+    """现在几点 + 日期推算（D72）。
+
+    系统提示里只有「今天日期」，没有时刻；跨月、跨年、闰年的日期差让模型口算
+    也常错。所以「现在」和「几天后是哪天 / 某天还有多久」都在这里算，别让它猜。
+    `now_provider` 只在测试里注入固定时刻。
+    """
+
+    def execute(offset_days=None, target_date=""):
+        now = (now_provider or datetime.now)()
+        aware = now.astimezone()
+        zone_text = "，".join(
+            part for part in (aware.tzname(), _utc_offset(aware)) if part
+        )
+        lines = ["现在：%s %02d:%02d%s" % (
+            _cn_date(now), now.hour, now.minute,
+            ("（%s）" % zone_text) if zone_text else "",
+        )]
+        if target_date:
+            text = str(target_date).strip()
+            try:
+                target = datetime.strptime(text, "%Y-%m-%d")
+            except ValueError:
+                return "target_date 要写成 YYYY-MM-DD（比如 2026-12-25）"
+            delta = (target.date() - now.date()).days
+            if delta == 0:
+                rel = "就是今天"
+            elif delta > 0:
+                rel = "还有 %d 天" % delta
+            else:
+                rel = "已经过去 %d 天" % (-delta)
+            lines.append("目标日期：%s，%s" % (_cn_date(target), rel))
+        elif offset_days is not None:
+            days = _clamp_int(offset_days, 0, -3650, 3650)
+            moment = now + timedelta(days=days)
+            if days == 0:
+                lines.append("今天就是 %s" % _cn_date(moment))
+            else:
+                lines.append("%d 天%s：%s" % (
+                    abs(days), "后" if days > 0 else "前", _cn_date(moment)
+                ))
+        return "\n".join(lines)
+
     return _build(
-        name="get_current_date",
+        name="time_now",
         description=(
-            "兜底用的日期工具。系统提示里已经给出了今天的日期，"
-            "常规时间计算直接用它即可，不要为了拿日期专门调用本工具。"
+            "现在几点、今天几号星期几，以及日期推算。"
+            "系统提示里只有今天的日期没有时刻，问「现在几点」就调它；"
+            "问「三天后是哪天」「12月25日还有几天」「下个月1号周几」这类，"
+            "把日期交给它算（offset_days 或 target_date），不要自己口算。"
         ),
-        properties={},
+        properties={
+            "offset_days": {
+                "type": "integer",
+                "description": "相对今天的天数，可为负：3=三天后，-7=一周前",
+            },
+            "target_date": {
+                "type": "string",
+                "description": "要比对的日期，YYYY-MM-DD；和 offset_days 二选一",
+            },
+        },
         required=[],
-        execute=lambda: f"今天是 {datetime.now().strftime('%Y年%m月%d日')}",
+        execute=execute,
+    )
+
+
+_MAX_EXPR_CHARS = 200
+
+
+def _eval_arith(node):
+    """只放行四则、整除、取余、乘方和括号；不碰 eval，也不认识变量。"""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _eval_arith(node.operand)
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp):
+        left = _eval_arith(node.left)
+        right = _eval_arith(node.right)
+        if isinstance(node.op, ast.Pow):
+            # 9**9**9 能直接吃光内存；底数和指数都掐住
+            if abs(right) > 64 or abs(left) > 1e6:
+                raise ValueError("乘方的数太大")
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return left / right
+        if isinstance(node.op, ast.FloorDiv):
+            return left // right
+        if isinstance(node.op, ast.Mod):
+            return left % right
+        if isinstance(node.op, ast.Pow):
+            return left ** right
+        raise ValueError("不支持的运算符")
+    raise ValueError("只支持数字、+ - * / // %% ** 和括号")
+
+
+def _fmt_number(value):
+    """整数就别带小数点（27 元不该说成 27.0）；小数留 10 位有效数字。"""
+    if isinstance(value, int):
+        return str(value)
+    if value.is_integer():
+        return "%d" % value
+    return "%.10g" % value
+
+
+def get_calc_tool():
+    """精确算术（D72）。折扣、分摊、百分比让模型口算，它会给个像模像样的错数。"""
+
+    def execute(expression):
+        text = str(expression or "").strip()
+        if not text:
+            return "要算的表达式是空的"
+        if len(text) > _MAX_EXPR_CHARS:
+            return "表达式太长，拆成几步算"
+        # 语音转写常见全角符号；千分位逗号去掉再解析，别把 1,000 当成两个数
+        text = (text.replace("×", "*").replace("÷", "/")
+                .replace("−", "-").replace("（", "(").replace("）", ")"))
+        text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", text)
+        try:
+            value = _eval_arith(ast.parse(text, mode="eval").body)
+        except ZeroDivisionError:
+            return "除数不能是 0"
+        except (SyntaxError, ValueError, TypeError, OverflowError) as exc:
+            return "算不了：%s" % exc
+        if isinstance(value, complex):
+            return "结果不是实数"
+        if isinstance(value, float) and value != value:
+            return "结果不是有效数字"
+        if abs(value) >= 1e15:
+            return "结果太大（数量级 %s），这个量级没法准确表示" % ("%.2g" % value)
+        return "%s = %s" % (text, _fmt_number(value))
+
+    return _build(
+        name="calc",
+        description=(
+            "精确算术：折扣、分摊、百分比、单位换算里的乘除。"
+            "式子照数学写法传（如 268*0.85、(120+80)/3），结果由它算，"
+            "别自己口算——大数相乘、带小数时你容易给出看着对的错数。"
+        ),
+        properties={
+            "expression": {
+                "type": "string",
+                "description": "算式，只含数字与 + - * / // % ** 和括号",
+            },
+        },
+        required=["expression"],
+        execute=execute,
     )
 
 
@@ -1021,10 +1186,169 @@ def get_thinking_tool():
     )
 
 
+def _year_from(text):
+    """从 YYYY-MM-DD 里取年份；取不到就返回 None（调用方再兜当前年）。"""
+    match = re.match(r"^\s*(\d{4})", str(text or ""))
+    return int(match.group(1)) if match else None
+
+
+def _relative_days(when, today=None):
+    """「还有 3 天 / 已经过去 2 天 / 就是今天」，日期类回答里到处要用。"""
+    today = today or datetime.now().date()
+    delta = (when - today).days
+    if delta == 0:
+        return "就是今天"
+    if delta > 0:
+        return "还有 %d 天" % delta
+    return "已经过去 %d 天" % (-delta)
+
+
+def _as_bool(value):
+    """模型传 true/false 有时是字符串；空值当 False，别让 str('')[0] 直接炸。"""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "t", "yes", "y", "是", "闰")
+
+
+def get_lunar_tool():
+    """农历/节气/传统节日（D72）：公历↔农历换算、查某年的节气。
+
+    问「今天农历几号」调它（不传参数）；问「今年春节/中秋是哪天」传 lunar
+    （8-15 这种数字），问「今年立春几号」传 term。换算交给它，别让模型背农历表。
+    """
+
+    def execute(date="", lunar="", year=None, term="", leap=False):
+        if not lunar_mod.available():
+            return "农历功能没装（cnlunar），现在只能报公历"
+        leap_flag = _as_bool(leap)
+        try:
+            if term:
+                if year:
+                    solar_year = _clamp_int(
+                        year, 0, lunar_mod.MIN_YEAR, lunar_mod.MAX_YEAR
+                    )
+                else:
+                    solar_year = _year_from(date) or datetime.now().year
+                when = lunar_mod.solar_term(solar_year, term)
+                return "%d 年 %s：%s，%s" % (
+                    solar_year, term, _cn_date(when), _relative_days(when)
+                )
+
+            if lunar:
+                text = str(lunar).strip().replace("/", "-").replace("－", "-")
+                parts = [part for part in re.split(r"[\s\-]+", text) if part]
+                if len(parts) != 2 or not all(part.isdigit() for part in parts):
+                    return "lunar 要写成 月-日 的数字，比如 8-15（八月十五）"
+                if year:
+                    lunar_year = _clamp_int(
+                        year, 0, lunar_mod.MIN_YEAR, lunar_mod.MAX_YEAR
+                    )
+                else:
+                    lunar_year = lunar_mod.day_info(datetime.now().date())["lunar_year"]
+                when = lunar_mod.to_solar(
+                    lunar_year, int(parts[0]), int(parts[1]), leap_flag
+                )
+                return "农历 %d 年 %s → 公历 %s，%s" % (
+                    lunar_year,
+                    _lunar_month_day(parts[0], parts[1], leap_flag),
+                    _cn_date(when), _relative_days(when),
+                )
+
+            if date:
+                try:
+                    when = datetime.strptime(str(date).strip(), "%Y-%m-%d").date()
+                except ValueError:
+                    return "date 要写成 YYYY-MM-DD，比如 2026-12-25"
+            else:
+                when = datetime.now().date()
+            info = lunar_mod.day_info(when)
+        except ValueError as exc:
+            return "算不了：%s" % exc
+
+        lines = ["公历：%s" % _cn_date(when)]
+        year_text = "%s%s年" % (info["ganzhi"], info["zodiac"])
+        lines.append("农历：%s %s" % (
+            year_text, info["month_text"] + info["day_text"],
+        ))
+        if info["term"]:
+            lines.append("节气：%s" % info["term"])
+        if info["festivals"]:
+            lines.append("节日：%s" % "、".join(info["festivals"]))
+        return "\n".join(lines)
+
+    return _build(
+        name="lunar_calendar",
+        description=(
+            "农历、节气、传统节日。问「今天农历几号/什么节气」不传参数；"
+            "问「今年春节、中秋、妈农历生日是哪天」用 lunar（月-日数字，如 8-15，"
+            "跨年再加 year）；问「今年立春几号」用 term。"
+            "农历和公历的换算交给它，别自己推——农历月份 29/30 天、还有闰月，"
+            "口算一定错。它不查节假日放假安排（调休），那个要每年一张表。"
+        ),
+        properties={
+            "date": {
+                "type": "string",
+                "description": "公历日期 YYYY-MM-DD，查这一天的农历；不传就是今天",
+            },
+            "lunar": {
+                "type": "string",
+                "description": "农历日期，月-日数字（如 8-15 表示八月十五），传了就转成公历",
+            },
+            "year": {
+                "type": "integer",
+                "description": "配合 lunar 是农历年，配合 term 是公历年；不传按今年",
+            },
+            "term": {
+                "type": "string",
+                "enum": list(lunar_mod.SOLAR_TERMS),
+                "description": "节气名，查它在那一年是几月几号",
+            },
+            "leap": {
+                "type": "boolean",
+                "description": "配合 lunar：是不是闰月（默认不是）",
+            },
+        },
+        required=[],
+        execute=execute,
+    )
+
+
+_MONTH_NAMES = ("正月", "二月", "三月", "四月", "五月", "六月",
+                "七月", "八月", "九月", "十月", "冬月", "腊月")
+_NUMERALS = "〇一二三四五六七八九十"
+
+
+def _lunar_day_name(day):
+    """1 → 初一，15 → 十五，21 → 廿一，30 → 三十（和 cnlunar 的口径一致）。"""
+    if day <= 10:
+        return "初" + _NUMERALS[day]
+    if day < 20:
+        return "十" + _NUMERALS[day - 10]
+    if day == 20:
+        return "二十"
+    if day < 30:
+        return "廿" + _NUMERALS[day - 20]
+    return "三十"
+
+
+def _lunar_month_day(month, day, leap=False):
+    """8-15 → 八月十五：数字给模型看，中文念给用户听。"""
+    month, day = int(month), int(day)
+    if not 1 <= month <= 12 or not 1 <= day <= 30:
+        raise ValueError("农历月份 1–12、日期 1–30")
+    return ("闰" if leap else "") + _MONTH_NAMES[month - 1] + _lunar_day_name(day)
+
+
 def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
                   tasks=None, facts=None, home=None, weather=None):
     """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备 + 天气）。"""
-    tools = get_memory_tools(memory, proposals) + [get_current_date_tool()]
+    tools = get_memory_tools(memory, proposals) + [
+        get_time_tool(), get_calc_tool(),
+    ]
+    # 农历能算就给；没装 cnlunar 时不要露出这个 schema，否则模型会去调一个算不了的
+    # 工具，用户听到的是「算不了」而不是「今天公历几号」。
+    if lunar_mod.available():
+        tools.append(get_lunar_tool())
     if items is not None:
         tools += get_items_tools(items, proposals)
         tools.append(get_family_search_tool(memory, items, tasks))

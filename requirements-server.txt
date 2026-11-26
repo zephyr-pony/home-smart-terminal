@@ -17,3 +17,5 @@ pypdfium2==5.15.2
 pillow==11.3.0
 # 文件读写（D62）：模型看表格内容、用代码改表格（openpyxl 只认 xlsx/xlsm）
 openpyxl==3.1.5
+# 农历/节气/传统节日（D72）：纯 Python 的 1900–2099 年月表，离线、无其它依赖
+cnlunar==0.2.5
