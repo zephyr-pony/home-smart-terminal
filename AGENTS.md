@@ -130,6 +130,9 @@ pytest tests -q
   `context_ok=True` 放行（回复内容和库状态照验，通过行会标「上下文作答」）。
   别把日期写死；「下周三」用脚本里的 `NEXT_WEEK_WED`（2026-11-26 修过一次：
   周四~周日会多算一周）。
+- 生产数据在 Docker 命名卷里，备份用 `scripts/backup_docker.py`（容器里 sqlite 热备 →
+  宿主机打包）；`scripts/backup.py --data-dir` 是它复用的底层，单独跑只备仓库 `data/`。
+  恢复要求 `--yes`（会先停用该卷的容器），演练用临时卷，见 `docs/backup.md`。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
 - 摄像头整条链用 `scripts/fake_camera_device.py --image 图.jpg`：假设备报工具、收调用、把图 POST 到
   `vision_explain`，验证 `tool_calls` 名字、设备驱动和播报。它先试 LAN 地址再退 `127.0.0.1`，

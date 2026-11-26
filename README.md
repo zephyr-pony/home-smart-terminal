@@ -153,8 +153,9 @@ docker compose up -d --build
   不需要打印就 `--build-arg INSTALL_PRINT=0`；打印队列在 `.env` 里配：
   `PRINTER_SERVER=192.168.1.15:631`、`PRINTER_NAME=HP1020`。容器只向远程 CUPS
   发 IPP 任务，不用自己跑 cupsd；宿主机/容器能访问到那台 CUPS 即可。
-- 数据放在命名卷 `xiaoma-data`（容器内 `/data`，对应 `DATA_DIR`）。换机器/搬家优先用
-  `python scripts/backup.py` 导出，命名卷直接拷文件容易漏掉正在写的库。
+- 数据放在命名卷 `xiaoma-data`（容器内 `/data`，对应 `DATA_DIR`）。备份要用
+  `python scripts/backup_docker.py`（自动找卷、容器里走 sqlite 热备、打包校验），
+  别直接拷卷文件；换机器/搬家也用它导出的 zip。细节见 `docs/backup.md`。
 - 语音模型缓存在 `xiaoma-cache` 卷（`/home/xiaoma/.cache`），重建容器不用重下 900MB 模型。
 - 拉不到 `docker.io` 时（国内网络常见）先给 Docker 配镜像加速器或改用可访问的镜像源拉
   `python:3.12-slim` 并打回同名标签，Dockerfile 本身不用改。系统包/ pip 也连不上时，
@@ -474,6 +475,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ├── static/index.html # Web 客户端
 ├── scripts/
 │   ├── backup.py             # 数据备份 / 校验 / 恢复（见 docs/backup.md）
+│   ├── backup_docker.py      # 命名卷备份 / 恢复（容器里走 sqlite 热备）
 │   ├── doctor.py             # 启动前自检（配置 / 目录 / 端口 / 可选模块）
 │   ├── eval_accuracy.py      # 41 条固定评测集（真模型，不进 pytest）
 │   ├── fake_camera_device.py # 假设备：无硬件验摄像头整条链

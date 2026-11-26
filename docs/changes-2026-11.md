@@ -1525,3 +1525,16 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 一行汇总（最近 N 轮 · 开思考几轮 / 平均几秒 · 没开几轮 / 平均几秒），
 下面按时间倒序列出每轮——开/没开的彩色小标、用户原话、原因、工具、耗时。
 进概览时自动刷新，手机上也能看（不用起电脑）。`THINKING_LOG_ENABLED=0` 时显示「记录已关闭」。
+
+### 备份覆盖 Docker 命名卷（2026-11-26）
+
+- 之前 `scripts/backup.py` 只扫仓库 `data/`，生产数据在卷 `opencode-my_xiaoma-data` 里，
+  **等于从来没备份过**。`scripts/backup.py` 加了 `--data-dir`，新增
+  `scripts/backup_docker.py`：
+  - 起临时容器只读挂卷，用 sqlite `backup` API 逐库热备 → `tar` 到 stdout → 宿主解出 →
+    交给 `backup.py` 打包（manifest / sha256 / integrity_check / 保留份数复用）；
+  - 不 `docker cp`（跑到一半的库会坏），也不用把宿主目录挂进容器（Linux 上 uid 对不上）；
+  - `--restore` 会先停用该卷的容器、写完 chown 回 10001 再起；正在使用的卷必须 `--yes`。
+- 演练（容器在跑时）：备份 18.4 KB → 恢复到临时卷 `xiaoma-restore-test` →
+  记忆 3/3、任务 8/8、事实 6/6、实体 1/1、提案 59/59、待澄清 3/3、推送订阅 1/1，
+  全部一致；测试卷已删，生产卷没动。单测新增 `tests/test_backup_docker.py`（6 条）。

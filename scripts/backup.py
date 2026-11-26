@@ -57,13 +57,17 @@ def _snapshot_sqlite(src, dst):
         return False
 
 
-def collect_sources(root=ROOT, all_data=False):
-    """返回 [(zip 内名字, 绝对路径)]。"""
+def collect_sources(root=ROOT, all_data=False, data_dir=None):
+    """返回 [(zip 内名字, 绝对路径)]。
+
+    `data_dir` 用来备份别处的数据（Docker 卷快照解出来的副本）；
+    默认仍是仓库下的 `data/`。
+    """
     items = []
     env_path = os.path.join(root, ".env")
     if os.path.exists(env_path):
         items.append((".env", env_path))
-    data_dir = os.path.join(root, "data")
+    data_dir = data_dir or os.path.join(root, "data")
     if not os.path.isdir(data_dir):
         return items
     for name in sorted(os.listdir(data_dir)):
@@ -83,14 +87,15 @@ def collect_sources(root=ROOT, all_data=False):
     return items
 
 
-def create_backup(root=ROOT, out_dir=DEFAULT_OUT, keep=KEEP, all_data=False, now=None):
+def create_backup(root=ROOT, out_dir=DEFAULT_OUT, keep=KEEP, all_data=False, now=None,
+                  data_dir=None, note=None):
     """打一份备份，返回 zip 路径。内容先落到临时目录，再整体写入，避免半份文件。"""
     now = now or datetime.now()
     os.makedirs(out_dir, exist_ok=True)
     stamp = now.strftime("%Y%m%d-%H%M%S")
     zip_path = os.path.join(out_dir, "xiaoma-%s.zip" % stamp)
 
-    sources = collect_sources(root, all_data=all_data)
+    sources = collect_sources(root, all_data=all_data, data_dir=data_dir)
     if not sources:
         raise SystemExit("没有可备份的文件：%s" % root)
 
@@ -115,6 +120,7 @@ def create_backup(root=ROOT, out_dir=DEFAULT_OUT, keep=KEEP, all_data=False, now
                 "host": socket.gethostname(),
                 "root": root,
                 "all_data": bool(all_data),
+                "note": note or "",
                 "items": entries,
             }
             zf.writestr(MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -208,6 +214,8 @@ def main(argv=None):
     parser.add_argument("--out", default=DEFAULT_OUT, help="备份目录（默认 backups/）")
     parser.add_argument("--keep", type=int, default=KEEP, help="保留份数（默认 7）")
     parser.add_argument("--all-data", action="store_true", help="连 data/ 下的目录一起备份")
+    parser.add_argument("--data-dir", metavar="DIR",
+                        help="备份这个目录而不是仓库 data/（Docker 卷快照用）")
     parser.add_argument("--list", action="store_true", help="列出已有备份")
     parser.add_argument("--check", metavar="ZIP", help="校验一份备份")
     parser.add_argument("--restore", metavar="ZIP", help="从备份恢复")
@@ -246,7 +254,8 @@ def main(argv=None):
             print("记得重启 server.py 才会读回这些数据。")
         return 0
 
-    zip_path = create_backup(out_dir=args.out, keep=args.keep, all_data=args.all_data)
+    zip_path = create_backup(out_dir=args.out, keep=args.keep, all_data=args.all_data,
+                             data_dir=args.data_dir)
     ok, problems = verify_archive(zip_path)
     removed = prune(args.out, args.keep)
     print("✅ 备份：%s（%.1f MB）" % (zip_path, os.path.getsize(zip_path) / 1024 / 1024))

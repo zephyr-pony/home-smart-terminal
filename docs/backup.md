@@ -37,6 +37,36 @@ python scripts/backup.py --restore backups/xiaoma-<时间>.zip --yes
 
 落地位置：`backups/xiaoma-<YYYYMMDD-HHMMSS>.zip`（已进 `.gitignore`，因为里面有 `.env`）。
 
+## 数据在 Docker 命名卷里时（当前部署）
+
+`scripts/backup.py` 扫的是仓库下的 `data/`，而容器把数据挂在命名卷
+（`opencode-my_xiaoma-data:/data`）——直接跑它等于**没备到**。用这个：
+
+```bash
+# 自动找 *xiaoma*data* 卷，快照 → 打包 → 校验 → 只留 7 份
+python scripts/backup_docker.py
+
+# 看不到候选卷就列出来 / 手动指定
+python scripts/backup_docker.py --list
+python scripts/backup_docker.py --volume opencode-my_xiaoma-data
+
+# 恢复演练：先建一个空卷，恢复到它，再查条数
+docker volume create xiaoma-restore-test
+python scripts/backup_docker.py --restore backups/xiaoma-2026....zip --volume xiaoma-restore-test
+docker run --rm -v xiaoma-restore-test:/data:ro xiaoma:local \
+  python -c "import sqlite3;print(sqlite3.connect('/data/memory.db').execute('select count(*) from memories_raw').fetchone())"
+docker volume rm xiaoma-restore-test
+
+# 真正恢复：正在用该卷的容器会被先停再起，所以要 --yes
+python scripts/backup_docker.py --restore backups/xiaoma-2026....zip --yes
+```
+
+它不 `docker cp`：服务在跑，`cp` 拿到的是写到一半的库。做法是起一个临时容器，
+只读挂载卷，用 sqlite `backup` API 逐个库做在线快照，再把结果 `tar` 到 stdout，
+由宿主机解出来交给 `backup.py` 打包（manifest / sha256 / integrity_check / 保留份数
+都复用）。宿主目录不用挂进容器，Linux 上也不会有 uid 对不上的问题。
+`.env` 仍在宿主机上打包；恢复时默认不动它（换机器时加 `--with-env` 才覆盖）。
+
 ## 为什么不是「拷 data/ 目录」
 
 服务常驻在跑，`*.db` 随时可能写到一半；直接拷 zip 出来的库会**偶发损坏**，而且平时看不出来，
@@ -83,6 +113,25 @@ schtasks /Create /TN "xiaoma-backup" /SC DAILY /ST 03:00 /RL HIGHEST `
 
 顺带验证过：服务在跑、数据库连接开着的时候备份，内容依然完整（`tests/test_backup.py`
 里也有这条用例）。
+
+## 演练记录（2026-11-26，Docker 命名卷）
+
+容器在跑、服务正在写的时候：`backup_docker.py` 快照 → 打包（18.4 KB）→ 校验通过 →
+恢复到临时卷 `xiaoma-restore-test`，逐项比对**全部一致**：
+
+| 项 | 生产卷 | 演练卷 |
+|---|---|---|
+| 记忆 | 3 | 3 |
+| 物品 | 0 | 0 |
+| 任务 | 8 | 8 |
+| 事实 | 6 | 6 |
+| 实体 | 1 | 1 |
+| 提案（审计） | 59 | 59 |
+| 待澄清动作 | 3 | 3 |
+| 推送订阅 | 1 | 1 |
+
+也验证了「卷正被容器使用、没加 `--yes` 会拒绝恢复」，以及演练卷用完 `docker volume rm`
+清掉，生产卷没动。
 
 ## 已知边界
 
