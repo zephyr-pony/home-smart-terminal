@@ -189,6 +189,25 @@ def pdf_page_count(path):
         return None
 
 
+def text_needs_pdf(path):
+    """这份纯文本要不要先转 PDF 再打印（有非 ASCII 字符就要）。
+
+    为什么不能直接送：CUPS 的文本过滤器只认单字节字体，中文会打成一页乱码
+    （2026-11-26 用 HP1020 实测：同样的内容转成 PDF 就正常）。纯英文能直打，
+    也省掉一次 LibreOffice 调用。
+    """
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return False
+    try:
+        data.decode("ascii")
+        return False
+    except UnicodeDecodeError:
+        return True
+
+
 def office_converter():
     """找到 LibreOffice 的可执行文件；没有返回 None。"""
     return shutil.which("soffice") or shutil.which("libreoffice")
@@ -423,14 +442,24 @@ class Printer:
         print_path = path
         total = None
         try:
-            if ext in OFFICE_EXTENSIONS:
+            convert = ext in OFFICE_EXTENSIONS
+            if ext in TEXT_EXTENSIONS and text_needs_pdf(path):
+                if office_available():
+                    convert = True
+                else:
+                    # 与其打出一页乱码让人以为打印机坏了，不如说清原因
+                    raise PrintError(
+                        "这份文本里有中文，服务器没装 LibreOffice，直接打会乱码；"
+                        "请先另存为 PDF 再发"
+                    )
+            if convert:
                 print_path, temp_dir = _office_to_pdf(path)
                 total = pdf_page_count(print_path)
             elif ext in PDF_EXTENSIONS:
                 total = pdf_page_count(print_path)
             elif ext in IMAGE_EXTENSIONS:
                 total = 1
-            # 纯文本 total=None：CUPS 排版后才知道页数
+            # 纯 ASCII 文本 total=None：CUPS 排版后才知道页数
 
             spec = self._page_spec(pages, total)
             queue = self._resolve_queue()

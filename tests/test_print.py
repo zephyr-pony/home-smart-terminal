@@ -971,3 +971,33 @@ def test_printer_endpoint_reports_offline(upload_server):
     offline = client.get("/api/printer", headers=AUTH).json()
     assert offline["available"] is False
     assert "CUPS" in offline["error"]
+
+def test_chinese_text_is_converted_before_printing(tmp_path, monkeypatch):
+    """中文纯文本必须转 PDF：CUPS 的文本过滤器会把中文打成乱码（11-26 实测）。"""
+    path = tmp_path / "通知.txt"
+    path.write_text("明天下午三点取快递", encoding="utf-8")
+    created = []
+    fake = FakeRun(_office_handler(created))
+    monkeypatch.setattr(printer_mod.shutil, "which", _fake_which)
+    monkeypatch.setattr(printer_mod, "_run", fake)
+
+    result = Printer("xiaoma").print_file(str(path))
+
+    assert result["ok"] is True
+    assert [call for call in fake.calls if "soffice" in call[0]]
+    lp_call = [call for call in fake.calls if call[0] == "lp"][0]
+    assert lp_call[-1].endswith(".pdf")
+
+
+def test_chinese_text_without_libreoffice_says_why(tmp_path, monkeypatch):
+    """打不了就说清原因，别打出一页乱码让人以为打印机坏了。"""
+    path = tmp_path / "通知.txt"
+    path.write_text("明天下午三点取快递", encoding="utf-8")
+    monkeypatch.setattr(
+        printer_mod.shutil, "which",
+        lambda name: "/usr/bin/lp" if name == "lp" else None,
+    )
+
+    with pytest.raises(PrintError) as excinfo:
+        Printer("xiaoma").print_file(str(path))
+    assert "乱码" in str(excinfo.value)
