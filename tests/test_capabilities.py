@@ -133,3 +133,86 @@ def test_fetch_rejects_non_http_and_private_hosts():
         web.fetch("http://127.0.0.1:8208/healthz")
     with pytest.raises(web.WebError):
         web.fetch("http://192.168.1.1/admin")
+
+
+class RawResponse:
+    """按原始字节返回，用来测编码：requests 在没声明 charset 时默认 ISO-8859-1。"""
+
+    def __init__(self, raw, headers=None, encoding="ISO-8859-1"):
+        self._raw = raw
+        self.status_code = 200
+        self.headers = headers or {"Content-Type": "text/html"}
+        self.encoding = encoding
+
+    def iter_content(self, size):
+        for start in range(0, len(self._raw), size):
+            yield self._raw[start:start + size]
+
+    def close(self):
+        pass
+
+
+def test_fetch_keeps_utf8_when_charset_missing(monkeypatch):
+    """gov.cn 这类：内容是 UTF-8 但响应头没写 charset，别按 latin-1 解成乱码。"""
+    html = "<html><body><p>国务院办公厅关于2027年部分节假日安排的通知</p></body></html>"
+    monkeypatch.setattr(
+        web.requests, "get",
+        lambda *a, **kw: RawResponse(html.encode("utf-8")),
+    )
+
+    text = web.fetch("https://example.com/utf8")
+
+    assert "国务院办公厅" in text
+    assert "å" not in text
+
+
+def test_fetch_decodes_gbk_page(monkeypatch):
+    """老站 GBK/GB2312：声明了 charset 就按它解。"""
+    html = "<html><body><p>春节放假调休安排</p></body></html>"
+    monkeypatch.setattr(
+        web.requests, "get",
+        lambda *a, **kw: RawResponse(
+            html.encode("gbk"),
+            headers={"Content-Type": "text/html; charset=gb2312"},
+        ),
+    )
+
+    text = web.fetch("https://example.com/gbk")
+
+    assert "春节放假调休安排" in text
+
+
+def test_fetch_falls_back_to_gb18030(monkeypatch):
+    """GBK 内容又没声明 charset：UTF-8 解不开时退回 gb18030。"""
+    html = "<html><body><p>劳动节放假五天</p></body></html>"
+    monkeypatch.setattr(
+        web.requests, "get",
+        lambda *a, **kw: RawResponse(html.encode("gbk")),
+    )
+
+    text = web.fetch("https://example.com/gbk-nc")
+
+    assert "劳动节放假五天" in text
+
+
+def test_web_tools_are_registered_without_any_switch():
+    """上网能力全入口都在，没有权限门槛（D74）：描述变了也不能把工具弄丢。"""
+    from memory import Memory
+    from tools import get_all_tools
+
+    names = {item["schema"]["function"]["name"]
+             for item in get_all_tools(Memory(":memory:"))}
+
+    assert {"web_search", "web_fetch"} <= names
+
+
+def test_search_description_tells_model_to_look_things_up():
+    """D74 的落点：描述里要说清「不确定/会变的事实先搜」，不是只说找库和格式。"""
+    from tools import get_capability_tools
+
+    tool = {item["schema"]["function"]["name"]: item
+            for item in get_capability_tools()}["web_search"]
+    description = tool["schema"]["function"]["description"]
+
+    assert "放假" in description
+    assert "查不到" in description

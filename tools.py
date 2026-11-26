@@ -1112,10 +1112,12 @@ def get_capability_tools():
         _build(
             name="web_search",
             description=(
-                "搜网页（必应优先，DuckDuckGo 兜底），拿到标题、链接和摘要。"
-                "遇到不认识的格式、要找现成的库或工具时用；支持 site: 限定站点，"
-                "如 site:github.com、site:pypi.org、site:modelscope.cn、site:docs.python.org。"
-                "搜到的地址可以用 web_fetch 打开看细节。"
+                "上网搜。凡是你不确定、或者答案会随时间变的事——放假安排、政策通知、"
+                "新闻、价格、赛事、产品参数、某个人的近况——先搜一次再回答："
+                "不要凭训练时的印象编，也不要直接回「查不到」。"
+                "搜索结果只有摘要，细节不够就 web_fetch 打开原文（政府/公司公告类尤其要看原文）。"
+                "家里的事（记忆、物品、任务、设备）不在这里搜；纯闲聊也不必搜。"
+                "支持 site: 限定站点，如 site:gov.cn、site:github.com、site:pypi.org。"
             ),
             properties={
                 "query": {"type": "string", "description": "搜索词"},
@@ -1128,7 +1130,8 @@ def get_capability_tools():
             name="web_fetch",
             description=(
                 "打开一个网页，返回去掉标签的正文（最多约 6000 字）。"
-                "用于看文档、README、报错页；只支持 http/https，不抓内网地址。"
+                "搜索结果摘要说不清时用它看原文，尤其是政府通知、公告、文档、README、报错页。"
+                "只支持 http/https，不抓内网地址。"
             ),
             properties={
                 "url": {"type": "string", "description": "http/https 地址"},

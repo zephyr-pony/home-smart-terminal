@@ -72,6 +72,32 @@ def _strip_html(html):
     return text.strip()
 
 
+def _decode(raw, response):
+    """把页面字节解成文字：Content-Type → UTF-8 → GB18030 依次试。
+
+    requests 在响应头没写 charset 时会把 `response.encoding` 默认成 ISO-8859-1，
+    gov.cn 这类中文站立刻变成「å½å¡é¢」；而 GBK 老站又必须按 gb18030 解。
+    两头都踩过，所以这里显式试，不直接用 `response.text`。
+    """
+    declared = ""
+    match = re.search(
+        r"charset=([\w-]+)", response.headers.get("Content-Type", ""), re.I
+    )
+    if match:
+        declared = match.group(1).strip().lower()
+
+    candidates = []
+    if declared and declared not in ("iso-8859-1", "latin-1"):
+        candidates.append(declared)
+    candidates += ["utf-8", "gb18030"]
+    for encoding in candidates:
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def fetch(url, max_chars=MAX_TEXT_CHARS):
     """抓一个页面，返回去掉标签的正文。"""
     url = str(url or "").strip()
@@ -107,8 +133,7 @@ def fetch(url, max_chars=MAX_TEXT_CHARS):
     finally:
         response.close()
     raw = b"".join(chunks)
-    encoding = response.encoding or "utf-8"
-    text = raw.decode(encoding, errors="replace")
+    text = _decode(raw, response)
     if "html" in content_type.lower() or "<html" in text[:500].lower():
         text = _strip_html(text)
     text = text.strip()
