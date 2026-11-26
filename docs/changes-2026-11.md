@@ -1610,4 +1610,29 @@ compose 注释和 doctor 的提示里都写明了怎么开。
   老库补列不丢数据、`Assistant` 注入生效 —— 共 6 条（`tests/test_facts.py`）。
 - 真模型回归：`eval_accuracy.py --only 事实` **5/5**，全套 41 条不受影响。
 - 单测 587 → 593（含本批 6 条实体关联用例）。
+
+## 三十二、2026-11-26：日志轮转 + 运行观察（D67）
+
+### 问题
+
+容器日志走 Docker 的 json-file，之前没有任何上限——跑几个月能把盘吃满，
+而且出问题时也不知道「跑了多久、数据多大、盘还剩多少」。
+
+### 做法
+
+- `docker-compose.example.yml`（以及本机 compose，未提交）加
+  `logging: json-file / max-size=10m / max-file=3`，旧日志由 Docker 自己滚掉。
+  应用仍然只写 stdout，**不**加文件日志——进程退出前最后一段日志留在 stdout 更有用。
+- `/api/status` 和 `/api/stats` 增加 `runtime`：
+  `uptime_seconds`、`core_mb`（顶层库 + `thinking.jsonl` + 蒸馏状态）、
+  `print_files` / `print_mb`（打印目录）、`disk_total_gb` / `disk_free_gb`。
+  只 count 顶层文件和打印目录，不 walk `work/`、`home/`（pip 包和模型几百 MB）。
+- 概览页新增「运行状态」一行：已运行多久 · 数据多大 · 打印文件几个/多大 · 磁盘剩余。
+
+### 验收
+
+- 容器日志配置生效后 `docker compose up -d` 重建容器（Docker 的 logging 变更需要重建）。
+- `GET /api/status` 返回 `runtime`：跑了几分钟、核心数据 0.x MB、打印目录 0 个、
+  盘剩余 xx GB；概览页同样显示。
+- 单测新增 `test_status_reports_runtime` + 页面断言，共 593 → 594。
 - 单测 573 → 585（新增 `tests/test_prints.py` 9 条 + 打印记录相关 3 条 + 备份 1 条）。

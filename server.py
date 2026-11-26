@@ -190,6 +190,9 @@ _device_subscribers = set()
 # 因订阅队列满而丢弃的事件次数（丢最旧或补投失败都计入；/api/status 暴露）
 dropped_events = 0
 
+# 进程启动时间（lifespan 里写）；/api/status 用它算「跑了多久」
+started_at = None
+
 # FunASR 非线程安全：同一时间只允许一个识别请求
 stt_lock = asyncio.Semaphore(1)
 
@@ -343,6 +346,7 @@ def _stats_sync():
         "due_today": due_today,
         "due_items": assistant.items.get_due(days=REMINDER_DAYS),
         "due_tasks": assistant.tasks.get_due(days=REMINDER_DAYS),
+        "runtime": _runtime_sync(),
     }
 
 
@@ -677,7 +681,9 @@ async def distill_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global stt, tts, assistant, _tmp_dir, push_store, push_sender, distiller, print_store
+    global started_at
     _check_exposure()
+    started_at = time.time()
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
     _tmp_dir = tempfile.mkdtemp(prefix="home_terminal_")
     os.makedirs(PRINT_FILES_DIR, exist_ok=True)
@@ -1155,6 +1161,45 @@ async def healthz():
     return {"ok": True}
 
 
+def _runtime_sync():
+    """运行观察（D67）：跑多久、数据占多少、磁盘还剩多少。
+
+    只数 DATA_DIR 顶层的库、打印目录和思考日志，不去 walk `work/`、`home/`
+    —— 那里可能有几百 MB 的 pip 包和模型，走一遍很慢且对判断没帮助。
+    """
+    core_bytes = 0
+    for name in ("memory.db", "items.db", "tasks.db", "facts.db",
+                 "agent.db", "push.db", "prints.db", "thinking.jsonl",
+                 "distill_state.json"):
+        path = os.path.join(DATA_DIR, name)
+        try:
+            core_bytes += os.path.getsize(path)
+        except OSError:
+            pass
+    print_files = 0
+    print_bytes = 0
+    try:
+        for entry in os.scandir(PRINT_FILES_DIR):
+            if entry.is_file(follow_symlinks=False):
+                print_files += 1
+                print_bytes += entry.stat().st_size
+    except OSError:
+        pass
+    try:
+        usage = shutil.disk_usage(DATA_DIR)
+        total, free = usage.total, usage.free
+    except OSError:
+        total = free = 0
+    return {
+        "uptime_seconds": int(time.time() - started_at) if started_at else 0,
+        "core_mb": round(core_bytes / 1048576, 1),
+        "print_files": print_files,
+        "print_mb": round(print_bytes / 1048576, 1),
+        "disk_total_gb": round(total / 1073741824, 1),
+        "disk_free_gb": round(free / 1073741824, 1),
+    }
+
+
 @app.get("/api/status")
 async def api_status(_auth=Depends(require_api_token)):
     memory_count, item_count, task_count = await asyncio.to_thread(
@@ -1165,6 +1210,7 @@ async def api_status(_auth=Depends(require_api_token)):
         )
     )
     push_count = await asyncio.to_thread(push_store.count_active) if push_store else 0
+    runtime = await asyncio.to_thread(_runtime_sync)
     return {
         "ok": True,
         "stt_ready": stt is not None,
@@ -1178,6 +1224,7 @@ async def api_status(_auth=Depends(require_api_token)):
         "push_subscriptions": push_count,
         "device_channels": len(_device_subscribers),  # 小智提醒桥接器在线数
         "sessions": len(assistant.sessions),
+        "runtime": runtime,  # 跑多久 / 数据多大 / 磁盘还剩多少（D67）
     }
 
 

@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import time
 import wave
 
 import pytest
@@ -460,6 +461,31 @@ def test_status_exposes_drop_counter(monkeypatch):
     assert body["due_items"] == []
     assert body["due_tasks"] == []
     assert body["task_count"] == 0
+
+
+def test_status_reports_runtime(monkeypatch, tmp_path):
+    """运行观察（D67）：跑多久、核心数据多大、打印目录几个文件、磁盘剩余。"""
+    (tmp_path / "memory.db").write_bytes(b"x" * 1024)
+    print_dir = tmp_path / "print"
+    print_dir.mkdir()
+    (print_dir / "a.txt").write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "PRINT_FILES_DIR", str(print_dir))
+    monkeypatch.setattr(server, "started_at", time.time() - 125)
+
+    client = TestClient(server.app)
+    runtime = client.get(
+        "/api/status", headers={"Authorization": "Bearer secret"}
+    ).json()["runtime"]
+
+    assert runtime["uptime_seconds"] >= 120
+    assert runtime["core_mb"] >= 0
+    assert runtime["print_files"] == 1
+    assert runtime["print_mb"] >= 0
+    assert runtime["disk_total_gb"] > 0
+    assert runtime["disk_free_gb"] >= 0
 
 
 # ---------- Web Push ----------

@@ -20,6 +20,13 @@ services:
     image: xiaoma:local
     container_name: xiaoma
     restart: unless-stopped
+    # 日志轮转（D67）：不设这个，容器日志只涨不删，跑几个月能把盘吃满。
+    # 10MB × 3 份封顶，旧日志由 Docker 自己滚掉。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       # 宿主机端口用 .env 的 SERVER_PORT（家里是 8208），容器里固定 8000
       - "${SERVER_PORT:-8208}:8000"

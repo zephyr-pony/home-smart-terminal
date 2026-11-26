@@ -429,6 +429,8 @@ html, body {
         <div id="thinking-list" class="list"></div>
         <h3 class="section-title">最近打印</h3>
         <div id="prints-list" class="list"></div>
+        <h3 class="section-title">运行状态</h3>
+        <div id="runtime-info" class="muted stat-detail"></div>
       </div>
     </section>
 
@@ -557,6 +559,7 @@ html, body {
   var thinkingSummary = document.getElementById('thinking-summary');
   var thinkingList = document.getElementById('thinking-list');
   var printsList = document.getElementById('prints-list');
+  var runtimeInfo = document.getElementById('runtime-info');
   var dataTabs   = document.getElementById('data-tabs');
   var dataList   = document.getElementById('data-list');
   var dataSearch = document.getElementById('data-search');
@@ -876,6 +879,16 @@ html, body {
         ' · 今天到期 ' + (d.due_today || 0));
       statDetail.textContent = detail.join(' ｜ ');
 
+      // 运行状态（D67）：跑多久、数据多大、磁盘还剩多少
+      var rt = d.runtime || {};
+      if (runtimeInfo) {
+        runtimeInfo.textContent = '已运行 ' + fmtUptime(rt.uptime_seconds) +
+          ' · 数据 ' + (rt.core_mb || 0) + ' MB' +
+          ' · 打印文件 ' + (rt.print_files || 0) + ' 个（' + (rt.print_mb || 0) + ' MB）' +
+          ' · 磁盘剩余 ' + (rt.disk_free_gb || 0) + ' / ' +
+          (rt.disk_total_gb || 0) + ' GB';
+      }
+
       var rows = [];
       (d.due_items || []).forEach(function(item) {
         rows.push('<div class="list-row">' + esc(item.name) +
@@ -934,6 +947,17 @@ html, body {
     ready: '待打印', printing: '打印中', printed: '已打印',
     failed: '失败', cancelled: '已取消'
   };
+
+  function fmtUptime(seconds) {
+    if (!seconds || seconds < 0) return '刚刚启动';
+    if (seconds < 3600) return Math.max(1, Math.round(seconds / 60)) + ' 分钟';
+    if (seconds < 86400) {
+      return Math.floor(seconds / 3600) + ' 小时 ' +
+        Math.round((seconds % 3600) / 60) + ' 分';
+    }
+    return Math.floor(seconds / 86400) + ' 天 ' +
+      Math.floor((seconds % 86400) / 3600) + ' 小时';
+  }
 
   function fmtTime(ts) {
     if (!ts) return '';

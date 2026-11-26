@@ -156,6 +156,8 @@ docker compose up -d --build
 - 数据放在命名卷 `xiaoma-data`（容器内 `/data`，对应 `DATA_DIR`）。备份要用
   `python scripts/backup_docker.py`（自动找卷、容器里走 sqlite 热备、打包校验），
   别直接拷卷文件；换机器/搬家也用它导出的 zip。细节见 `docs/backup.md`。
+- 容器日志默认 JSON 文件会一直长；`docker-compose.example.yml` 里已配
+  `logging`（10MB × 3 份轮转）。自己改过 compose 的别忘了抄这一段，否则跑几个月能把盘吃满。
 - 语音模型缓存在 `xiaoma-cache` 卷（`/home/xiaoma/.cache`），重建容器不用重下 900MB 模型。
 - 拉不到 `docker.io` 时（国内网络常见）先给 Docker 配镜像加速器或改用可访问的镜像源拉
   `python:3.12-slim` 并打回同名标签，Dockerfile 本身不用改。系统包/ pip 也连不上时，
@@ -175,7 +177,7 @@ docker compose up -d --build
 | 接口 | 方法 | 说明 |
 |---|---|---|
 | `/healthz` | GET | 探活，**不需要鉴权**，只回 `{"ok": true}`（容器/反代用） |
-| `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`） |
+| `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`）；`runtime` 里有运行时长、数据大小、磁盘剩余 |
 | `/api/stats` | GET | 概览统计：数量、任务状态、到期物品/任务 |
 | `/api/thinking` | GET | 「这轮有没有开思考」的观察记录（最近 20 轮 + 统计），`limit` 可调 |
 | `/api/prints` | GET | 打印历史：名字、时间、份数、结果、CUPS 任务号；`q` / `status` / `limit` / `offset` |
@@ -410,6 +412,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 概览    记忆 / 物品 / 任务 / 事实 / 实体数量，到期提醒
         思考开关：最近 20 轮开没开、原因、工具、耗时（GET /api/thinking）
         最近打印：结果、时间、份数，点「再打一份」回到确认（GET /api/prints）
+        运行状态：已运行多久、数据多大、打印文件数量、磁盘剩余
 数据    记忆 / 物品 / 任务 / 事实 / 实体列表
         支持搜索、状态筛选、分页
         任务可完成 / 取消 / 编辑；删除需二次确认
@@ -536,6 +539,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - [x] 最近文件各端共用 30 分钟（D64）：「刚才的文件再打一份」「改成横向」不用重新上传
 - [x] 打印记录落库（D65）：文件留在卷上、历史进 `prints.db`，重启/重建容器后「再打一份」照用，概览页能查打印历史
 - [x] 事实与实体关联（D66）：事实挂 `entity_id`，存「净水器」、问「饮水机」也查得到；别名只需加实体别名
+- [x] 运维：容器日志轮转（10MB × 3）+ 概览「运行状态」（运行时长 / 数据大小 / 磁盘剩余）
 
 下一步：
 

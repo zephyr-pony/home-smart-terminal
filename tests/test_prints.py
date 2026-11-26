@@ -131,3 +131,5 @@ def test_overview_page_has_prints_panel(monkeypatch):
     html = client.get("/").text
     assert 'id="prints-list"' in html
     assert "最近打印" in html
+    assert 'id="runtime-info"' in html
+    assert "运行状态" in html

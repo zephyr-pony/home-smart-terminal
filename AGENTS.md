@@ -280,6 +280,15 @@ pytest tests -q
 - `memories` 是 `memories_raw` + `memories_fts` 双表；检索依赖“逐字空格化”，换分词方案需要数据迁移。
 - FTS 索引的是 summary，原文里独有的词会漏；`Memory._search_rows` 在未命中时用 LIKE 兜底扫 `summary` 和 `text`，通配符已转义。别把兜底删掉，否则「记过但查不到」会重现。
 
+### 运维与运行观察（D67）
+
+- 容器日志统一走 stdout，靠 compose 的 `logging`（json-file，10MB × 3 份）轮转；
+  不要再给应用加文件日志（写失败、占盘、和 Docker 抢着滚）。改 compose 时这段别丢。
+- `/api/status` 与 `/api/stats` 的 `runtime` 只数 `DATA_DIR` 顶层库、打印目录和思考日志，
+  不要去 walk `work/`、`home/`（pip 包和模型几百 MB，走一遍很慢）。概览页「运行状态」用它。
+- 数据增长看三处：`core_mb`（库 + 思考日志）、`print_mb`（打印原件，按 `PRINT_KEEP_DAYS` 清）、
+  `disk_free_gb`；备份在宿主机 `backups/`，容器里看不到。
+
 ### 提醒与 SSE
 
 - 提醒循环同时扫描 `items`（物品到期）和 `tasks`（账单/日程/自定义）。
