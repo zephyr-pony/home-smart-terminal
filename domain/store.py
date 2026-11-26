@@ -197,6 +197,23 @@ class AgentStore:
                     best_length = len(candidate)
         return best
 
+    def find_any_entity(self, text, types=None):
+        """跨类型找实体（最长匹配）；事实检索靠它把「饮水机」认出是「净水器」。"""
+        normalized = normalize_text(text)
+        if not normalized:
+            return None
+        best = None
+        best_length = 0
+        for entity in self.list_entities():
+            if types and entity.get("type") not in types:
+                continue
+            for name in [entity["canonical_name"]] + entity["aliases"]:
+                candidate = normalize_text(name)
+                if candidate and candidate in normalized and len(candidate) > best_length:
+                    best = entity
+                    best_length = len(candidate)
+        return best
+
     # ---------- 待澄清动作 ----------
 
     def create_pending(self, conversation_id, original_text, missing_slot,

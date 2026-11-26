@@ -180,6 +180,9 @@ class Assistant:
         self.confirm_write_actions = parse_confirm_actions(CONFIRM_WRITE_ACTIONS)
         # 实体管理：新增/改名/别名/列表
         self.entities = EntityService(self.clarifier.store)
+        # 事实挂实体（D66）：存的「饮水机」和「净水器」是同一个东西；
+        # 领域层不认识 agent，解析函数从这里注入。
+        self.facts.set_entity_lookup(self.clarifier.store.find_any_entity)
         # 天气：默认 Open-Meteo（零 key），配了和风 key 就用和风；配置不全时不注册
         self.weather = Weather(
             WEATHER_API_HOST, WEATHER_API_KEY, WEATHER_CITY,

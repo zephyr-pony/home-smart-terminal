@@ -159,3 +159,103 @@ def test_synonyms_apply_to_filters():
 
     assert [r["value"] for r in facts.search(subject="煤气")] == ["87654321"]
     assert [r["value"] for r in facts.search(predicate="账号")] == ["87654321"]
+
+
+# ---------- D66：事实挂实体 ----------
+
+def _facts_with_entities():
+    from domain.store import AgentStore
+
+    store = AgentStore(":memory:")
+    store.add_entity("device", "净水器", aliases=["饮水机", "净水机"])
+    facts = Facts(":memory:")
+    facts.set_entity_lookup(store.find_any_entity)
+    return facts, store
+
+
+def test_fact_links_entity_by_alias():
+    facts, store = _facts_with_entities()
+    store.add_entity("device", "打印机", aliases=["惠普打印机"])
+
+    facts.store("饮水机", "滤芯型号", "PP-100")
+    facts.store("惠普打印机", "墨盒", "CF280A")
+
+    rows = facts.search("饮水机")
+    assert rows[0]["entity_id"] == store.find_any_entity("饮水机")["id"]
+    assert facts.search("惠普打印机")[0]["predicate"] == "墨盒"
+
+
+def test_alias_query_finds_canonical_fact():
+    """用户习惯说别名：存的是「净水器」，问「饮水机」也要查得到。"""
+    facts, _store = _facts_with_entities()
+    facts.store("净水器", "滤芯型号", "PP-100")
+    facts.store("净水器", "滤芯更换周期", "6 个月")
+
+    values = [row["value"] for row in facts.search("饮水机滤芯型号")]
+    assert values == ["PP-100"]          # 型号命中，不把「更换周期」也带出来
+    assert len(facts.search("饮水机")) == 2   # 只问实体：给它全部
+
+
+def test_entity_filter_query():
+    facts, store = _facts_with_entities()
+    entity = store.find_any_entity("净水器")
+    facts.store("净水器", "滤芯型号", "PP-100")
+    facts.store("牛奶", "品牌", "蒙牛")
+
+    rows = facts.search(entity_id=entity["id"])
+    assert [row["value"] for row in rows] == ["PP-100"]
+
+
+def test_profile_subject_never_links_entity():
+    """画像挂在「用户」前缀下，不能被同名实体吃掉。"""
+    facts, _store = _facts_with_entities()
+    facts.store("用户/妈妈", "口味", "不吃辣")
+    assert facts.list_all()[0]["entity_id"] is None
+
+
+def test_assistant_wires_entity_lookup():
+    """Assistant 要把实体解析注入 Facts，否则别名永远对不上。"""
+    from agent.clarify import Clarifier
+    from assistant import Assistant
+    from domain.store import AgentStore
+    from domain.tasks import Tasks
+    from items import Items
+    from memory import Memory
+
+    class DummyLLM:
+        def chat_with_tools(self, *args, **kwargs):
+            raise AssertionError("这轮不该调用模型")
+
+    store = AgentStore(":memory:")
+    facts = Facts(":memory:")
+    items = Items(":memory:")
+    assistant = Assistant(
+        memory=Memory(":memory:"), llm=DummyLLM(), items=items,
+        clarifier=Clarifier(store=store, items=items),
+        tasks=Tasks(":memory:"), facts=facts,
+    )
+    assistant.entities.add_entity("device", "净水器", aliases=["饮水机"])
+    facts.store("饮水机", "滤芯型号", "PP-100")
+
+    assert [row["value"] for row in facts.search("净水器")] == ["PP-100"]
+
+
+def test_old_database_gets_entity_column(tmp_path):
+    """老库没有 entity_id 列：打开时补列，不丢数据。"""
+    import sqlite3
+
+    path = str(tmp_path / "facts.db")
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE facts (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "subject TEXT NOT NULL, predicate TEXT NOT NULL, value TEXT NOT NULL, "
+            "source TEXT, valid_from TEXT, valid_to TEXT, created_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO facts (subject, predicate, value) VALUES ('牛奶','品牌','蒙牛')"
+        )
+
+    facts = Facts(path)
+    row = facts.list_all()[0]
+    assert row["value"] == "蒙牛"
+    assert row["entity_id"] is None

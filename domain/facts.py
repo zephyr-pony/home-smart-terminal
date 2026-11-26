@@ -35,9 +35,12 @@ def _like_any(column, term):
     return clause, ["%" + _escape_like(word) + "%" for word in group]
 
 
-def _haystack(row):
-    """一行事实参与检索的文本：主体 + 属性 + 值。"""
-    return "%s%s%s" % (row[1] or "", row[2] or "", row[3] or "")
+def _matches_terms(row, terms):
+    """一条事实（dict）是否包含全部检索词：主体 + 属性 + 值，同义词先归一。"""
+    text = canonicalize("%s%s%s" % (
+        row.get("subject") or "", row.get("predicate") or "", row.get("value") or "",
+    ))
+    return all(term in text for term in terms)
 
 
 # 画像统一挂在「用户」前缀下：用户 / 用户/妈妈。
@@ -92,9 +95,16 @@ class Facts:
                 os.makedirs(db_dir, exist_ok=True)
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(db_path or ":memory:", check_same_thread=False)
+        # 实体解析由调用方注入（Assistant 用 AgentStore 的 find_any_entity）：
+        # 领域层不 import agent，也不去打开另一个库。
+        self._entity_lookup = None
         self._create_schema()
         self._close_legacy_duplicates()
         self.conn.commit()
+
+    def set_entity_lookup(self, lookup):
+        """lookup(text) -> {"id", "canonical_name", "aliases"...} 或 None。"""
+        self._entity_lookup = lookup
 
     def _create_schema(self):
         self.conn.execute("""
@@ -109,9 +119,18 @@ class Facts:
                 created_at TEXT
             )
         """)
+        # D66：事实挂到实体上，查「饮水机」也能找到存在「净水器」名下的事实。
+        # 老库直接补列，不重建表；没匹配到实体的事实 entity_id 留空，文本检索照旧。
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(facts)")}
+        if "entity_id" not in columns:
+            self.conn.execute("ALTER TABLE facts ADD COLUMN entity_id INTEGER")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_subject "
             "ON facts(subject, predicate)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_facts_entity "
+            "ON facts(entity_id, predicate)"
         )
 
     def _close_legacy_duplicates(self):
@@ -139,18 +158,28 @@ class Facts:
             )
 
     def store(self, subject, predicate, value, source=None,
-              valid_from=None, valid_to=None):
+              valid_from=None, valid_to=None, entity_id=None):
         """存一条事实；同一「主体 + 属性」的旧值会被关闭而不是覆盖。
 
         为什么要留历史：户号、地址、型号都会变，直接覆盖之后「以前是多少」
         就查不到了；而旧版本实际连覆盖都没做，只是不断插入新行，检索时新旧
         一起返回，模型可能拿到过期值。现在旧行标 valid_to，新行 valid_from。
+
+        D66：能匹配到实体时把 `entity_id` 一起存下来（例如「饮水机」是
+        「净水器」的别名），查别名时不必依赖文本是否完全一致；主体文字
+        仍按用户原话保存，展示不变。
         """
         subject = str(subject or "").strip()
         predicate = str(predicate or "").strip()
         value = str(value or "").strip()
         if not subject or not predicate or not value:
             raise ValueError("subject / predicate / value 都不能为空")
+
+        if entity_id is None and self._entity_lookup is not None \
+                and not subject.startswith(PROFILE_PREFIX):
+            entity = self._entity_lookup(subject)
+            if entity:
+                entity_id = entity.get("id")
 
         ts = datetime.now().isoformat()
         start = valid_from or ts
@@ -175,9 +204,10 @@ class Facts:
                 )
             cur = self.conn.execute(
                 "INSERT INTO facts "
-                "(subject, predicate, value, source, valid_from, valid_to, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (subject, predicate, value, source, start, valid_to, ts),
+                "(subject, predicate, value, source, valid_from, valid_to, "
+                " created_at, entity_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (subject, predicate, value, source, start, valid_to, ts, entity_id),
             )
             self.conn.commit()
             fact_id = cur.lastrowid
@@ -190,13 +220,14 @@ class Facts:
             "source": source,
             "valid_from": start,
             "valid_to": valid_to,
+            "entity_id": entity_id,
             "replaced": replaced,
         }
 
     def _one(self, fact_id, replaced):
         row = self.conn.execute(
             "SELECT id, subject, predicate, value, source, valid_from, "
-            "       valid_to, created_at FROM facts WHERE id=?",
+            "       valid_to, created_at, entity_id FROM facts WHERE id=?",
             (fact_id,),
         ).fetchone()
         result = self._row_to_dict(row)
@@ -204,12 +235,37 @@ class Facts:
         return result
 
     def search(self, query=None, subject=None, predicate=None, n_results=10,
-               include_history=False):
-        """查事实。默认只返回「当前有效」的，历史要显式要。"""
+               include_history=False, entity_id=None):
+        """查事实。默认只返回「当前有效」的，历史要显式要。
+
+        D66：查询里出现某个实体（规范名或别名）时，把这个实体名下的事实
+        也并进来；别名不再是两套文本。「净水器滤芯型号」= 净水器的事实里
+        再按「滤芯型号」筛。
+        """
+        found = self._search_text(
+            query, subject, predicate, n_results, include_history, entity_id
+        )
+        entity = self._match_entity(query)
+        if entity is None:
+            return found
+        extra = self._entity_facts(
+            entity, query, include_history, subject, predicate
+        )
+        merged = {row["id"]: row for row in found}
+        for row in extra:
+            merged.setdefault(row["id"], row)
+        rows = sorted(merged.values(), key=lambda row: row["id"], reverse=True)
+        return rows[:n_results]
+
+    def _search_text(self, query, subject, predicate, n_results,
+                     include_history, entity_id=None):
         clauses = []
         params = []
         if not include_history:
             clauses.append("valid_to IS NULL")
+        if entity_id is not None:
+            clauses.append("entity_id = ?")
+            params.append(int(entity_id))
         if subject:
             clause, values = _like_any("subject", subject)
             clauses.append(clause)
@@ -231,7 +287,7 @@ class Facts:
         with self._lock:
             rows = self.conn.execute(
                 "SELECT id, subject, predicate, value, source, valid_from, "
-                "       valid_to, created_at FROM facts"
+                "       valid_to, created_at, entity_id FROM facts"
                 + where
                 + " ORDER BY id DESC",
                 params,
@@ -239,12 +295,56 @@ class Facts:
 
         # 同义词要把库里存的文本也归一之后才比，否则「存账号、问户号」对不上。
         # 家庭事实表只有几十行，一次取回来在内存里过滤，比在 SQL 里拼 REPLACE 清楚。
+        items = [self._row_to_dict(row) for row in rows]
         if terms:
-            rows = [
-                row for row in rows
-                if all(term in canonicalize(_haystack(row)) for term in terms)
-            ]
-        return [self._row_to_dict(row) for row in rows[:n_results]]
+            items = [row for row in items if _matches_terms(row, terms)]
+        return items[:n_results]
+
+    def _match_entity(self, query):
+        if not query or self._entity_lookup is None:
+            return None
+        return self._entity_lookup(str(query))
+
+    def _entity_facts(self, entity, query, include_history, subject, predicate):
+        """实体名下的当前事实；查询里剩下的词（如「滤芯型号」）再筛一遍。"""
+        names = [entity.get("canonical_name") or ""] + list(entity.get("aliases") or [])
+        names = [name for name in names if name]
+        if not names:
+            return []
+        clauses = []
+        params = []
+        if not include_history:
+            clauses.append("valid_to IS NULL")
+        match = ["entity_id = ?"] + ["subject LIKE ? ESCAPE '\\'" for _ in names]
+        params.append(int(entity["id"]))
+        params.extend("%" + _escape_like(name) + "%" for name in names)
+        clauses.append("(" + " OR ".join(match) + ")")
+        if subject:
+            clause, values = _like_any("subject", subject)
+            clauses.append(clause)
+            params.extend(values)
+        if predicate:
+            clause, values = _like_any("predicate", predicate)
+            clauses.append(clause)
+            params.extend(values)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, subject, predicate, value, source, valid_from, "
+                "       valid_to, created_at, entity_id FROM facts"
+                + " WHERE " + " AND ".join(clauses)
+                + " ORDER BY id DESC",
+                params,
+            ).fetchall()
+        items = [self._row_to_dict(row) for row in rows]
+        rest = query or ""
+        for name in sorted(names, key=len, reverse=True):
+            if name and name in rest:
+                rest = rest.replace(name, "", 1)
+                break
+        terms = _query_terms(canonicalize(rest)) if rest.strip() else []
+        if terms:
+            items = [row for row in items if _matches_terms(row, terms)]
+        return items
 
     def list_all(self, n_results=10):
         return self.search(n_results=n_results)
@@ -256,7 +356,7 @@ class Facts:
         with self._lock:
             rows = self.conn.execute(
                 "SELECT id, subject, predicate, value, source, valid_from, "
-                "       valid_to, created_at FROM facts "
+                "       valid_to, created_at, entity_id FROM facts "
                 "WHERE subject=? AND predicate=? ORDER BY id DESC LIMIT ?",
                 (subject, predicate, n_results),
             ).fetchall()
@@ -273,6 +373,7 @@ class Facts:
             "valid_from": row[5],
             "valid_to": row[6],
             "created_at": row[7],
+            "entity_id": row[8] if len(row) > 8 else None,
         }
 
     def delete_by_id(self, fact_id):
