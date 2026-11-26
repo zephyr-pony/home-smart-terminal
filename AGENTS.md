@@ -284,9 +284,15 @@ pytest tests -q
 - **空间隔离（D68）**：一个空间一套库文件，不往每张表加 `space_id` 列。
   `domain/space.py` 管 `space_id` 规则、路径组合和 `ensure_space`；
   默认空间仍是 `DATA_DIR` 下的现有库（升级不搬家），其它空间在
-  `DATA_DIR/spaces/<id>/`。`Assistant(space_id=...)` 按空间建默认 store；
-  请求级「谁用哪个空间」还没做，接多成员时在入口层换 `space_id`。
+  `DATA_DIR/spaces/<id>/`。`Assistant(space_id=...)` 按空间建默认 store。
   新增库/目录时必须走 `space_paths(...)`，不要自己拼 `DATA_DIR` 子路径。
+- **请求级路由（D71）**：`X-Space-Id` 头选空间，不带就是 default。新空间第一次访问时
+  在 `server._assistant_for` 里按需建一套（`MAX_SPACES=16`），名字非法直接 400、
+  不静默退回 default。默认空间必须继续用模块级 `assistant`/`print_store`/`PRINT_FILES_DIR`
+  （测试和单家庭部署都靠 monkeypatch 这几个名字）；给新空间加 store 时改
+  `Space` 的属性，不要在各 handler 里各写一遍。新增数据接口一律
+  `space: Space = Depends(current_space)`，别直接读模块级 `assistant`。
+  `/v1`（小智）和后台提醒/蒸馏仍只跑默认空间；`space_id` 不参与鉴权。
 - `Memory` / `Items` / `Tasks` / `Facts` / `AgentStore` 的连接是 `check_same_thread=False`，所有数据库操作必须持有 `RLock`。
 - 服务端用 `asyncio.to_thread` 跑同步编排；不要在 async handler 里直接做重 IO。
 - 到期状态同步、筛选、标记必须在同一把锁内完成（见 `Items.claim_due_reminders`），避免并发窗口。

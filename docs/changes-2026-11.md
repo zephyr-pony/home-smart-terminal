@@ -1701,3 +1701,36 @@ compose 注释和 doctor 的提示里都写明了怎么开。
   错口令报错、恢复演练、`.enc` 参与保留策略、CLI `--encrypt` 无口令拒绝。
 - 容器重建后 `GET /api/printer` 在打印机断电时返回 `available=false` 和 `lpstat` 超时原因，
   页面显示红点；打印机开机后 30 秒内变绿（真机出纸验收仍等打印机开机）。
+
+## 三十五、2026-11-26：请求级空间路由（D71）+ 搬家清单按 Gen10 重写
+
+### 空间手动路由
+
+- 请求带 `X-Space-Id` 头就落到那个空间；不带就是 `default`，行为与升级前完全一致。
+  `/api/*` 的数据、会话、打印文件和打印历史都跟着空间走（`Space` 统一给出
+  `assistant` / `print_store` / `print_dir`）。
+- 新空间第一次被访问时创建：走 `space_paths` 建一套库与打印目录，默认空间仍是原有路径。
+  `MAX_SPACES=16`；名字非法直接 400，**不静默退回 default**（退回去就是写错库）。
+- `GET /api/spaces` 只列名字和默认标记，不跨空间汇总（避免以后一列就打开所有库）。
+- 默认空间继续用模块级 `assistant` / `print_store` / `PRINT_FILES_DIR`：单家庭部署、
+  测试里的 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 都靠这几个名字。
+- `_stats_sync` / `_runtime_sync` / `_get_print_file` / `_handle_voice_sync` 改成接收
+  空间上下文，不再各读全局。
+- 限制（写进 D71 与 AGENTS）：`/v1`（小智）和后台提醒/蒸馏仍只跑默认空间；
+  `space_id` 不参与鉴权——拿到 API_TOKEN 的人可以指定任意空间。
+
+### 搬家清单
+
+- `docs/server-migration.md` 原来是「旧笔记本 + systemd + venv」的清单，和现在的
+  Docker 部署对不上。按 Gen10 Plus 重写：Debian 12 + Compose、4 个网口的分工、
+  iLO 可选、12TB 单盘挂 `/srv`（UUID + noatime，不用 S100i 软 RAID）、
+  CUPS 客户端验收、Tailscale 换源后重新订阅推送、加密备份 + systemd timer、断电/回滚。
+
+### 验收
+
+- 单测 616 → 624：`tests/test_space_routing.py` 8 条（路由到指定空间、列表读各自库、
+  `/api/status` 的 `space_id`、目录建在 `spaces/<id>/`、非法名字 400 且不建、
+  上限 409、`/api/spaces`、打印资产归空间）。
+- 容器实测：`GET /api/spaces` 只有 default；带 `X-Space-Id: drill` 访问
+  `/api/status` 得到 `space_id=drill`、计数 0，`/data/spaces/drill/` 建出来，
+  默认空间计数不变（测试后已删除该临时空间）。

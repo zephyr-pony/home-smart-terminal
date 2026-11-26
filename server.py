@@ -81,7 +81,9 @@ from adapters.home_ws import run_event_stream
 from adapters.mcp_endpoint import MCPEndpoint
 from domain.push import PushStore
 from domain.prints import PrintStore, STATUSES as PRINT_STATUSES
-from domain.space import DEFAULT_SPACE_ID, ensure_space
+from domain.space import (
+    DEFAULT_SPACE_ID, ensure_space, list_spaces, normalize_space_id, space_paths,
+)
 from push_sender import WebPushSender
 from stt import STT
 from llm import LLM, build_decision_llm
@@ -164,18 +166,97 @@ distiller: MemoryDistiller = None
 # 重启后记录和文件都还在，「再打一份」不用重传；过期由 `_purge_print_files` 清。
 print_store = None
 
+# 空间路由（D71）：默认空间沿用模块里的 `assistant` / `print_store`（启动时建好的那套，
+# 测试也靠 monkeypatch 这几个名字），其它空间按需建一套，互不共享库文件。
+# 只做「手动路由」：请求带 X-Space-Id 就落到那个空间，不带就是 default。
+# 谁该用哪个空间（声纹/设备归属）还没接，别在这里猜。
+MAX_SPACES = 16
+_space_assistants = {}
+_space_lock = threading.Lock()
+_shared_llm = None
+_shared_decision_llm = None
 
-def _purge_print_files(now=None):
+
+class Space:
+    """一次请求落在哪个空间（D71）。
+
+    默认空间绕回模块级变量：升级前就是那一套，测试也靠 monkeypatch 注入假实现；
+    其它空间用 `assistant.print_store` / `print_files_dir`，各空间一套文件。
+    """
+
+    def __init__(self, space_id, assistant_obj, paths):
+        self.id = space_id
+        self.assistant = assistant_obj
+        self.dir = paths["dir"]
+
+    @property
+    def print_store(self):
+        if self.id == DEFAULT_SPACE_ID:
+            return print_store
+        return getattr(self.assistant, "print_store", None)
+
+    @property
+    def print_dir(self):
+        if self.id == DEFAULT_SPACE_ID:
+            return PRINT_FILES_DIR
+        return getattr(self.assistant, "print_files_dir", PRINT_FILES_DIR)
+
+
+def _build_space_assistant(space_id, paths):
+    """新空间的一套 store；测试会替换这个函数，别在别处硬编码构造。"""
+    store = PrintStore(path=paths["prints"])
+    store.prune()
+    return Assistant(
+        llm=_shared_llm or LLM(),
+        decision_llm=_shared_decision_llm,
+        print_store=store,
+        space_id=space_id,
+    )
+
+
+def _assistant_for(space_id):
+    """返回 (assistant, paths)；新空间第一次访问时创建，之后复用。"""
+    if space_id == DEFAULT_SPACE_ID:
+        return assistant, space_paths(space_id)
+    with _space_lock:
+        found = _space_assistants.get(space_id)
+        if found is not None:
+            return found, space_paths(space_id)
+        if len(_space_assistants) >= MAX_SPACES:
+            raise HTTPException(
+                status_code=409,
+                detail="空间数量已达上限（%d），先清理不用的空间" % MAX_SPACES,
+            )
+        paths = ensure_space(space_id)
+        found = _build_space_assistant(space_id, paths)
+        _space_assistants[space_id] = found
+        print("🗂 空间 %s 已就绪：%s" % (space_id, paths["dir"]), flush=True)
+        return found, paths
+
+
+def current_space(x_space_id: str = Header(default="", alias="X-Space-Id")):
+    """按请求头选空间；名字非法直接 400，不静默退回 default（那样会写错库）。"""
+    try:
+        space_id = normalize_space_id(x_space_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    assistant_obj, paths = _assistant_for(space_id)
+    return Space(space_id, assistant_obj, paths)
+
+
+def _purge_print_files(now=None, store=None):
     """清掉过期文件（默认留 PRINT_KEEP_DAYS 天）。文件没了只留历史记录。"""
-    if print_store is not None:
-        print_store.prune(now)
+    store = print_store if store is None else store
+    if store is not None:
+        store.prune(now)
 
 
-def _get_print_file(file_id, client_id=""):
+def _get_print_file(file_id, client_id="", store=None):
     """取一个待打印文件；不存在/已过期/不属于这个客户端都返回 None。"""
-    if print_store is None:
+    store = print_store if store is None else store
+    if store is None:
         return None
-    return print_store.get(file_id, client_id)
+    return store.get(file_id, client_id)
 
 
 # 到期提醒缓存（提醒循环按 REMINDER_INTERVAL_SECONDS 刷新）
@@ -314,13 +395,15 @@ def _require_confirm(confirm):
         raise HTTPException(status_code=400, detail="需要确认删除")
 
 
-def _stats_sync():
+def _stats_sync(space=None):
+    """统计当前空间；`space` 为空时按默认空间（提醒循环等内部调用）。"""
+    assistant_obj = space.assistant if space is not None else assistant
     items_by_status = {
-        status: len(assistant.items.list_all(status))
+        status: len(assistant_obj.items.list_all(status))
         for status in ("active", "reminded", "expired")
     }
     tasks_by_type = {}
-    all_tasks = assistant.tasks.list_all()
+    all_tasks = assistant_obj.tasks.list_all()
     for task in all_tasks:
         task_type = task.get("type") or "custom"
         tasks_by_type[task_type] = tasks_by_type.get(task_type, 0) + 1
@@ -332,22 +415,25 @@ def _stats_sync():
     )
     return {
         "counts": {
-            "memories": assistant.memory.count(),
-            "items": assistant.items.count(),
-            "tasks": assistant.tasks.count(),
-            "facts": assistant.facts.count(),
-            "entities": len(assistant.clarifier.store.list_entities()),
+            "memories": assistant_obj.memory.count(),
+            "items": assistant_obj.items.count(),
+            "tasks": assistant_obj.tasks.count(),
+            "facts": assistant_obj.facts.count(),
+            "entities": len(assistant_obj.clarifier.store.list_entities()),
         },
         "items_by_status": items_by_status,
         "tasks_by_type": tasks_by_type,
         "tasks_by_status": {
-            status: assistant.tasks.count(status)
+            status: assistant_obj.tasks.count(status)
             for status in ("pending", "reminded", "done", "cancelled")
         },
         "due_today": due_today,
-        "due_items": assistant.items.get_due(days=REMINDER_DAYS),
-        "due_tasks": assistant.tasks.get_due(days=REMINDER_DAYS),
-        "runtime": _runtime_sync(),
+        "due_items": assistant_obj.items.get_due(days=REMINDER_DAYS),
+        "due_tasks": assistant_obj.tasks.get_due(days=REMINDER_DAYS),
+        "runtime": _runtime_sync(
+            space.dir if space is not None else DATA_DIR,
+            space.print_dir if space is not None else PRINT_FILES_DIR,
+        ),
     }
 
 
@@ -682,6 +768,7 @@ async def distill_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global stt, tts, assistant, _tmp_dir, push_store, push_sender, distiller, print_store
+    global _shared_llm, _shared_decision_llm
     global started_at, PRINT_FILES_DIR
     _check_exposure()
     started_at = time.time()
@@ -693,10 +780,13 @@ async def lifespan(app: FastAPI):
     print_store = PrintStore(path=space["prints"])
     _purge_print_files()
     tts = TTS()
-    decision_llm = build_decision_llm()
-    assistant = Assistant(llm=LLM(), decision_llm=decision_llm,
+    _shared_decision_llm = build_decision_llm()
+    _shared_llm = LLM()
+    assistant = Assistant(llm=_shared_llm, decision_llm=_shared_decision_llm,
                           print_store=print_store, space_id=DEFAULT_SPACE_ID)
-    print("🧠 决策轮模型：%s" % (decision_llm.model_name if decision_llm else "同回答轮"))
+    print("🧠 决策轮模型：%s" % (
+        _shared_decision_llm.model_name if _shared_decision_llm else "同回答轮"
+    ))
     # 记忆蒸馏（D60）：只重算摘要，不删原文；跑在后台，失败不影响对话
     distiller = None
     if MEMORY_DISTILL_ENABLED:
@@ -898,9 +988,11 @@ def _slim_memories(memories):
     return [{"text": str(m), "time": ""} for m in memories]
 
 
-def _handle_voice_sync(audio_path: str, client_id: str, task_id=None) -> dict:
+def _handle_voice_sync(audio_path: str, client_id: str, task_id=None,
+                       assistant_obj=None) -> dict:
     """同步处理语音文件（在 to_thread 里跑：STT 识别 + 编排）。"""
-    result = assistant.process_voice(stt, audio_path, client_id, task_id=task_id)
+    assistant_obj = assistant_obj or assistant
+    result = assistant_obj.process_voice(stt, audio_path, client_id, task_id=task_id)
     return result
 
 
@@ -1164,17 +1256,19 @@ async def healthz():
     return {"ok": True}
 
 
-def _runtime_sync():
+def _runtime_sync(data_dir=None, print_dir=None):
     """运行观察（D67）：跑多久、数据占多少、磁盘还剩多少。
 
-    只数 DATA_DIR 顶层的库、打印目录和思考日志，不去 walk `work/`、`home/`
+    只数空间目录顶层的库、打印目录和思考日志，不去 walk `work/`、`home/`
     —— 那里可能有几百 MB 的 pip 包和模型，走一遍很慢且对判断没帮助。
     """
+    data_dir = DATA_DIR if data_dir is None else data_dir
+    print_dir = PRINT_FILES_DIR if print_dir is None else print_dir
     core_bytes = 0
     for name in ("memory.db", "items.db", "tasks.db", "facts.db",
                  "agent.db", "push.db", "prints.db", "thinking.jsonl",
                  "distill_state.json"):
-        path = os.path.join(DATA_DIR, name)
+        path = os.path.join(data_dir, name)
         try:
             core_bytes += os.path.getsize(path)
         except OSError:
@@ -1182,14 +1276,14 @@ def _runtime_sync():
     print_files = 0
     print_bytes = 0
     try:
-        for entry in os.scandir(PRINT_FILES_DIR):
+        for entry in os.scandir(print_dir):
             if entry.is_file(follow_symlinks=False):
                 print_files += 1
                 print_bytes += entry.stat().st_size
     except OSError:
         pass
     try:
-        usage = shutil.disk_usage(DATA_DIR)
+        usage = shutil.disk_usage(data_dir)
         total, free = usage.total, usage.free
     except OSError:
         total = free = 0
@@ -1204,16 +1298,19 @@ def _runtime_sync():
 
 
 @app.get("/api/status")
-async def api_status(_auth=Depends(require_api_token)):
+async def api_status(space: Space = Depends(current_space),
+                     _auth=Depends(require_api_token)):
     memory_count, item_count, task_count = await asyncio.to_thread(
         lambda: (
-            assistant.memory.count(),
-            assistant.items.count(),
-            assistant.tasks.count(),
+            space.assistant.memory.count(),
+            space.assistant.items.count(),
+            space.assistant.tasks.count(),
         )
     )
     push_count = await asyncio.to_thread(push_store.count_active) if push_store else 0
-    runtime = await asyncio.to_thread(_runtime_sync)
+    runtime = await asyncio.to_thread(
+        _runtime_sync, space.dir, space.print_dir
+    )
     return {
         "ok": True,
         "stt_ready": stt is not None,
@@ -1226,16 +1323,36 @@ async def api_status(_auth=Depends(require_api_token)):
         "push_enabled": bool(push_sender is not None and push_sender.available),
         "push_subscriptions": push_count,
         "device_channels": len(_device_subscribers),  # 小智提醒桥接器在线数
-        "sessions": len(assistant.sessions),
-        "space_id": getattr(assistant, "space_id", DEFAULT_SPACE_ID),
+        "sessions": len(space.assistant.sessions),
+        "space_id": space.id,
         "runtime": runtime,  # 跑多久 / 数据多大 / 磁盘还剩多少（D67）
     }
 
 
+@app.get("/api/spaces")
+async def api_spaces(_auth=Depends(require_api_token)):
+    """现有空间（D71）。只列名字和默认标记，不读别的空间的库。
+
+    计数请带上 `X-Space-Id` 请求头去调 `/api/status`——这里刻意不做汇总，
+    否则以后空间多了会把每个库都打开一遍。
+    """
+    ids = await asyncio.to_thread(list_spaces)
+    return {
+        "ok": True,
+        "spaces": [
+            {"id": space_id, "default": space_id == DEFAULT_SPACE_ID}
+            for space_id in ids
+        ],
+        "max_spaces": MAX_SPACES,
+    }
+
+
 @app.get("/api/stats")
-async def api_stats(_auth=Depends(require_api_token)):
-    data = await asyncio.to_thread(_stats_sync)
+async def api_stats(space: Space = Depends(current_space),
+                    _auth=Depends(require_api_token)):
+    data = await asyncio.to_thread(_stats_sync, space)
     data["ok"] = True
+    data["space_id"] = space.id
     return data
 
 
@@ -1257,18 +1374,20 @@ async def api_thinking(limit: int = 50, _auth=Depends(require_api_token)):
 
 @app.get("/api/prints")
 async def api_prints(q: str = "", status: str = "", limit: int = 20,
-                     offset: int = 0, _auth=Depends(require_api_token)):
+                     offset: int = 0, space: Space = Depends(current_space),
+                     _auth=Depends(require_api_token)):
     """打印历史（D65）：名字、时间、份数、结果。不返回容器内路径。
 
     `status` 取 ready / printing / printed / failed / cancelled。
     返回里的 `id` 就是上传时的 file_id，可以带回去再打一份。
     """
-    if print_store is None:
+    store = space.print_store
+    if store is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪")
     if status and status not in PRINT_STATUSES:
         raise HTTPException(status_code=400, detail="status 不认识")
     rows, total = await asyncio.to_thread(
-        print_store.list, q, status, limit, offset
+        store.list, q, status, limit, offset
     )
     keep = ("id", "created_at", "name", "kind", "size", "pages",
             "copies", "status", "printer", "job_id", "error", "source")
@@ -1296,15 +1415,16 @@ async def api_printer(refresh: int = 0, _auth=Depends(require_api_token)):
 
 @app.get("/api/memories")
 async def api_memories(q: str = "", sort: str = "newest", limit: int = 20,
-                       offset: int = 0, _auth=Depends(require_api_token)):
+                       offset: int = 0, space: Space = Depends(current_space),
+                       _auth=Depends(require_api_token)):
     if sort not in ("newest", "oldest"):
         raise HTTPException(status_code=400, detail="sort 必须是 newest/oldest")
     if q:
         rows = await asyncio.to_thread(
-            assistant.memory.search_details, q, 500
+            space.assistant.memory.search_details, q, 500
         )
     else:
-        rows = await asyncio.to_thread(assistant.memory.list_all, 500)
+        rows = await asyncio.to_thread(space.assistant.memory.list_all, 500)
     if sort == "oldest":
         rows = list(reversed(rows))
     page, total, limit, offset = _page(rows, limit, offset)
@@ -1318,10 +1438,11 @@ async def api_memories(q: str = "", sort: str = "newest", limit: int = 20,
 
 @app.get("/api/items")
 async def api_items(q: str = "", status: str = None, limit: int = 20,
-                    offset: int = 0, _auth=Depends(require_api_token)):
+                    offset: int = 0, space: Space = Depends(current_space),
+                    _auth=Depends(require_api_token)):
     if status and status not in ("active", "reminded", "expired"):
         raise HTTPException(status_code=400, detail="status 必须是 active/reminded/expired")
-    rows = await asyncio.to_thread(assistant.items.list_all, status)
+    rows = await asyncio.to_thread(space.assistant.items.list_all, status)
     if q:
         keyword = q.strip().lower()
         rows = [
@@ -1340,13 +1461,14 @@ async def api_items(q: str = "", status: str = None, limit: int = 20,
 @app.get("/api/tasks")
 async def api_tasks(q: str = "", status: str = None, sort: str = "due",
                     limit: int = 20, offset: int = 0,
+                    space: Space = Depends(current_space),
                     _auth=Depends(require_api_token)):
     allowed = ("pending", "reminded", "done", "cancelled")
     if status and status not in allowed:
         raise HTTPException(status_code=400, detail="status 无效")
     if sort not in ("due", "created", "title"):
         raise HTTPException(status_code=400, detail="sort 必须是 due/created/title")
-    rows = await asyncio.to_thread(assistant.tasks.list_all, status)
+    rows = await asyncio.to_thread(space.assistant.tasks.list_all, status)
     if q:
         keyword = q.strip().lower()
         rows = [
@@ -1368,9 +1490,10 @@ async def api_tasks(q: str = "", status: str = None, sort: str = "due",
 
 @app.get("/api/facts")
 async def api_facts(q: str = "", limit: int = 20, offset: int = 0,
+                    space: Space = Depends(current_space),
                     _auth=Depends(require_api_token)):
     rows = await asyncio.to_thread(
-        assistant.facts.search, q or None, None, None, 500
+        space.assistant.facts.search, q or None, None, None, 500
     )
     page, total, limit, offset = _page(rows, limit, offset)
     return {
@@ -1383,9 +1506,10 @@ async def api_facts(q: str = "", limit: int = 20, offset: int = 0,
 
 @app.get("/api/entities")
 async def api_entities(q: str = "", type: str = None, limit: int = 20,
-                       offset: int = 0, _auth=Depends(require_api_token)):
+                       offset: int = 0, space: Space = Depends(current_space),
+                       _auth=Depends(require_api_token)):
     rows = await asyncio.to_thread(
-        assistant.clarifier.store.list_entities, type
+        space.assistant.clarifier.store.list_entities, type
     )
     if q:
         keyword = q.strip().lower()
@@ -1408,9 +1532,10 @@ async def api_entities(q: str = "", type: str = None, limit: int = 20,
 
 @app.delete("/api/memories/{memory_id}")
 async def api_delete_memory(memory_id: int, confirm: bool = False,
+                            space: Space = Depends(current_space),
                             _auth=Depends(require_api_token)):
     _require_confirm(confirm)
-    ok = await asyncio.to_thread(assistant.memory.delete_by_id, memory_id)
+    ok = await asyncio.to_thread(space.assistant.memory.delete_by_id, memory_id)
     if not ok:
         raise HTTPException(status_code=404, detail="记忆不存在")
     return {"ok": True}
@@ -1418,9 +1543,12 @@ async def api_delete_memory(memory_id: int, confirm: bool = False,
 
 @app.delete("/api/items/{item_id}")
 async def api_delete_item(item_id: int, confirm: bool = False,
+                          space: Space = Depends(current_space),
                           _auth=Depends(require_api_token)):
     _require_confirm(confirm)
-    deleted = await asyncio.to_thread(assistant.items.delete_by_id, item_id)
+    deleted = await asyncio.to_thread(
+        space.assistant.items.delete_by_id, item_id
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="物品不存在")
     return {"ok": True, "deleted": deleted}
@@ -1428,9 +1556,12 @@ async def api_delete_item(item_id: int, confirm: bool = False,
 
 @app.delete("/api/facts/{fact_id}")
 async def api_delete_fact(fact_id: int, confirm: bool = False,
+                          space: Space = Depends(current_space),
                           _auth=Depends(require_api_token)):
     _require_confirm(confirm)
-    deleted = await asyncio.to_thread(assistant.facts.delete_by_id, fact_id)
+    deleted = await asyncio.to_thread(
+        space.assistant.facts.delete_by_id, fact_id
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="事实不存在")
     return {"ok": True, "deleted": deleted}
@@ -1438,9 +1569,12 @@ async def api_delete_fact(fact_id: int, confirm: bool = False,
 
 @app.delete("/api/tasks/{task_id}")
 async def api_delete_task(task_id: int, confirm: bool = False,
+                          space: Space = Depends(current_space),
                           _auth=Depends(require_api_token)):
     _require_confirm(confirm)
-    deleted = await asyncio.to_thread(assistant.tasks.delete_by_id, task_id)
+    deleted = await asyncio.to_thread(
+        space.assistant.tasks.delete_by_id, task_id
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {"ok": True, "deleted": deleted}
@@ -1448,12 +1582,13 @@ async def api_delete_task(task_id: int, confirm: bool = False,
 
 @app.patch("/api/tasks/{task_id}")
 async def api_update_task(task_id: int, req: TaskUpdate,
+                          space: Space = Depends(current_space),
                           _auth=Depends(require_api_token)):
     if req.title is None and req.due_at is None and req.type is None:
         raise HTTPException(status_code=400, detail="没有可更新的字段")
     try:
         ok = await asyncio.to_thread(
-            assistant.tasks.update,
+            space.assistant.tasks.update,
             task_id,
             req.title,
             req.due_at,
@@ -1467,18 +1602,22 @@ async def api_update_task(task_id: int, req: TaskUpdate,
 
 
 @app.post("/api/tasks/{task_id}/complete")
-async def api_task_complete(task_id: int, _auth=Depends(require_api_token)):
-    ok = await asyncio.to_thread(assistant.tasks.complete, task_id)
+async def api_task_complete(task_id: int,
+                            space: Space = Depends(current_space),
+                            _auth=Depends(require_api_token)):
+    ok = await asyncio.to_thread(space.assistant.tasks.complete, task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="任务不存在或已完成")
     # 周期任务「完成」只是跳过这一次：把下一次的时间带回前端，卡片别写「已完成」
-    task = await asyncio.to_thread(assistant.tasks.get, task_id)
+    task = await asyncio.to_thread(space.assistant.tasks.get, task_id)
     return {"ok": True, "task": task}
 
 
 @app.post("/api/tasks/{task_id}/cancel")
-async def api_task_cancel(task_id: int, _auth=Depends(require_api_token)):
-    ok = await asyncio.to_thread(assistant.tasks.cancel, task_id)
+async def api_task_cancel(task_id: int,
+                          space: Space = Depends(current_space),
+                          _auth=Depends(require_api_token)):
+    ok = await asyncio.to_thread(space.assistant.tasks.cancel, task_id)
     if not ok:
         raise HTTPException(status_code=404, detail="任务不存在或已结束")
     return {"ok": True}
@@ -1486,6 +1625,7 @@ async def api_task_cancel(task_id: int, _auth=Depends(require_api_token)):
 
 @app.post("/api/tasks/{task_id}/postpone")
 async def api_task_postpone(task_id: int, req: TaskPostpone,
+                            space: Space = Depends(current_space),
                             _auth=Depends(require_api_token)):
     due_at = (req.due_at or "").strip()
     if req.preset:
@@ -1499,11 +1639,11 @@ async def api_task_postpone(task_id: int, req: TaskPostpone,
     try:
         if due_at:
             task = await asyncio.to_thread(
-                assistant.tasks.postpone, task_id, due_at=due_at,
+                space.assistant.tasks.postpone, task_id, due_at=due_at,
             )
         else:
             task = await asyncio.to_thread(
-                assistant.tasks.postpone, task_id, req.days,
+                space.assistant.tasks.postpone, task_id, req.days,
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1658,16 +1798,19 @@ async def api_tts(req: TtsRequest, _auth=Depends(require_api_token)):
 
 
 @app.post("/api/ask")
-async def api_ask(req: AskRequest, _auth=Depends(require_api_token)):
+async def api_ask(req: AskRequest, space: Space = Depends(current_space),
+                  _auth=Depends(require_api_token)):
     """整句交给 Agent（设备端 ask_xiaoma 工具的后端）。
 
     client_id 决定多轮上下文与待澄清动作的归属，设备应传稳定的设备 ID。
     """
-    if assistant is None:
+    if space.assistant is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪")
     client_id = req.client_id or "xiaozhi"
     try:
-        result = await asyncio.to_thread(assistant.process_text, req.text, client_id)
+        result = await asyncio.to_thread(
+            space.assistant.process_text, req.text, client_id
+        )
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"处理失败: {exc}")
@@ -1847,20 +1990,23 @@ async def api_events(role: str = "browser", _auth=Depends(require_api_token)):
 
 
 @app.post("/api/chat")
-async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
+async def api_chat(req: ChatRequest, space: Space = Depends(current_space),
+                   _auth=Depends(require_api_token)):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
 
     attachment = None
     if req.file_id:
-        attachment = _get_print_file(req.file_id, req.client_id)
+        attachment = _get_print_file(
+            req.file_id, req.client_id, store=space.print_store
+        )
         if attachment is None:
             raise HTTPException(status_code=400, detail="文件已过期，请重新上传")
 
     try:
         # 编排是同步阻塞（memory 检索 + LLM 调用），丢线程池避免卡事件循环
         result = await asyncio.to_thread(
-            assistant.process_text, req.text, req.client_id,
+            space.assistant.process_text, req.text, req.client_id,
             task_id=req.task_id, attachment=attachment,
         )
     except Exception as e:
@@ -1883,10 +2029,13 @@ async def api_chat(req: ChatRequest, _auth=Depends(require_api_token)):
 
 @app.post("/api/print/files")
 async def api_print_upload(file: UploadFile = File(...), client_id: str = Form(""),
+                           space: Space = Depends(current_space),
                            _auth=Depends(require_api_token)):
     """接收待打印文件（D61/D65）：落持久目录，返回 file_id，随下一条聊天消息使用。"""
-    if assistant is None or print_store is None:
+    store = space.print_store
+    if space.assistant is None or store is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪")
+    # 打印机是物理设备，不分空间：状态统一用默认那份（只查一次 CUPS）
     detail = await asyncio.to_thread(assistant.printer_status)
     available = detail.get("available")
     if not available and detail.get("state") == "checking":
@@ -1916,7 +2065,7 @@ async def api_print_upload(file: UploadFile = File(...), client_id: str = Form("
         raise HTTPException(status_code=413, detail="文件太大，最多 10MB")
 
     file_id = uuid.uuid4().hex
-    folder = PRINT_FILES_DIR
+    folder = space.print_dir
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, file_id + ext)
     with open(path, "wb") as fh:
@@ -1941,8 +2090,8 @@ async def api_print_upload(file: UploadFile = File(...), client_id: str = Form("
             detail="服务器没装 LibreOffice，Office 文档先另存为 PDF 再发",
         )
     pages = pdf_page_count(path) if kind == "pdf" else None
-    _purge_print_files()
-    print_store.add(
+    _purge_print_files(store=store)
+    store.add(
         file_id, original, path, kind=kind, size=len(data),
         pages=pages, client_id=(client_id or "").strip(), source="upload",
     )
@@ -1958,6 +2107,7 @@ async def api_print_upload(file: UploadFile = File(...), client_id: str = Form("
 @app.post("/api/voice")
 async def api_voice(file: UploadFile = File(...), client_id: str = Form(""),
                     task_id: Optional[int] = Form(None),
+                    space: Space = Depends(current_space),
                     _auth=Depends(require_api_token)):
     if stt is None:
         raise HTTPException(
@@ -1975,7 +2125,10 @@ async def api_voice(file: UploadFile = File(...), client_id: str = Form(""),
     try:
         tmp_path = await _save_upload(file, ext)
         async with stt_lock:
-            result = await asyncio.to_thread(_handle_voice_sync, tmp_path, client_id, task_id)
+            result = await asyncio.to_thread(
+                _handle_voice_sync, tmp_path, client_id, task_id,
+                space.assistant,
+            )
     except HTTPException:
         raise
     except Exception as e:
