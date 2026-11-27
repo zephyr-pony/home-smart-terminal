@@ -80,34 +80,20 @@ def _float_or_none(value):
 # 概览页轮询不能每次都去碰它（D61 补充）。
 PRINTER_STATUS_TTL_SECONDS = 30
 
-# 内置命令识别（宽泛匹配，兼容语音变体）
-# 查看记忆：对象词（记忆/记录）+ 查看类动词，或直接点名命令
-LIST_OBJECTS = ("记忆", "记录")
-LIST_VERBS = ("看看", "看一下", "查看", "查查", "查一下", "看下", "有什么", "有哪些", "列一下", "列表")
-LIST_PATTERNS = ("记了什么", "记住什么", "我的记忆", "记忆列表", "记录列表")
-# 删除记忆：删除类动词（"忘掉酸奶" / "把酸奶忘掉"）
-DELETE_WORDS = ("忘掉", "忘记", "删掉", "删除", "去掉", "清除", "移除", "取消")
-# 删除目标提取时清理的助词/人称
-DELETE_JUNK = ("请", "帮我", "把", "一下", "给我", "我想", "我要", "着", "的", "啊", "呀", "吧", "记忆", "记录", "那条", "这条")
-
-
-def _is_list_command(text):
-    """查看记忆命令：对象词 + 查看动词，或直接点名命令式短语。"""
-    if any(obj in text for obj in LIST_OBJECTS) and any(v in text for v in LIST_VERBS):
-        return True
-    return any(p in text for p in LIST_PATTERNS)
+# 查看/删除记忆不再走关键词预检（2026-11-27）：以前按「记忆+查看动词」「忘掉/删掉/取消」
+# 直接分流，绕过了模型，还会误伤——「取消取快递」先被当成删记忆（靠没命中才退回去）。
+# 现在一律进 agent loop：模型调 memory_search / memory_list / memory_delete，
+# 删除仍走 ConfirmationManager 的确认。代价是这两类各多一轮 LLM。
 
 
 AGENT_SYSTEM_PROMPT = """你是家庭智能终端助手"小马"，帮家里记事情、查事情、管物品。
 今天日期：{today}
 
-工具描述里写了各自能做什么，按用户的意思自己选。
+工具描述里写了各自能做什么、什么时候用，按用户的意思自己选。
 回答简洁口语化，像家人聊天，别写成公文。
 查不到结果就如实说没有记录，不要编；如果用户的话可能被听错（同音字），
 再问一句"你要查的是哪件事"，不要顺着可能错的词下结论。
 对话历史里可能有相关上下文，理解"那个""它""还有呢"这类指代时结合历史。
-遇到要多步推理、写代码、算表格、比较方案的事，先调 set_thinking(true) 再动手；
-带附件要改文件或要打印时，第一步就开；闲聊和单条查询不必开。
 
 打印表格之前先估算版式：按各列宽度加起来，和 A4 可打印宽度比一下（纵向约 17cm、
 左右边距各约 2cm 就按 17cm 算；列宽 1 个单位≈0.2cm，中文按 2 个单位估）。
@@ -129,11 +115,8 @@ HOME_CONTROL_PROMPT_LINE = """
 - 门锁、燃气、热水器这类不允许语音操作，要如实说去米家 App 处理，不要假装能开
 - home_control 的返回里已经有「执行后读到的真实状态」，照它说，别自己编"已关闭\""""
 
-# 带摄像头的终端才追加：看不见的东西不能顺着用户的话编
-CAMERA_PROMPT_LINE = """
-- 需要看画面（"看看桌上有什么""这是什么""冰箱里还有牛奶吗"）→ camera_look；决定要看就直接调，不要先说话
-- 只有用户明确要看某个东西时才调用；打招呼、闲聊、问时间、问事一律不要拍照
-- 只有这张照片能看到的范围：背后、别的房间、照片外的东西都要说看不到，不要顺着猜"""
+# 带摄像头的终端才有 camera_look；拍照的边界（明确要看才拍、照片外不猜）写在
+# 工具描述里，不在这里重复——描述就是模型看到的那份说明（D75）。
 
 # 看图这一类请求没有工具，只有一张照片
 VISION_SYSTEM_PROMPT = """你在看客厅终端刚拍的一张照片，要直接用口语回答家里人的问题。
@@ -300,9 +283,7 @@ class Assistant:
         Returns:
             dict: {"type": ..., "reply": str, ...}
             type 取值:
-                - "list":   内置命令·查看记忆
-                - "delete": 内置命令·删除记忆
-                - "delete_prompt": 删除命令缺目标
+                - "delete": 删除确认后真的删了（带 `deleted`）
                 - "record": agent 存了记忆
                 - "query":  agent 查了记忆并回答
                 - "chat":   闲聊
@@ -377,13 +358,7 @@ class Assistant:
             if kind == "resolved":
                 text = clarification.get("text", text)
 
-        # 2) 内置命令预检（确定性、零延迟，不进 agent）
-        cmd_result = self._handle_command(text, conversation_id)
-        if cmd_result is not None:
-            self._record_turn(client_id, text, cmd_result.get("reply", ""))
-            return cmd_result
-
-        # 3) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
+        # 2) agent loop：LLM 自主决策调工具 → 基于结果回答（带该客户端的最近对话上下文）
         try:
             rtype, answer, extras = self._agent_loop(
                 text, client_id, on_delta, device_camera=device_camera,
@@ -809,10 +784,13 @@ class Assistant:
     # ---------- agent loop ----------
 
     def _system_prompt(self, device_camera=False):
-        """身份 + 这一轮的入口提示（设备网关、摄像头）；热点上下文由调用方另加。
+        """身份 + 这一轮的能力提示（设备网关）；热点上下文由调用方另加。
 
         为什么按 control_enabled 二选一：只读那句「只能查不能操作」以前是无条件
         加的，控制开了以后它就变成假话，模型会回「我还不能控制」。
+
+        device_camera 不再影响提示：拍照的边界写在 camera_look 的描述里，而那个
+        schema 只在有摄像头时才给模型（D75）——同一套规则不在两处维护。
         """
         prompt = AGENT_SYSTEM_PROMPT.replace(
             "{today}", datetime.now().strftime("%Y年%m月%d日")
@@ -823,8 +801,6 @@ class Assistant:
                 prompt += HOME_CONTROL_PROMPT_LINE
             else:
                 prompt += HOME_READONLY_PROMPT_LINE
-        if device_camera:
-            prompt += CAMERA_PROMPT_LINE
         return prompt
 
     def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False,
@@ -1511,49 +1487,3 @@ class Assistant:
             if len(session["turns"]) > self.max_session_turns:
                 del session["turns"][: len(session["turns"]) - self.max_session_turns]
 
-    # ---------- 内置命令 ----------
-
-    def _handle_command(self, text, conversation_id):
-        """处理内置命令。不是命令时返回 None。"""
-        if _is_list_command(text):
-            return self._cmd_list()
-        for w in DELETE_WORDS:
-            if w in text:
-                return self._cmd_delete(text, w, conversation_id)
-        return None
-
-    def _cmd_list(self):
-        mems = self.memory.list_all(10)
-        if not mems:
-            return self._result("list", "记忆库还是空的，跟我说点要记住的事吧。", "memory", "list", memories=[])
-        summaries = "，".join(f"{m['summary']}" for m in mems[:5])
-        return self._result(
-            "list", f"一共有 {len(mems)} 条记忆，最近的是：{summaries}",
-            "memory", "list", memories=mems,
-        )
-
-    def _cmd_delete(self, text, word, conversation_id):
-        target = text.replace(word, "").strip()
-        for junk in DELETE_JUNK:
-            target = target.replace(junk, "")
-        target = target.strip()
-
-        if not target:
-            return self._result("delete_prompt", "想删掉什么记忆呢？比如对我说，忘掉酸奶。", "memory", "delete")
-
-        # 记忆未命中 → 返回 None 降级给 agent loop（用户可能指的是删物品 item_delete）
-        if not self.memory.search(target, 1):
-            return None
-
-        question = f"确认删除关于「{target}」的记忆吗？回复「确认」或「取消」。"
-        pending = self.confirmations.request(
-            conversation_id,
-            "memory_delete",
-            {"keywords": target},
-            question,
-            text,
-        )
-        return self._result(
-            "confirm", question, "memory", "delete",
-            pending_action=pending, target=target,
-        )

@@ -59,6 +59,11 @@ ports:
 close_connection_no_voice_time: 86400
 idle_after_voice_time: 15
 
+# 结束会话交给模型（2026-11-27）：以前按「再见/拜拜/不聊了」句尾命中直接挂断，
+# 「不用再见」也以「再见」结尾，照样被结束。留空后由模型判断，它要结束时调
+# handle_exit_intent（小智内置函数，不依赖这个列表）。
+exit_commands: []
+
 server:
   ip: 0.0.0.0
   port: 8000

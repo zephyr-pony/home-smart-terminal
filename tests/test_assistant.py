@@ -391,7 +391,9 @@ def test_agent_loop_degrades_when_llm_fails():
 
 
 def test_assistant_delete_requires_confirmation():
-    assistant = make_assistant()
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("memory_delete", {"keywords": "酸奶"}),
+    ]))
     assistant.memory.store("酸奶8月5号过期", "酸奶过期")
 
     result = assistant.process_text("忘掉酸奶", client_id="c1")

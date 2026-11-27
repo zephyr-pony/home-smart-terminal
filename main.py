@@ -19,11 +19,7 @@ def print_result(result, text=None):
     """按结果类型打印 CLI 反馈（TTS 播报由调用方决定）。"""
     rtype = result.get("type")
 
-    if rtype == "list":
-        print(f"📋 记忆库共 {len(result.get('memories', []))} 条:")
-        for m in result.get("memories", []):
-            print(f"   · [{m['time']}] {m['text']}")
-    elif rtype == "delete":
+    if rtype == "delete":
         deleted = result.get("deleted", [])
         if deleted:
             print(f"🗑️ 已删除 {len(deleted)} 条相关记忆:")
@@ -31,8 +27,6 @@ def print_result(result, text=None):
                 print(f"   · [{m['time']}] {m['text']}")
         else:
             print(f"ℹ️ {result.get('reply')}")
-    elif rtype == "delete_prompt":
-        print(f"❓ {result.get('reply')}")
     elif rtype == "record":
         print(f"✅ 已记录: {result.get('summary', '')}")
     elif rtype == "query":

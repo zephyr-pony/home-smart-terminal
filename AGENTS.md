@@ -54,6 +54,8 @@
 
 设备语音链路现在是**自建的第三方小智服务端**（`infra/xiaozhi-server`），它是部署件、不是小马的模块依赖：小马本身只提供 `/v1` 和 MCP 接入点，网页/手机/API 不装它也能用。终局是把语音管线（WS 协议、Opus、VAD、打断）做进小马，见 ROADMAP D57。
 
+「要不要结束会话」这类判断交给模型：小智 `exit_commands` 留空、模型调 `handle_exit_intent`；编排层也没有关键词预检（2026-11-27 去掉，见下「Agent 编排」）。
+
 ### 开发顺序
 
 1. 阶段 0：分层重构（`domain/` / `agent/` / `adapters/`），保持现有行为。
@@ -161,9 +163,10 @@ pytest tests -q
   - 通用：`type`、`reply`、`used_tools`、`domain`、`action`
   - `record`：额外带 `summary`
   - `query`：额外带 `memories`（`"[时间] 原文"` 字符串列表）
-  - `list` / `delete`：额外带 `memories` / `deleted`
+  - `delete`：额外带 `deleted`（删除确认后真的删掉的那几条）
   - `device_call`：额外带 `device_call`（`{"name", "arguments"}`），`reply` 为空——这一轮交给设备执行，`/v1` 据此回 OpenAI `tool_calls`
   - 修改 `_agent_loop` 时必须同步维护这些字段，CLI 和 API 都依赖它们。
+- **没有内置命令预检**（2026-11-27 去掉）：以前「看看我的记忆」「忘掉酸奶」按关键词直接分流、不进模型，还会误伤（「取消取快递」先被当成删记忆）。现在一律进 agent loop，由模型选 `memory_search` / `memory_list` / `memory_delete`；删除仍走确认。代价是这两类每轮多一次 LLM（语音约 +2 秒）。
 - `process_text(..., task_id=)` / `process_voice(..., task_id=)`：用户点开到期提醒时带上那条任务，
   `_agent_loop` 只在这一轮注入一条 system 提示（`_task_context_note`），让「完成了 / 延期」
   直接落到那条任务，省掉 `task_list` 一轮；任务不存在或已完成时如实说明，不改别的任务。

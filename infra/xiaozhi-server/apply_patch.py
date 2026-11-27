@@ -76,22 +76,6 @@ def patch_app():
     )
 
 
-def patch_intent_exit():
-    """退出命令按「句尾」匹配。
-
-    上游用的是 `if text == cmd`，但人说话几乎总带前缀（「好的再见」「不用再见」），
-    去掉标点后整句相等反而永远匹配不上，会话会一直挂着等无语音超时。
-    """
-    _replace_once(
-        "core/handle/intentHandler.py",
-        "    for cmd in cmd_exit:\n        if text == cmd:\n",
-        "    for cmd in cmd_exit:\n"
-        "        # 小马：整句相等或句尾命中都算，避免「好的再见」这种说法漏掉\n"
-        "        if text == cmd or text.endswith(cmd):\n",
-        "退出命令句尾匹配",
-    )
-
-
 def patch_weather_tool_desc():
     """去掉「本地天气已在上下文中，绝对不要调用」这句。
 
@@ -150,7 +134,8 @@ def patch_idle_session():
 if __name__ == "__main__":
     patch_websocket_server()
     patch_app()
-    patch_intent_exit()
+    # 退出命令不再打补丁：exit_commands 留空，结束会话交给模型的 handle_exit_intent
+    # （2026-11-27）。句尾匹配那版会把「不用再见」也当成退出。
     patch_weather_tool_desc()
     patch_idle_session()
     print("小智提醒桥补丁完成")
