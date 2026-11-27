@@ -2,6 +2,8 @@
 
 「输出里不许出现穿、伞」这两条断言就是 D53 的护栏。
 """
+import json
+
 from adapters.weather import (
     Weather,
     _cn_date,
@@ -54,6 +56,13 @@ def _qweather_router(urls):
                 "windSpeed": "16", "vis": "28", "pressure": "1018",
                 "precip": "0.0", "dew": "21", "cloud": "91",
             }})
+        if url.endswith("/24h"):
+            # 和风日预报没有降水概率，概率在逐小时里；只取当天的最大值
+            return _Resp({"code": "200", "hourly": [
+                {"fxTime": "2026-11-24T09:00+08:00", "pop": "10"},
+                {"fxTime": "2026-11-24T15:00+08:00", "pop": "40"},
+                {"fxTime": "2026-11-25T09:00+08:00", "pop": "90"},
+            ]})
         return _Resp({"code": "200", "daily": [
             {"fxDate": "2026-11-24", "textDay": "小雪", "textNight": "晴",
              "tempMax": "3", "tempMin": "0", "windDirDay": "西北风",
@@ -251,3 +260,53 @@ def test_render_days_keeps_all_fields():
     assert "11月25日（周三）" in text
     assert "最高气温：13℃" in text
     assert "紫外线指数：3" in text
+
+
+# ---------- 看板快照（结构化，不是给模型念的句子）----------
+
+
+def test_snapshot_open_meteo_is_structured(monkeypatch):
+    monkeypatch.setattr("adapters.weather.requests.get", _open_meteo_router([]))
+
+    snap = Weather("", "", "", 37.476, 121.441).snapshot(days=2)
+
+    assert snap["ok"] is True
+    assert snap["provider"] == "open-meteo"
+    assert snap["now"]["temp"] == 8.6
+    assert snap["now"]["sky"] == "晴"
+    assert snap["now"]["wind_level"] == "4级"
+    assert [day["date"] for day in snap["days"]] == [
+        "2026-11-25", "2026-11-26", "2026-11-27",
+    ]
+    assert snap["days"][0]["high"] == 13.1
+    # 假数据里没有降水概率：宁可不给，也不要编一个 0%
+    assert snap["days"][0]["pop"] is None
+    assert "穿" not in json.dumps(snap, ensure_ascii=False)
+
+
+def test_snapshot_qweather_converts_strings_to_numbers(monkeypatch):
+    monkeypatch.setattr("adapters.weather.requests.get", _qweather_router([]))
+
+    snap = Weather(QW_HOST, "key", "烟台").snapshot(days=2)
+
+    assert snap["ok"] is True
+    assert snap["provider"] == "qweather"
+    assert snap["now"]["temp"] == 1
+    assert snap["now"]["wind_level"] == "3级"
+    assert snap["days"][0]["high"] == 3
+    assert snap["days"][1]["low"] == 3
+    # 降水概率取当天逐小时的最大值，明天的 90% 不算进来
+    assert snap["days"][0]["pop"] == 40
+
+
+def test_snapshot_failure_returns_ok_false(monkeypatch):
+    monkeypatch.setattr(
+        "adapters.weather.requests.get", lambda *a, **k: _Resp({}, status=500),
+    )
+
+    snap = Weather(QW_HOST, "key", "烟台").snapshot()
+
+    assert snap["ok"] is False
+    assert snap["error"]
+    # 没配置时也只给一句话，不抛异常
+    assert Weather().snapshot()["ok"] is False

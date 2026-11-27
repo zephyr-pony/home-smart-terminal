@@ -119,6 +119,139 @@ class Weather:
             return self._query_qweather(location, scope, want)
         return self._query_open_meteo(location, scope, want)
 
+    # ---------- 看板用的结构化快照 ----------
+
+    def snapshot(self, location="", days=3):
+        """结构化天气（网页看板用）：数值和字段名，不是给模型念的文本。
+
+        为什么不复用 query()：那边拼的是「气温：7℃」这种句子，前端要拆字符串
+        才能排版，还容易跟着措辞改而坏掉。两边都从同一份原始响应取，不多发请求。
+        """
+        if not self.configured:
+            return {"ok": False, "error": "天气服务还没配置"}
+        try:
+            want = int(days)
+        except (TypeError, ValueError):
+            want = FORECAST_DAYS
+        want = max(1, min(want, FORECAST_DAYS))
+        try:
+            if self.provider == "qweather":
+                return self._snapshot_qweather(location, want)
+            return self._snapshot_open_meteo(location, want)
+        except Exception as exc:
+            logger.warning("天气快照失败: %s", exc)
+            return {"ok": False, "error": "天气服务暂时连不上"}
+
+    def _snapshot_open_meteo(self, location, days):
+        city = (location or self.city).strip()
+        lat, lon, city_name = self._om_coords(city)
+        if lat is None:
+            return {"ok": False, "error": "没找到 %s 这个地方" % (city or "位置")}
+
+        data = self._om_fetch(lat, lon)
+        current = data.get("current") or {}
+        daily = data.get("daily") or {}
+        dates = daily.get("time") or []
+
+        out_days = []
+        for index, date in enumerate(dates[:days + 1]):
+            def pick(key):
+                values = daily.get(key) or []
+                return values[index] if index < len(values) else None
+
+            code = pick("weather_code")
+            out_days.append({
+                "date": date,
+                "sky": _WMO_ZH.get(code, "未知") if code is not None else "",
+                "high": pick("temperature_2m_max"),
+                "low": pick("temperature_2m_min"),
+                "pop": pick("precipitation_probability_max"),
+                "precip_mm": pick("precipitation_sum"),
+                "wind_dir": _dir_name(pick("wind_direction_10m_dominant")),
+                "wind_level": _wind_level(pick("wind_speed_10m_max")),
+                "sunrise": _time_part(pick("sunrise")),
+                "sunset": _time_part(pick("sunset")),
+            })
+
+        code = current.get("weather_code")
+        return {
+            "ok": True,
+            "provider": "open-meteo",
+            "city": city_name,
+            "now": {
+                "temp": current.get("temperature_2m"),
+                "feels": current.get("apparent_temperature"),
+                "sky": _WMO_ZH.get(code, "未知") if code is not None else "",
+                "humidity": current.get("relative_humidity_2m"),
+                "wind_dir": _dir_name(current.get("wind_direction_10m")),
+                "wind_level": _wind_level(current.get("wind_speed_10m")),
+                "updated_at": current.get("time"),
+            },
+            "days": out_days,
+        }
+
+    def _snapshot_qweather(self, location, days):
+        city = (location or self.city).strip()
+        info = self._qw_city(city)
+        if not info:
+            return {"ok": False, "error": "没找到 %s 这个地方" % (city or "位置")}
+
+        location_id = info.get("id")
+        city_name = info.get("name") or city
+        now = (self._qw_get("v7/weather/now", location_id) or {}).get("now") or {}
+        daily = (self._qw_get("v7/weather/7d", location_id) or {}).get("daily") or []
+
+        # 和风的日预报没有降水概率（只有降水量），概率在逐小时里；
+        # 取今天各小时的最大值当「今天降水概率」，取不到就不给，不编。
+        today_pop = None
+        today = daily[0].get("fxDate") if daily else None
+        if today:
+            try:
+                hourly = (self._qw_get("v7/weather/24h", location_id) or {}).get("hourly") or []
+                pops = []
+                for hour in hourly:
+                    if str(hour.get("fxTime") or "")[:10] != today:
+                        continue
+                    value = _num(hour.get("pop"))
+                    if value is not None:
+                        pops.append(value)
+                today_pop = max(pops) if pops else None
+            except Exception as exc:
+                logger.warning("和风逐小时降水概率失败: %s", exc)
+
+        out_days = []
+        for index, item in enumerate(daily[:days + 1]):
+            out_days.append({
+                "date": item.get("fxDate"),
+                "sky": item.get("textDay") or "",
+                "sky_night": item.get("textNight") or "",
+                "high": _num(item.get("tempMax")),
+                "low": _num(item.get("tempMin")),
+                "pop": today_pop if index == 0 else None,
+                "precip_mm": _num(item.get("precip")),
+                "wind_dir": item.get("windDirDay") or "",
+                "wind_level": item.get("windScaleDay") or "",
+                "sunrise": item.get("sunrise") or "",
+                "sunset": item.get("sunset") or "",
+            })
+
+        return {
+            "ok": True,
+            "provider": "qweather",
+            "city": city_name,
+            "now": {
+                "temp": _num(now.get("temp")),
+                "feels": _num(now.get("feelsLike")),
+                "sky": now.get("text") or "",
+                "humidity": _num(now.get("humidity")),
+                "wind_dir": now.get("windDir") or "",
+                "wind_level": ("%s级" % now.get("windScale")
+                               if now.get("windScale") not in (None, "") else ""),
+                "updated_at": now.get("obsTime") or "",
+            },
+            "days": out_days,
+        }
+
     # ---------- 和风 ----------
 
     def _query_qweather(self, location, scope, days):
@@ -295,7 +428,8 @@ class Weather:
             "daily": ",".join((
                 "weather_code", "temperature_2m_max", "temperature_2m_min",
                 "wind_speed_10m_max", "wind_direction_10m_dominant",
-                "precipitation_sum", "uv_index_max", "sunrise", "sunset",
+                "precipitation_sum", "precipitation_probability_max",
+                "uv_index_max", "sunrise", "sunset",
             )),
             "timezone": "Asia/Shanghai",
             "forecast_days": max(FORECAST_DAYS + 1, 7),
@@ -317,6 +451,17 @@ def _format_value(value, unit=""):
     if value in (None, ""):
         return None
     return "%s%s" % (value, unit)
+
+
+def _num(value):
+    """和风把数字都发成字符串；快照给前端要数值，能转就转，转不了给 None。"""
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number == int(number) else number
 
 
 def _render_now(city_name, facts):

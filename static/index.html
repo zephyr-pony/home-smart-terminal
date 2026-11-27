@@ -5,30 +5,98 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>家庭智能终端 · 小马</title>
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#1b1f2a">
+<meta name="theme-color" content="#faf4ea">
 <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="小马">
 <style>
 :root {
-  --bg: #1b1f2a;
-  --surface: #252a38;
-  --surface-alt: #2d3348;
-  --user-bubble: #3a7bd5;
-  --user-text: #fff;
-  --bot-bubble: #2e3448;
-  --bot-text: #e4e8f1;
-  --text-primary: #e8ecf4;
-  --text-secondary: #8b93a8;
-  --accent: #5b9cf5;
-  --danger: #e85d5d;
-  --input-bg: #2a2f40;
-  --border: #3a4058;
-  --record-active: #d94040;
-  --radius: 14px;
-  --radius-sm: 8px;
+  /* 默认「暖米」：纸底 + 陶土主色 + 鼠尾草辅助（D82）。
+     深色那套没有删，改叫「暖深」留给晚上，主题由 body[data-theme] 切，
+     所有组件都只认这些变量，不各自写颜色。 */
+  --bg: #faf4ea;
+  --page-bg: linear-gradient(170deg, #fdf8f0 0%, #faf3e8 45%, #f5e7d5 100%);
+  --surface: #fffdf9;
+  --surface-alt: #fdf3e4;
+  --user-bubble: #c4643f;
+  --user-text: #fff8f2;
+  --bot-bubble: #f5e9d9;
+  --bot-text: #4a3e35;
+  --text-primary: #332a24;
+  --text-secondary: #8a7a6c;
+  --accent: #c4643f;
+  --accent-weak: rgba(196, 100, 63, .12);
+  --ok: #6e8a61;
+  --warn: #b4472f;
+  --danger: #b4472f;
+  --input-bg: #fdf7ee;
+  --border: #ecdfd0;
+  --record-active: #c0492f;
+  --shadow: 0 6px 18px rgba(120, 90, 60, .10);
+  --radius: 16px;
+  --radius-sm: 10px;
 }
+
+body[data-theme="clay"] {
+  --bg: #f7e3d5;
+  --page-bg: linear-gradient(170deg, #fbeee3 0%, #f7e2d1 50%, #f0d3bd 100%);
+  --surface: #fffaf5;
+  --surface-alt: #f9e8db;
+  --user-bubble: #b0522f;
+  --bot-bubble: #f6e3d5;
+  --bot-text: #4a352c;
+  --text-primary: #3a2a22;
+  --text-secondary: #8d6f5e;
+  --accent: #b0522f;
+  --accent-weak: rgba(176, 82, 47, .12);
+  --input-bg: #fdf1e7;
+  --border: #ecd3bf;
+  --record-active: #a8452a;
+}
+
+body[data-theme="sage"] {
+  --bg: #eef2e8;
+  --page-bg: linear-gradient(170deg, #f5f8f0 0%, #edf2e6 50%, #e3ebdb 100%);
+  --surface: #fbfdf8;
+  --surface-alt: #eef4e7;
+  --user-bubble: #6e8a61;
+  --user-text: #f7faf4;
+  --bot-bubble: #e9f0e0;
+  --bot-text: #38412f;
+  --text-primary: #2f382a;
+  --text-secondary: #75816b;
+  --accent: #6e8a61;
+  --accent-weak: rgba(110, 138, 97, .14);
+  --input-bg: #f6faf1;
+  --border: #dbe5d2;
+  --record-active: #5c7a4f;
+}
+
+body[data-theme="night"] {
+  --bg: #2b211d;
+  --page-bg: linear-gradient(170deg, #322620 0%, #2b211d 55%, #241b18 100%);
+  --surface: #352924;
+  --surface-alt: #40312b;
+  --user-bubble: #b35c3b;
+  --user-text: #fff4ec;
+  --bot-bubble: #3c2e28;
+  --bot-text: #f0e3d6;
+  --text-primary: #f4e9dd;
+  --text-secondary: #b9a496;
+  --accent: #d98a5f;
+  --accent-weak: rgba(217, 138, 95, .16);
+  --ok: #9db98a;
+  --warn: #e08a72;
+  --danger: #e0705c;
+  --input-bg: #332823;
+  --border: #3c2f29;
+  --record-active: #d1604a;
+  --shadow: 0 6px 18px rgba(0, 0, 0, .25);
+}
+
+/* 背景：纯色纸底 / 晨光渐变（照片那档先不做） */
+body[data-bg="paper"] { --page-bg: var(--bg); }
 
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
@@ -40,7 +108,7 @@ html, body {
   height: 100dvh;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  background: var(--bg); color: var(--text-primary);
+  background: var(--page-bg, var(--bg)); background-attachment: fixed; color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -49,22 +117,11 @@ html, body {
   /* 用 body 的高度（100dvh，包含底部安全区）铺满，不要用 innerHeight：
      iOS standalone 下 innerHeight 会比 screen.height 少一截，锁死它会留黑边 */
   height: 100%;
-  max-width: 600px; margin: 0 auto;
+  max-width: 1080px; margin: 0 auto;
 }
 
 /* ---- status bar ---- */
-#status-bar {
-  flex-shrink: 0; padding: calc(16px + env(safe-area-inset-top)) 20px 12px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-#status-bar h1 {
-  font-size: 18px; font-weight: 700; letter-spacing: .5px;
-  color: var(--text-primary);
-}
-#status-bar .sub {
-  margin-top: 4px; font-size: 13px; color: var(--text-secondary);
-}
+/* 结构在下面「看板」一节重写过（时间 + 天气），这里只留 token 行 */
 #token-row {
   display: flex; gap: 8px; margin-top: 10px;
 }
@@ -114,7 +171,7 @@ html, body {
 /* 从系统通知点进来时的那条提醒，和普通对话区分开 */
 .msg-row.reminder .bubble {
   border: 1px solid var(--accent);
-  background: rgba(91,156,245,.12);
+  background: var(--accent-weak);
 }
 
 /* 任务提醒卡片：提醒原文 + 完成/延期/取消 */
@@ -139,7 +196,7 @@ html, body {
 .bubble strong { font-weight: 700; }
 .bubble code {
   padding: 1px 4px; border-radius: 4px;
-  background: rgba(255,255,255,.10);
+  background: rgba(0,0,0,.07);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
 }
@@ -383,48 +440,254 @@ html, body {
 .typing span:nth-child(2) { animation-delay: .2s; }
 .typing span:nth-child(3) { animation-delay: .4s; }
 @keyframes blink { 0%,80%,100%{opacity:.3} 40%{opacity:1} }
+
+/* ================= 看板（D82） ================= */
+/* 顶栏：时间 + 天气，原「3 件事等你」挪进今天卡标题 */
+#status-bar {
+  flex-shrink: 0;
+  background: transparent; border-bottom: 0; position: relative;
+  padding: calc(14px + env(safe-area-inset-top)) 18px 6px;
+}
+.head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+#clock { font-size: 2.4rem; font-weight: 750; line-height: 1; letter-spacing: -.02em; }
+#dayline { margin-top: 6px; font-size: 13px; color: var(--text-secondary); }
+.status-line { margin-top: 6px; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.status-line:empty { display: none; }
+/* 手机上看板不需要「服务正常 · 记忆 N 条」这行诊断：数据本身就在下面；
+   出错时（没有 data-ok）照常显示，别把故障藏起来 */
+@media (max-width: 899px) {
+  .status-line[data-ok="1"] { display: none; }
+}
+#token-row { margin-top: 10px; display: flex; gap: 8px; }
+#token-input { flex: 1; min-width: 0; height: 36px; padding: 0 10px; background: var(--input-bg); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: inherit; }
+#token-save { height: 36px; padding: 0 14px; border: none; border-radius: var(--radius-sm); background: var(--accent); color: #fff; font-family: inherit; font-weight: 600; }
+
+/* 天气块（点开三天） */
+#wx-btn {
+  flex-shrink: 0; text-align: right; line-height: 1.2; padding: 6px 10px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--text-primary); font-family: inherit; cursor: pointer;
+}
+#wx-btn:hover { border-color: var(--border); background: var(--surface); }
+#wx-btn .wx-now { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+#wx-btn .wx-temp { font-size: 1.5rem; font-weight: 700; }
+#wx-btn .wx-sky { font-size: 12px; color: var(--text-secondary); display: block; margin-top: 1px; }
+#wx-btn .wx-range { font-size: 11px; color: var(--text-secondary); opacity: .85; display: block; margin-top: 1px; }
+#wx-btn .wx-wind { font-size: 11px; color: var(--text-secondary); opacity: .85; display: block; margin-top: 1px; }
+#wx-btn svg { width: 22px; height: 22px; stroke: var(--accent); fill: none; stroke-width: 1.7; }
+#wx-pop {
+  position: absolute; right: 12px; top: calc(96px + env(safe-area-inset-top)); z-index: 60;
+  width: min(340px, calc(100vw - 24px)); padding: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+#wx-pop .wx-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+.wx-days { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.wx-day { background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 4px; text-align: center; font-size: 11px; color: var(--text-secondary); line-height: 1.6; }
+.wx-day b { display: block; font-size: 12px; color: var(--text-primary); }
+.wx-day .hi { color: var(--accent); font-weight: 650; }
+
+/* 看板主体 */
+#view-board { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 10px; -webkit-overflow-scrolling: touch; }
+.board { display: grid; grid-template-columns: 1fr; gap: 12px; width: 100%; max-width: 980px; margin: 0 auto; }
+.board-side { display: flex; flex-direction: column; gap: 12px; }
+.bcard {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow);
+}
+.bcard h2 {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  font-size: 13px; font-weight: 650; letter-spacing: .04em;
+  color: var(--text-secondary); margin-bottom: 10px;
+}
+.bcard h2 span { color: var(--accent); font-weight: 700; font-size: 12px; }
+.brow { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+.brow:first-child { border-top: 0; padding-top: 0; }
+.bwhen { width: 46px; flex: none; font-size: 12px; font-weight: 700; color: var(--accent); padding-top: 2px; }
+.bwhen.warn { color: var(--danger); }
+.bbody { flex: 1; min-width: 0; }
+.btitle { font-size: 15px; line-height: 1.35; color: var(--text-primary); }
+.bmeta { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+.bmeta.warn { color: var(--danger); }
+.bacts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.bacts button {
+  border: 1px solid var(--border); background: var(--surface-alt);
+  color: var(--text-primary); font-size: 12px; padding: 4px 11px;
+  border-radius: 999px; font-family: inherit; cursor: pointer;
+}
+.bacts button.primary { background: var(--accent); border-color: var(--accent); color: #fff8f2; font-weight: 650; }
+.bacts button:disabled { opacity: .5; }
+.done-line { margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--text-secondary); }
+/* 「今天」条目多时在卡片里自己滚，别把家里/最近顶出屏幕；滚动条不显示 */
+.scroll-hint {
+  margin-top: 8px; text-align: center; font-size: 12px;
+  color: var(--accent); letter-spacing: .02em;
+}
+@media (max-width: 899px) {
+  /* 手机上让三张卡都落在屏幕里：家里/最近按自然高度、绝不内部滚，
+     今天吃掉剩下的空间、自己内部滚动。网关接上后家里会多几行，
+     所以今天的最低高度压到 110px，宁可它滚也不让家里被裁。 */
+  #view-board { display: flex; flex-direction: column; overflow-y: auto; align-items: stretch; }
+  /* margin auto 在 flex 交叉轴上会让卡片按内容收缩（实测窄一圈），这里铺满 */
+  .board { flex: 1 1 auto; min-height: 0; width: 100%; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+  #card-today { flex: 0 1 auto; min-height: 110px; display: flex; flex-direction: column; }
+  .board-side { flex: 0 0 auto; }
+  .bcard { padding: 12px; }
+  .bcard h2 { margin-bottom: 8px; }
+  .kvline { padding: 4px 0; font-size: 13.5px; }
+  #today-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;          /* Firefox */
+    -ms-overflow-style: none;       /* 旧 Edge */
+    overscroll-behavior: contain;   /* 滚到底不要把整页带着滚 */
+  }
+  #today-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
+  /* 还有内容没露出来时底部淡出一点，截断看起来是「还能滑」而不是「被切了」 */
+  #today-list.fading {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent 100%);
+  }
+  #view-board { scrollbar-width: none; -ms-overflow-style: none; }
+  #view-board::-webkit-scrollbar { display: none; }
+}
+.kvline { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 14px; padding: 5px 0; color: var(--text-primary); }
+.kvline .k { color: var(--text-secondary); }
+.kvline .v { text-align: right; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--accent-weak); color: var(--accent); }
+.tag.warn { background: rgba(180, 71, 47, .14); color: var(--danger); }
+.tag.ok { background: rgba(110, 138, 97, .16); color: var(--ok); }
+.bempty { font-size: 13px; color: var(--text-secondary); padding: 2px 0; }
+
+/* 底部：按住说话 + 聊天入口 */
+#dock { flex-shrink: 0; display: flex; gap: 8px; align-items: center; padding: 8px 16px 6px; }
+#dock-mic {
+  flex: 1; height: 46px; border-radius: 999px; font-family: inherit; font-size: 15px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-primary);
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  box-shadow: var(--shadow); touch-action: none;
+}
+#dock-mic .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+#dock-mic.recording { background: var(--record-active); border-color: var(--record-active); color: #fff; }
+#dock-mic.recording .dot { background: #fff; animation: blink 1s infinite; }
+#dock-chat {
+  width: 46px; height: 46px; flex: none; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); cursor: pointer;
+}
+#dock-chat svg { width: 20px; height: 20px; stroke: var(--text-primary); fill: none; stroke-width: 1.7; }
+
+/* 导航放到底部，聊天不再是 tab */
+#tabs {
+  flex-shrink: 0; padding: 6px 10px calc(8px + env(safe-area-inset-bottom));
+  background: var(--surface); border-top: 1px solid var(--border); border-bottom: 0;
+}
+#tabs .tab { height: 38px; border-radius: 999px; }
+#tabs .tab.active { background: var(--accent-weak); color: var(--accent); }
+
+/* 聊天浮层：手机上整屏，宽屏变右侧抽屉 */
+#chat-sheet {
+  position: fixed; inset: 0; z-index: 80;
+  display: flex; flex-direction: column;
+  background: var(--page-bg, var(--bg));
+  transform: translateY(103%); transition: transform .22s ease;
+  visibility: hidden;
+}
+#chat-sheet.open { transform: none; visibility: visible; }
+#chat-sheet .sheet-inner { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; max-width: 620px; margin: 0 auto; }
+.sheet-head {
+  flex-shrink: 0; display: flex; align-items: center; gap: 10px;
+  padding: calc(10px + env(safe-area-inset-top)) 12px 8px;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.sheet-head .sheet-title { flex: 1; font-size: 15px; font-weight: 650; }
+.sheet-head button {
+  height: 34px; min-width: 34px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-alt);
+  color: var(--text-primary); font-family: inherit; font-size: 13px; cursor: pointer;
+}
+@media (min-width: 900px) {
+  #chat-sheet { left: auto; width: 440px; border-left: 1px solid var(--border); box-shadow: -8px 0 30px rgba(60, 40, 25, .12); transform: translateX(105%); }
+  #chat-sheet.open { transform: none; }
+  .board { grid-template-columns: 1.55fr 1fr; align-items: start; }
+  .view-inner { max-width: 880px; margin: 0 auto; width: 100%; }
+  /* 宽屏上「按住说话」不必拉满一整行，居中一条更好按 */
+  #dock { max-width: 560px; width: 100%; margin: 0 auto; }
+}
+
+/* 提醒到达时的浮条：不用切到聊天也能直接处理 */
+#reminder-banner {
+  position: fixed; z-index: 90; left: 12px; right: 12px;
+  top: calc(12px + env(safe-area-inset-top));
+  max-width: 520px; margin: 0 auto; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--accent);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+#reminder-banner .rb-text { font-size: 14px; line-height: 1.5; }
+#reminder-banner .rb-acts { display: flex; gap: 8px; margin-top: 10px; }
+#reminder-banner .rb-acts button {
+  border: 1px solid var(--border); background: var(--surface-alt);
+  color: var(--text-primary); font-size: 13px; padding: 5px 12px;
+  border-radius: 999px; font-family: inherit; cursor: pointer;
+}
+#reminder-banner .rb-acts button.primary { background: var(--accent); border-color: var(--accent); color: #fff8f2; font-weight: 650; }
+
+/* 设置里的外观 */
+.theme-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+.theme-chip {
+  border: 2px solid var(--border); border-radius: 12px; padding: 8px 4px;
+  background: var(--surface); color: var(--text-primary); font-family: inherit;
+  font-size: 12px; cursor: pointer; text-align: center;
+}
+.theme-chip.active { border-color: var(--accent); }
+.theme-chip .swatch { height: 22px; border-radius: 6px; margin-bottom: 6px; border: 1px solid var(--border); }
+.bg-grid { display: flex; gap: 8px; margin-top: 8px; }
+.bg-chip { flex: 1; border: 2px solid var(--border); border-radius: 10px; padding: 6px; background: var(--surface); color: var(--text-primary); font-family: inherit; font-size: 12px; cursor: pointer; }
+.bg-chip.active { border-color: var(--accent); }
+.bg-chip .paper { height: 26px; border-radius: 6px; margin-bottom: 4px; border: 1px solid var(--border); }
 </style>
 </head>
 <body>
 
 <div id="app">
-  <div id="status-bar">
-    <h1>家庭智能终端 · 小马</h1>
-    <div class="sub" id="status-text">正在连接…</div>
+  <header id="status-bar">
+    <div class="head-row">
+      <div>
+        <div id="clock">--:--</div>
+        <div id="dayline">正在连接…</div>
+      </div>
+      <button id="wx-btn" class="hidden" type="button"></button>
+    </div>
+    <div class="status-line" id="status-text"></div>
     <div id="token-row" class="hidden">
       <input id="token-input" type="password" placeholder="API Token（如已配置）" autocomplete="off">
       <button id="token-save">保存 Token</button>
     </div>
-  </div>
+  </header>
 
-  <nav id="tabs">
-    <button class="tab active" data-tab="chat" type="button">聊天</button>
-    <button class="tab" data-tab="overview" type="button">概览</button>
-    <button class="tab" data-tab="data" type="button">数据</button>
-    <button class="tab" data-tab="settings" type="button">设置</button>
-  </nav>
+  <div id="wx-pop" class="hidden"></div>
 
   <main id="views">
-    <section id="view-chat" class="view active">
-      <div id="messages"></div>
-      <div id="task-chip" class="hidden">
-        <span class="chip-label"></span>
-        <button type="button" aria-label="取消任务绑定">✕</button>
-      </div>
-      <div id="file-chip" class="hidden">
-        <span class="chip-label"></span>
-        <button type="button" aria-label="取消文件">✕</button>
-      </div>
-      <div id="input-area">
-        <button id="record-btn" aria-label="按住说话">
-          <span id="record-label">按住说话</span>
-          🎤
-        </button>
-        <input id="file-input" type="file" class="hidden"
-               accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.gif,.bmp,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx">
-        <button id="attach-btn" type="button" aria-label="上传文件打印" title="上传文件打印">📎</button>
-        <input id="text-input" type="text" placeholder="打字跟小马说话…" autocomplete="off">
-        <button id="send-btn">发送</button>
+    <section id="view-board" class="view active">
+      <div class="board">
+        <section class="bcard" id="card-today">
+          <h2>今天 <span id="today-count"></span></h2>
+          <div id="today-list"></div>
+          <div id="today-more" class="scroll-hint hidden">往下滑看更多</div>
+          <div id="today-done" class="done-line hidden"></div>
+        </section>
+        <div class="board-side">
+          <section class="bcard" id="card-home">
+            <h2>家里 <span id="home-note"></span></h2>
+            <div id="home-list"></div>
+          </section>
+          <section class="bcard" id="card-recent">
+            <h2>最近</h2>
+            <div id="recent-list"></div>
+          </section>
+        </div>
       </div>
     </section>
 
@@ -478,7 +741,28 @@ html, body {
 
     <section id="view-settings" class="view">
       <div class="view-inner">
-        <h2 class="view-title">系统配置</h2>
+        <h2 class="view-title">设置</h2>
+
+        <div class="section-title">外观</div>
+        <div class="card">
+          <div class="muted">主题、背景只存在这台设备上，不影响别人看到的。</div>
+          <div class="theme-grid" id="theme-grid">
+            <button class="theme-chip" data-theme="warm" type="button"><span class="swatch" style="background:#faf4ea"></span>暖米</button>
+            <button class="theme-chip" data-theme="clay" type="button"><span class="swatch" style="background:#f7e3d5"></span>陶土</button>
+            <button class="theme-chip" data-theme="sage" type="button"><span class="swatch" style="background:#eef2e8"></span>鼠尾草</button>
+            <button class="theme-chip" data-theme="night" type="button"><span class="swatch" style="background:#2b211d"></span>暖深</button>
+          </div>
+          <div class="kvline" style="margin-top:10px">
+            <span class="k">19:00 后自动切暖深</span>
+            <input type="checkbox" id="theme-auto">
+          </div>
+          <div class="bg-grid" id="bg-grid">
+            <button class="bg-chip" data-bg="paper" type="button"><span class="paper" style="background:#faf4ea"></span>纯色纸底</button>
+            <button class="bg-chip" data-bg="dawn" type="button"><span class="paper" style="background:linear-gradient(160deg,#fdf8f0,#f8e3cd 60%,#efd3b6)"></span>晨光渐变</button>
+          </div>
+        </div>
+
+        <div class="section-title">系统配置</div>
         <div id="settings-summary" class="muted"></div>
         <div class="row-actions">
           <button id="token-change" class="small-btn" type="button">修改访问 Token</button>
@@ -507,6 +791,59 @@ html, body {
       </div>
     </section>
   </main>
+
+  <div id="dock">
+    <button id="dock-mic" type="button"><span class="dot"></span>按住说话</button>
+    <button id="dock-chat" type="button" aria-label="打开聊天" title="聊天">
+      <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3v-6.5A8 8 0 1 1 21 12z"/></svg>
+    </button>
+  </div>
+
+  <nav id="tabs">
+    <button class="tab active" data-tab="board" type="button">看板</button>
+    <button class="tab" data-tab="overview" type="button">概览</button>
+    <button class="tab" data-tab="data" type="button">数据</button>
+    <button class="tab" data-tab="settings" type="button">设置</button>
+  </nav>
+</div>
+
+<div id="chat-sheet">
+  <div class="sheet-inner">
+    <div class="sheet-head">
+      <button id="chat-back" type="button">‹ 看板</button>
+      <span class="sheet-title">小马</span>
+      <button id="chat-jump" type="button" title="跳到最新">↓</button>
+    </div>
+    <div id="messages"></div>
+    <div id="task-chip" class="hidden">
+      <span class="chip-label"></span>
+      <button type="button" aria-label="取消任务绑定">✕</button>
+    </div>
+    <div id="file-chip" class="hidden">
+      <span class="chip-label"></span>
+      <button type="button" aria-label="取消文件">✕</button>
+    </div>
+    <div id="input-area">
+      <button id="record-btn" aria-label="按住说话">
+        <span id="record-label">按住说话</span>
+        🎤
+      </button>
+      <input id="file-input" type="file" class="hidden"
+             accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.gif,.bmp,.webp,.doc,.docx,.xls,.xlsx,.ppt,.pptx">
+      <button id="attach-btn" type="button" aria-label="上传文件打印" title="上传文件打印">📎</button>
+      <input id="text-input" type="text" placeholder="打字跟小马说话…" autocomplete="off">
+      <button id="send-btn">发送</button>
+    </div>
+  </div>
+</div>
+
+<div id="reminder-banner" class="hidden">
+  <div class="rb-text"></div>
+  <div class="rb-acts">
+    <button data-act="complete" class="primary" type="button">办好了</button>
+    <button data-act="postpone" type="button">挪明天</button>
+    <button data-act="close" type="button">先不管</button>
+  </div>
 </div>
 
 <div id="modal" class="modal hidden">
@@ -595,6 +932,28 @@ html, body {
   var settingsSummary = document.getElementById('settings-summary');
   var settingsMsg = document.getElementById('settings-msg');
   var currentDataKind = 'memories';
+
+  // 看板 / 聊天浮层 / 外观（D82）
+  var clockEl    = document.getElementById('clock');
+  var daylineEl  = document.getElementById('dayline');
+  var wxBtn      = document.getElementById('wx-btn');
+  var wxPop      = document.getElementById('wx-pop');
+  var todayList  = document.getElementById('today-list');
+  var todayCount = document.getElementById('today-count');
+  var todayDone  = document.getElementById('today-done');
+  var todayMore  = document.getElementById('today-more');
+  var homeList   = document.getElementById('home-list');
+  var homeNote   = document.getElementById('home-note');
+  var recentList = document.getElementById('recent-list');
+  var chatSheet  = document.getElementById('chat-sheet');
+  var chatBack   = document.getElementById('chat-back');
+  var chatJump   = document.getElementById('chat-jump');
+  var dockMic    = document.getElementById('dock-mic');
+  var dockChat   = document.getElementById('dock-chat');
+  var reminderBanner = document.getElementById('reminder-banner');
+  var themeGrid  = document.getElementById('theme-grid');
+  var themeAuto  = document.getElementById('theme-auto');
+  var bgGrid     = document.getElementById('bg-grid');
 
   // ---- iOS 主屏模式视口自愈 ----
   // iOS 26 standalone 下，键盘弹出过一次之后视口会永久缩水
@@ -856,10 +1215,391 @@ html, body {
     views.forEach(function(view) {
       view.classList.toggle('active', view.id === 'view-' + name);
     });
+    if (name === 'board') loadBoard(false);
     if (name === 'overview') loadOverview();
     if (name === 'data') loadData(currentDataKind);
-    if (name === 'settings') loadConfig();
-    if (name === 'chat') setTimeout(scrollBottom, 0);
+    if (name === 'settings') { loadConfig(); applyAppearance(); }
+  }
+
+  // ================= 看板（D82） =================
+  // 聊天从「主界面」变成浮层：看板是稳态（今天要办什么、家里什么状态），
+  // 聊天是瞬时动作。点气泡或按住说话才把它叫出来。
+
+  var boardData = null;
+  var boardWeather = null;
+  var BOARD_REFRESH_MS = 60000;
+
+  function two(n) { return (n < 10 ? '0' : '') + n; }
+
+  function tickClock() {
+    var now = new Date();
+    if (clockEl) clockEl.textContent = two(now.getHours()) + ':' + two(now.getMinutes());
+    if (daylineEl) {
+      var week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
+      daylineEl.textContent = (now.getMonth() + 1) + '月' + now.getDate() + '日 ' + week + ' · 小马';
+    }
+  }
+
+  // ---- 外观：主题 / 背景都存本机 ----
+  var THEME_KEY = 'hx_theme';
+  var BG_KEY = 'hx_bg';
+  var AUTO_NIGHT_KEY = 'hx_auto_night';
+  var THEMES = ['warm', 'clay', 'sage', 'night'];
+
+  function savedTheme() {
+    var value = localStorage.getItem(THEME_KEY);
+    return THEMES.indexOf(value) >= 0 ? value : 'warm';
+  }
+
+  function autoNightOn() {
+    // 默认不自动切：用户选了暖米就该一直是暖米，想晚上变暗自己去设置里勾
+    return localStorage.getItem(AUTO_NIGHT_KEY) === '1';
+  }
+
+  function effectiveTheme() {
+    var hour = new Date().getHours();
+    if (autoNightOn() && (hour >= 19 || hour < 7)) return 'night';
+    return savedTheme();
+  }
+
+  function applyAppearance() {
+    document.body.setAttribute('data-theme', effectiveTheme());
+    document.body.setAttribute('data-bg', localStorage.getItem(BG_KEY) || 'dawn');
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      meta.setAttribute('content', getComputedStyle(document.body).backgroundColor || '#faf4ea');
+    }
+    document.querySelectorAll('.theme-chip').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-theme') === savedTheme());
+    });
+    document.querySelectorAll('.bg-chip').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-bg') === (localStorage.getItem(BG_KEY) || 'dawn'));
+    });
+    if (themeAuto) themeAuto.checked = autoNightOn();
+  }
+
+  // ---- 今天：到期任务 + 过期物品 ----
+  function daysLeftText(left) {
+    if (left === null || left === undefined) return '';
+    if (left === 0) return '今天到期';
+    if (left < 0) return '逾期 ' + (-left) + ' 天';
+    return '还有 ' + left + ' 天';
+  }
+
+  function whenText(due, left) {
+    if (left < 0) return { text: '逾期', warn: true };
+    var match = /T(\d{2}):(\d{2})/.exec(due || '');
+    if (match && (match[1] !== '00' || match[2] !== '00')) {
+      return { text: match[1] + ':' + match[2], warn: false };
+    }
+    return { text: '今天', warn: false };
+  }
+
+  function taskRow(task) {
+    var when = whenText(task.due_at, task.days_left);
+    var meta = daysLeftText(task.days_left);
+    if (task.mode === 'soft') meta += ' · 聊天时顺口提';
+    if (task.recur) meta += ' · ' + task.recur;
+    return '<div class="brow">' +
+      '<div class="bwhen' + (when.warn ? ' warn' : '') + '">' + esc(when.text) + '</div>' +
+      '<div class="bbody">' +
+        '<div class="btitle">' + esc(task.title) + '</div>' +
+        '<div class="bmeta' + (task.days_left < 0 ? ' warn' : '') + '">' + esc(meta) + '</div>' +
+        '<div class="bacts">' +
+          '<button class="primary" data-act="task-complete" data-id="' + esc(task.id) + '" type="button">办好了</button>' +
+          '<button data-act="task-postpone" data-id="' + esc(task.id) + '" type="button">挪明天</button>' +
+          '<button data-act="task-cancel" data-id="' + esc(task.id) + '" type="button">不用了</button>' +
+        '</div>' +
+      '</div></div>';
+  }
+
+  function itemRow(item) {
+    var when = item.days_left < 0 ? { text: '过期', warn: true } : { text: '今天', warn: false };
+    return '<div class="brow">' +
+      '<div class="bwhen' + (when.warn ? ' warn' : '') + '">' + when.text + '</div>' +
+      '<div class="bbody">' +
+        '<div class="btitle">' + esc(item.name) + '</div>' +
+        '<div class="bmeta' + (item.days_left < 0 ? ' warn' : '') + '">' +
+          esc(item.expiry_date || '') + ' · ' + esc(daysLeftText(item.days_left)) + '</div>' +
+        '<div class="bacts">' +
+          '<button data-act="item-delete" data-id="' + esc(item.id) + '" type="button">扔了</button>' +
+        '</div>' +
+      '</div></div>';
+  }
+
+  function renderToday(board) {
+    var today = board.today || {};
+    var tasks = today.tasks || [];
+    var items = today.items || [];
+    var overdue = 0;
+    tasks.forEach(function(t) { if (t.days_left < 0) overdue++; });
+    items.forEach(function(i) { if (i.days_left < 0) overdue++; });
+
+    todayCount.textContent = (tasks.length + items.length) + ' 件' +
+      (overdue ? ' · ' + overdue + ' 过期' : '');
+    if (!tasks.length && !items.length) {
+      todayList.innerHTML = '<div class="bempty">今天没什么事。有事直接按住说话。</div>';
+    } else {
+      todayList.innerHTML = tasks.map(taskRow).join('') + items.map(itemRow).join('');
+    }
+
+    var done = today.done || [];
+    if (done.length) {
+      todayDone.classList.remove('hidden');
+      todayDone.textContent = '已办 ' + done.length + ' 件 · ' +
+        done.slice(0, 3).map(function(t) { return t.title; }).join('、');
+    } else {
+      todayDone.classList.add('hidden');
+    }
+    // 卡片高度是限死的：条目多时提示还能往下滑，滑到底就收起来
+    setTimeout(updateTodayHint, 0);
+  }
+
+  // 只在「确实还有内容没露出来」时提示，条数少的时候不出现多余的字
+  function updateTodayHint() {
+    if (!todayMore) return;
+    var scrollable = todayList.scrollHeight - todayList.clientHeight > 4;
+    var atBottom = todayList.scrollTop + todayList.clientHeight >= todayList.scrollHeight - 4;
+    todayMore.classList.toggle('hidden', !scrollable || atBottom);
+    todayList.classList.toggle('fading', scrollable && !atBottom);
+  }
+
+  // ---- 家里：门锁 / 室内 / 打印机，只放白名单设备 ----
+  function findDevice(devices, keyword) {
+    var hit = null;
+    devices.forEach(function(device) {
+      if (hit) return;
+      if ((device.name || '').indexOf(keyword) >= 0) hit = device;
+    });
+    return hit;
+  }
+
+  function printerLine(printer) {
+    if (!printer || printer.configured === false) return { text: '没配置', tone: '' };
+    if (printer.enabled === false) return { text: '已关闭', tone: '' };
+    if (printer.state === 'checking' || !printer.state) return { text: '检测中…', tone: '' };
+    if (!printer.available) return { text: '不可用' + (printer.error ? ' · ' + printer.error : ''), tone: 'warn' };
+    if (printer.state === 'printing') return { text: '正在打印' + (printer.jobs ? ' · 队列 ' + printer.jobs : ''), tone: 'ok' };
+    return { text: '就绪', tone: 'ok' };
+  }
+
+  function kvRow(label, value, tone) {
+    var tag = tone ? '<span class="tag ' + tone + '">' + esc(value) + '</span>'
+                   : '<span class="v">' + esc(value) + '</span>';
+    return '<div class="kvline"><span class="k">' + esc(label) + '</span>' + tag + '</div>';
+  }
+
+  function renderHome(board) {
+    var home = board.home || {};
+    var devices = home.devices || [];
+    var rows = [];
+    var attention = 0;
+
+    if (home.configured === false) {
+      rows.push('<div class="bempty">设备网关没配置（HOME_TOKEN），家里状态看不到</div>');
+    } else if (home.error) {
+      rows.push('<div class="bempty">' + esc(home.error) + '</div>');
+    } else {
+      var lock = findDevice(devices, '门锁状态') || findDevice(devices, '门锁');
+      var battery = findDevice(devices, '电量');
+      if (lock) {
+        var lockText = String(lock.state || '未知');
+        if (battery) lockText += ' · 电量 ' + battery.state + (battery.unit || '%');
+        var lockWarn = /未关|虚掩|unknown|unavailable/i.test(String(lock.state || ''));
+        if (lockWarn) attention++;
+        rows.push(kvRow('门锁', lockText, lockWarn ? 'warn' : ''));
+      }
+
+      var temp = findDevice(devices, '室内温度');
+      var humidity = findDevice(devices, '室内湿度');
+      if (temp) {
+        var indoor = temp.state + (temp.unit || '℃');
+        if (humidity) indoor += ' · 湿度 ' + humidity.state + (humidity.unit || '%');
+        // 灯不单独占行：全关或全离线时在室内这行末尾提一句就够
+        if (lightsAllOff(devices)) indoor += ' · 灯全关着';
+        rows.push(kvRow('室内', indoor, ''));
+      }
+
+      if (!rows.length) rows.push('<div class="bempty">还没配要看的设备（HOME_DEVICES）</div>');
+    }
+
+    var printer = printerLine(board.printer);
+    rows.push(kvRow('打印机', printer.text, printer.tone));
+
+    homeList.innerHTML = rows.join('');
+    homeNote.textContent = attention ? attention + ' 个要留意' : '';
+  }
+
+  // 「灯全关着」只看灯的开关状态：全关或全离线（读不到）都算没开灯。
+  // 有任意一盏开着就不说——灯不重要，别占地方。
+  function lightsAllOff(devices) {
+    var lights = devices.filter(function(device) {
+      return device.domain === 'light';
+    });
+    if (!lights.length) return false;
+    return lights.every(function(light) {
+      return /^(off|unavailable|unknown|关闭|关)$/i.test(String(light.state || '').trim());
+    });
+  }
+
+  // ---- 最近：最近的记忆 + 最近打印 ----
+  function shortWhen(text) {
+    var raw = String(text || '');
+    var match = /^(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}:\d{2})?/.exec(raw);
+    if (!match) return raw;
+    var now = new Date();
+    var today = Number(match[1]) === now.getFullYear() &&
+      Number(match[2]) === now.getMonth() + 1 && Number(match[3]) === now.getDate();
+    var clock = match[4] || '';
+    if (today) return clock ? '今天 ' + clock : '今天';
+    return match[2] + '月' + match[3] + '日' + (clock ? ' ' + clock : '');
+  }
+
+  function renderRecent(board) {
+    var recent = board.recent || {};
+    var rows = [];
+    (recent.memories || []).slice(0, 3).forEach(function(item) {
+      var text = item.text || '';
+      if (text.length > 26) text = text.slice(0, 26) + '…';
+      rows.push('<div class="kvline"><span class="k" style="flex:1;overflow-wrap:anywhere">' +
+        esc(text) + '</span><span class="v" style="flex:none">' + esc(shortWhen(item.time)) + '</span></div>');
+    });
+    // 打印记录在手机上只放一条：两条会把整页顶出 iPhone 12 的一屏
+    var compact = window.matchMedia('(max-width: 899px)').matches;
+    (recent.prints || []).slice(0, compact ? 1 : 2).forEach(function(job) {
+      var status = PRINT_STATUS_TEXT[job.status] || '';
+      rows.push('<div class="kvline"><span class="k" style="flex:1;overflow-wrap:anywhere">' +
+        esc(job.name) + ' · ' + esc(status) + '</span>' +
+        '<span class="v" style="flex:none">' + esc(fmtTime(job.created_at)) + '</span></div>');
+    });
+    if (!rows.length) rows.push('<div class="bempty">还没有记录。</div>');
+    recentList.innerHTML = rows.join('');
+  }
+
+  // ---- 天气：顶栏一行，点开三天 ----
+  var WX_ICONS = {
+    sun: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>',
+    cloud: '<svg viewBox="0 0 24 24"><path d="M6 18h11a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.2 9.2 4.4 4.4 0 0 0 6 18z"/></svg>',
+    rain: '<svg viewBox="0 0 24 24"><path d="M6 15h11a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.2 6.2 4.4 4.4 0 0 0 6 15z"/><path d="M8 18l-1 3M12 18l-1 3M16 18l-1 3"/></svg>'
+  };
+
+  function wxIcon(sky) {
+    var text = String(sky || '');
+    if (/雨|雪|雷/.test(text)) return WX_ICONS.rain;
+    if (/云|阴|雾|霾/.test(text)) return WX_ICONS.cloud;
+    return WX_ICONS.sun;
+  }
+
+  function dayLabel(date, index) {
+    if (index === 0) return '今天';
+    if (index === 1) return '明天';
+    if (index === 2) return '后天';
+    return (date || '').slice(5);
+  }
+
+  function renderWeather(weather) {
+    boardWeather = weather;
+    if (!weather || !weather.ok || !weather.now) {
+      wxBtn.classList.add('hidden');
+      wxPop.classList.add('hidden');
+      return;
+    }
+    var now = weather.now;
+    var today = (weather.days || [])[0] || {};
+    var range = '';
+    if (today.high != null && today.low != null) range = today.low + '° ~ ' + today.high + '°';
+    var feels = now.feels != null ? '体感 ' + now.feels + '°' : '';
+    var rain = '';
+    if (today.pop != null) rain = '降水 ' + today.pop + '%';
+    else if (today.precip_mm != null) rain = '降水 ' + today.precip_mm + ' 毫米';
+    var wind = [now.wind_dir, now.wind_level].filter(Boolean).join(' ');
+    var skyLine = [now.sky || '', feels].filter(Boolean).join(' · ');
+    var rangeLine = [range, rain].filter(Boolean).join(' · ');
+
+    wxBtn.classList.remove('hidden');
+    wxBtn.innerHTML = '<span class="wx-now">' + wxIcon(now.sky) +
+      '<span class="wx-temp">' + esc(now.temp != null ? now.temp + '°' : '') + '</span></span>' +
+      '<span class="wx-sky">' + esc(skyLine) + '</span>' +
+      (rangeLine ? '<span class="wx-range">' + esc(rangeLine) + '</span>' : '') +
+      (wind ? '<span class="wx-wind">' + esc(wind) + '</span>' : '');
+
+    var days = (weather.days || []).slice(0, 3).map(function(day, index) {
+      var rain = '';
+      if (day.pop != null) rain = '降水 ' + day.pop + '%';
+      else if (day.precip_mm) rain = '降水 ' + day.precip_mm + ' 毫米';
+      return '<div class="wx-day"><b>' + esc(dayLabel(day.date, index)) + '</b>' +
+        esc(day.sky || '') + ' <span class="hi">' + esc(day.high != null ? day.high + '°' : '') + '</span>' +
+        (day.low != null ? ' / ' + esc(day.low + '°') : '') +
+        (rain ? '<br>' + esc(rain) : '') + '</div>';
+    }).join('');
+    wxPop.innerHTML = '<div class="wx-head"><span>' + esc(weather.city || '') +
+      ' · 更新 ' + esc(String(now.updated_at || '').slice(11, 16)) + '</span><span>点外面收起</span></div>' +
+      '<div class="wx-days">' + days + '</div>';
+  }
+
+  function loadBoard(force) {
+    return apiFetch('/api/board' + (force ? '?refresh=1' : '')).then(function(data) {
+      if (!data || !data.ok) return;
+      boardData = data;
+      renderToday(data);
+      renderHome(data);
+      renderRecent(data);
+      renderWeather(data.weather);
+    }).catch(function(err) {
+      if (!boardData) {
+        todayList.innerHTML = '<div class="bempty">看板加载失败：' +
+          esc(requestErrorText(err)) + '</div>';
+      }
+    });
+  }
+
+  // 看板上的动作：落库后带 refresh=1 重取，跳过服务端 30 秒缓存
+  function boardAction(url, options) {
+    return apiFetch(url, options).then(function() {
+      loadBoard(true);
+    }).catch(function(err) {
+      showReminderBanner({ text: '操作没成功：' + requestErrorText(err) }, true);
+    });
+  }
+
+  // ---- 聊天浮层 ----
+  function openChat(focus) {
+    chatSheet.classList.add('open');
+    setTimeout(function() { scrollBottom(); }, 30);
+    // 按住说话时不要把焦点塞给输入框，不然手机键盘会弹出来挡着录音
+    if (focus !== false) {
+      setTimeout(function() { try { textInput.focus(); } catch (e) {} }, 220);
+    }
+  }
+
+  function closeChat() {
+    chatSheet.classList.remove('open');
+    textInput.blur();
+  }
+
+  // ---- 提醒浮条：不切到聊天也能处理 ----
+  var reminderState = null;
+  var reminderTimer = null;
+
+  function showReminderBanner(ev, sticky) {
+    reminderState = ev || null;
+    reminderBanner.querySelector('.rb-text').textContent = (ev && ev.text) || '有件事要处理';
+    var acts = reminderBanner.querySelectorAll('.rb-acts button');
+    var hasTask = !!(ev && ev.task && ev.task.id);
+    reminderBanner.querySelector('[data-act="complete"]').classList.toggle('hidden', !hasTask);
+    reminderBanner.querySelector('[data-act="postpone"]').classList.toggle('hidden', !hasTask);
+    reminderBanner.classList.remove('hidden');
+    if (reminderTimer) clearTimeout(reminderTimer);
+    if (!sticky) {
+      reminderTimer = setTimeout(function() { reminderBanner.classList.add('hidden'); }, 90000);
+    }
+    return acts;
+  }
+
+  function hideReminderBanner() {
+    reminderBanner.classList.add('hidden');
+    reminderState = null;
+    if (reminderTimer) clearTimeout(reminderTimer);
   }
 
   function loadOverview() {
@@ -1594,6 +2334,120 @@ html, body {
     });
   });
 
+  // ---- 看板：动作按钮 ----
+  todayList.addEventListener('scroll', updateTodayHint);
+  window.addEventListener('resize', function() {
+    updateTodayHint();
+    if (boardData) renderRecent(boardData);   // 宽窄切换时打印条数跟着变
+  });
+  todayList.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('button[data-act]') : null;
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    var id = btn.getAttribute('data-id');
+    if (act === 'task-complete') {
+      btn.disabled = true;
+      boardAction('/api/tasks/' + encodeURIComponent(id) + '/complete', { method: 'POST' });
+    } else if (act === 'task-postpone') {
+      btn.disabled = true;
+      boardAction('/api/tasks/' + encodeURIComponent(id) + '/postpone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset: 'tomorrow' })
+      });
+    } else if (act === 'task-cancel') {
+      if (!confirm('取消后这个提醒不再响，确定吗？')) return;
+      btn.disabled = true;
+      boardAction('/api/tasks/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
+    } else if (act === 'item-delete') {
+      if (!confirm('删掉这条物品记录？')) return;
+      btn.disabled = true;
+      boardAction('/api/items/' + encodeURIComponent(id) + '?confirm=true', { method: 'DELETE' });
+    }
+  });
+
+  // ---- 天气弹层：点外面收起 ----
+  wxBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    if (!boardWeather || !boardWeather.ok) return;
+    wxPop.classList.toggle('hidden');
+  });
+  document.addEventListener('click', function(e) {
+    if (wxPop.classList.contains('hidden')) return;
+    if (wxPop.contains(e.target) || wxBtn.contains(e.target)) return;
+    wxPop.classList.add('hidden');
+  });
+
+  // ---- 聊天浮层 ----
+  dockChat.addEventListener('click', openChat);
+  chatBack.addEventListener('click', closeChat);
+  chatJump.addEventListener('click', scrollBottom);
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    closeChat();
+    wxPop.classList.add('hidden');
+    hideReminderBanner();
+  });
+
+  // 看板上按住说话：先开浮层（回答要看得见），再沿用聊天里的录音逻辑
+  function dockStart(e) {
+    e.preventDefault();
+    openChat(false);
+    dockMic.classList.add('recording');
+    startRecord();
+  }
+  function dockStop() {
+    if (!recording && !recPending) return;
+    dockMic.classList.remove('recording');
+    stopAndSend();
+  }
+  dockMic.addEventListener('pointerdown', dockStart);
+  dockMic.addEventListener('pointerup', dockStop);
+  dockMic.addEventListener('pointercancel', dockStop);
+  dockMic.addEventListener('pointerleave', dockStop);
+  dockMic.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+  // ---- 提醒浮条：不切到聊天也能处理 ----
+  reminderBanner.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('button[data-act]') : null;
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    if (act === 'close') { hideReminderBanner(); return; }
+    var task = reminderState && reminderState.task;
+    if (!task || !task.id) { hideReminderBanner(); return; }
+    var init = { method: 'POST' };
+    var url = '/api/tasks/' + encodeURIComponent(task.id) + '/complete';
+    if (act === 'postpone') {
+      url = '/api/tasks/' + encodeURIComponent(task.id) + '/postpone';
+      init.headers = { 'Content-Type': 'application/json' };
+      init.body = JSON.stringify({ preset: 'tomorrow' });
+    }
+    apiFetch(url, init).then(function() {
+      hideReminderBanner();
+      loadBoard(true);
+    }).catch(function(err) {
+      showReminderBanner({ text: '没操作成功：' + requestErrorText(err) }, true);
+    });
+  });
+
+  // ---- 外观 ----
+  themeGrid.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('button[data-theme]') : null;
+    if (!btn) return;
+    localStorage.setItem(THEME_KEY, btn.getAttribute('data-theme'));
+    applyAppearance();
+  });
+  bgGrid.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('button[data-bg]') : null;
+    if (!btn) return;
+    localStorage.setItem(BG_KEY, btn.getAttribute('data-bg'));
+    applyAppearance();
+  });
+  themeAuto.addEventListener('change', function() {
+    localStorage.setItem(AUTO_NIGHT_KEY, themeAuto.checked ? '1' : '0');
+    applyAppearance();
+  });
+
   dataTabs.addEventListener('click', function(e) {
     var btn = e.target.closest ? e.target.closest('button[data-kind]') : null;
     if (btn) loadData(btn.getAttribute('data-kind'), true);
@@ -1734,39 +2588,35 @@ html, body {
       })
       .then(function(d) {
         if (d.ok) {
-          var txt = '🟢 服务正常 · 记忆 ' + (d.memory_count != null ? d.memory_count : '?') + ' 条';
+          var txt = '服务正常 · 记忆 ' + (d.memory_count != null ? d.memory_count : '?') + ' 条';
           if (d.item_count != null) txt += ' · 物品 ' + d.item_count + ' 件';
           if (d.task_count != null) txt += ' · 任务 ' + d.task_count + ' 个';
           statusEl.textContent = txt;
-          // 到期物品 / 任务提醒
-          var due = [];
-          (d.due_items || []).forEach(function(it) {
-            due.push(it.name + '（' + (it.days_left < 0 ? '已过期' + (-it.days_left) + '天' : '剩' + it.days_left + '天') + '）');
-          });
-          (d.due_tasks || []).forEach(function(task) {
-            due.push(task.title + '（' + (task.days_left < 0 ? '已过期' + (-task.days_left) + '天' : '剩' + task.days_left + '天') + '）');
-          });
-          if (due.length > 0) {
-            statusEl.textContent += ' ⏰ ' + due.join('、');
+          statusEl.setAttribute('data-ok', '1');
+          // 到期的具体事项由看板「今天」那张卡负责，这里不再重复念一遍
+          if (document.getElementById('view-board').classList.contains('active')) {
+            loadBoard(false);
           }
           if (document.getElementById('view-overview').classList.contains('active')) {
             loadOverview();
           }
-          // 认证通过后把 token 输入区收起来，别一直占着顶部
-          if (apiToken) hideTokenRow();
+          // 认证通过（或服务端本来就不要 token）就把输入区收起来，别一直占着顶部
+          hideTokenRow();
         } else {
-          statusEl.textContent = '🔴 服务异常';
+          statusEl.textContent = '服务异常';
+          statusEl.removeAttribute('data-ok');
         }
       })
       .catch(function(err) {
         if (err && err.message === '401') {
           statusEl.textContent = apiToken
-            ? '🔒 Token 已失效，请重新输入'
-            : '🔒 请输入 API Token';
+            ? 'Token 已失效，请重新输入'
+            : '请输入 API Token';
           showTokenRow();
         } else {
-          statusEl.textContent = '🔴 服务连接失败';
+          statusEl.textContent = '服务连接失败';
         }
+        statusEl.removeAttribute('data-ok');
       });
   }
   pollStatus();
@@ -1829,7 +2679,13 @@ html, body {
     if (ev.audio) {
       try { new Audio('data:audio/mp3;base64,' + ev.audio).play().catch(function() {}); } catch (e) {}
     }
-    pollStatus();  // 刷新状态栏到期列表
+    // 看板是默认页：提醒到了先刷新它，并在顶部浮一条（不强制把人拉进聊天）
+    loadBoard(true);
+    showReminderBanner({
+      text: ev.reply || _taskReminderText(ev.task || {}),
+      task: ev.task || null
+    }, false);
+    pollStatus();  // 刷新状态行
     if (document.getElementById('view-overview').classList.contains('active')) {
       loadOverview();
     }
@@ -2046,7 +2902,7 @@ html, body {
   }
 
   (function bindDebugTap() {
-    var title = document.querySelector('#status-bar h1');
+    var title = document.getElementById('clock');
     if (!title) return;
     var taps = 0;
     var timer = null;
@@ -2057,6 +2913,25 @@ html, body {
       if (taps >= 3) { taps = 0; toggleDebugPanel(); }
     });
   })();
+
+  // ---- 看板启动 ----
+  tickClock();
+  applyAppearance();
+  loadBoard(false);
+  setInterval(tickClock, 15000);
+  setInterval(function() {
+    applyAppearance();   // 19:00 到点自动切暖深，不用刷新页面
+    if (document.getElementById('view-board').classList.contains('active')) {
+      loadBoard(false);
+    }
+  }, BOARD_REFRESH_MS);
+  // 从别的页面切回前台时补一次，手机锁屏后计时器会被节流
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState !== 'visible') return;
+    tickClock();
+    applyAppearance();
+    loadBoard(false);
+  });
 
   // ---- 历史记录 / 欢迎语 ----
   if (chatHistory.length) {
@@ -2079,6 +2954,8 @@ html, body {
       if (window.history && history.replaceState) {
         history.replaceState(null, '', window.location.pathname);
       }
+      // 从通知点进来：直接把那条提醒摆在聊天里（看板背面的浮条也会有一份）
+      openChat();
     });
   }
 

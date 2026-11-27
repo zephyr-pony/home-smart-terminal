@@ -3,7 +3,8 @@ import json
 import logging
 import time
 import wave
-from datetime import datetime
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1672,3 +1673,102 @@ def test_redaction_filter_is_installed_on_both_loggers():
     for name in ("uvicorn.access", "uvicorn.error"):
         filters = logging.getLogger(name).filters
         assert any(isinstance(f, server._TokenRedactingFilter) for f in filters), name
+
+
+# ---------- 网页看板（D82） ----------
+
+
+class _FakeHome:
+    def __init__(self, devices):
+        self._devices = devices
+
+    def snapshot(self):
+        return {"configured": True, "devices": self._devices}
+
+
+class _BoardAssistant:
+    """只够看板用的一小撮实现：真库 + 假设备/打印机。"""
+
+    def __init__(self):
+        self.tasks = Tasks(":memory:")
+        self.items = Items(":memory:")
+        self.memory = Memory(":memory:")
+        self.home = _FakeHome([
+            {"entity_id": "sensor.door_state", "name": "门锁状态",
+             "state": "已上锁", "unit": "", "domain": "sensor"},
+        ])
+
+    def printer_status(self):
+        return {"configured": True, "state": "idle"}
+
+
+def _board_space(assistant_obj):
+    return SimpleNamespace(id="default", assistant=assistant_obj, dir=".", print_store=None)
+
+
+
+def test_board_collects_today_only(monkeypatch):
+    monkeypatch.setattr(server, "_board_cache", {})
+    monkeypatch.setattr(server, "_weather_cache", {"at": 0.0, "data": None})
+    assistant_obj = _BoardAssistant()
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    assistant_obj.tasks.add("交物业费", due_at=today.isoformat(), mode="soft")
+    assistant_obj.tasks.add("下周体检", due_at=(today + timedelta(days=7)).isoformat())
+    assistant_obj.items.add("牛奶", expiry_date=(today - timedelta(days=1)).strftime("%Y-%m-%d"))
+    assistant_obj.memory.store("酸奶 8月5号过期")
+
+    board = server._board_sync(_board_space(assistant_obj))
+
+    assert board["ok"] is True
+    titles = [task["title"] for task in board["today"]["tasks"]]
+    assert "交物业费" in titles
+    assert "下周体检" not in titles          # 未来的不该占「今天」
+    assert board["today"]["tasks"][0]["mode"] == "soft"
+    assert board["today"]["items"][0]["name"] == "牛奶"
+    assert board["home"]["devices"][0]["name"] == "门锁状态"
+    assert board["printer"]["state"] == "idle"
+    assert board["recent"]["memories"][0]["text"]
+
+
+def test_board_cache_can_be_bypassed_after_an_action(monkeypatch):
+    monkeypatch.setattr(server, "_board_cache", {})
+    monkeypatch.setattr(server, "_weather_cache", {"at": 0.0, "data": None})
+    assistant_obj = _BoardAssistant()
+    space = _board_space(assistant_obj)
+    first = server._board_sync(space)
+
+    assistant_obj.tasks.add("新任务", due_at=datetime.now().isoformat())
+    assert server._board_sync(space) is first      # 30 秒内直接吃缓存
+
+    refreshed = server._board_sync(space, force=True)
+    assert refreshed is not first
+    assert any(task["title"] == "新任务" for task in refreshed["today"]["tasks"])
+
+
+def test_board_endpoint_returns_payload(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    monkeypatch.setattr(server, "_board_cache", {})
+    monkeypatch.setattr(server, "assistant", _BoardAssistant())
+    client = TestClient(server.app)
+
+    response = client.get("/api/board?refresh=1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True and "today" in body
+
+
+def test_weather_endpoint_reports_unconfigured(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    monkeypatch.setattr(server, "_weather_cache", {"at": 0.0, "data": None})
+
+    class _NoWeather:
+        weather = None
+
+    monkeypatch.setattr(server, "assistant", _NoWeather())
+    client = TestClient(server.app)
+
+    body = client.get("/api/weather").json()
+
+    assert body["ok"] is False
+    assert body["error"]

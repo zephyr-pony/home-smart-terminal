@@ -443,6 +443,142 @@ def _stats_sync(space=None):
     }
 
 
+# ---------- 网页看板（D82）----------
+#
+# 看板是「一直开着」的页面，手机/平板每 60 秒问一次。所以：
+# - 一次请求拿全（今天要办的、家里、最近、天气），别让页面打四五个接口；
+# - 服务端各给一道缓存：看板 30 秒，天气 10 分钟（上游按小时更新，问太勤没意义）；
+# - 用户在看板上点了「办了/明天」，前端带 refresh=1 跳过缓存，看到的就是刚落的库。
+
+BOARD_CACHE_SECONDS = 30
+WEATHER_CACHE_SECONDS = 600
+
+_weather_cache = {"at": 0.0, "data": None}
+_weather_lock = threading.Lock()
+_board_cache = {}
+_board_lock = threading.Lock()
+
+
+def _weather_snapshot(force=False):
+    """天气快照（结构化）。失败也缓存 60 秒，别让页面每个请求都去打上游。"""
+    now = time.time()
+    with _weather_lock:
+        cached = _weather_cache["data"]
+        if cached is not None:
+            age = now - _weather_cache["at"]
+            if not force and age < (60 if not cached.get("ok") else WEATHER_CACHE_SECONDS):
+                return cached
+    weather = getattr(assistant, "weather", None)
+    if weather is None:
+        data = {"ok": False, "error": "天气服务还没配置"}
+    else:
+        data = weather.snapshot()
+    with _weather_lock:
+        _weather_cache["data"] = data
+        _weather_cache["at"] = time.time()
+    return data
+
+
+def _home_snapshot(assistant_obj):
+    home = getattr(assistant_obj, "home", None)
+    snapshot = getattr(home, "snapshot", None)
+    if not callable(snapshot):
+        return {"configured": False, "devices": []}
+    try:
+        return snapshot()
+    except Exception as exc:
+        print("⚠️ 设备快照读取失败：%s" % exc)
+        return {"configured": False, "devices": [], "error": "设备读数暂时拿不到"}
+
+
+def _board_sync(space, force=False):
+    """看板数据：今天要办的 + 家里 + 最近 + 天气。"""
+    now = datetime.now()
+    if not force:
+        with _board_lock:
+            cached = _board_cache.get(space.id)
+        if cached and (time.time() - cached["at"]) < BOARD_CACHE_SECONDS:
+            return cached["data"]
+
+    assistant_obj = space.assistant
+    due_tasks = assistant_obj.tasks.get_due(days=0)
+    due_items = assistant_obj.items.get_due(days=0)
+
+    # 今天已经办掉的：看板折叠成一行「已办 N 件」，不然办完就消失像没发生过
+    done_today = []
+    try:
+        stamp = now.strftime("%Y-%m-%d")
+        for row in assistant_obj.tasks.list_all("done"):
+            if str(row.get("completed_at") or "")[:10] == stamp:
+                done_today.append({"id": row.get("id"), "title": row.get("title") or ""})
+    except Exception as exc:
+        print("⚠️ 今天已办任务读取失败：%s" % exc)
+
+    recent_memories = []
+    try:
+        for row in assistant_obj.memory.list_all(4):
+            recent_memories.append({
+                "id": row.get("id"),
+                "text": row.get("summary") or row.get("text") or "",
+                "time": row.get("time") or "",
+            })
+    except Exception as exc:
+        print("⚠️ 最近记忆读取失败：%s" % exc)
+
+    recent_prints = []
+    store = space.print_store
+    if store is not None:
+        try:
+            rows, _total = store.list("", "", 3, 0)
+            for row in rows:
+                recent_prints.append({
+                    "id": row.get("id"),
+                    "name": row.get("name") or "文件",
+                    "status": row.get("status") or "",
+                    "copies": row.get("copies") or 1,
+                    "created_at": row.get("created_at"),
+                })
+        except Exception as exc:
+            print("⚠️ 最近打印读取失败：%s" % exc)
+
+    data = {
+        "ok": True,
+        "space_id": space.id,
+        "at": now.isoformat(timespec="seconds"),
+        "today": {
+            "tasks": [
+                {
+                    "id": task.get("id"),
+                    "title": task.get("title") or "",
+                    "type": task.get("type") or "custom",
+                    "mode": task.get("mode") or "timely",
+                    "recur": task.get("recur") or "",
+                    "due_at": task.get("due_at") or "",
+                    "days_left": task.get("days_left"),
+                }
+                for task in due_tasks
+            ],
+            "items": [
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name") or "",
+                    "expiry_date": item.get("expiry_date") or "",
+                    "days_left": item.get("days_left"),
+                }
+                for item in due_items
+            ],
+            "done": done_today[:5],
+        },
+        "home": _home_snapshot(assistant_obj),
+        "printer": assistant_obj.printer_status() if hasattr(assistant_obj, "printer_status") else {},
+        "recent": {"memories": recent_memories, "prints": recent_prints},
+        "weather": _weather_snapshot(),
+    }
+    with _board_lock:
+        _board_cache[space.id] = {"at": time.time(), "data": data}
+    return data
+
+
 def _audio_duration(path, ext):
     if ext != ".wav":
         raise ValueError("当前服务端只支持 WAV 音频的时长校验")
@@ -1458,6 +1594,22 @@ async def api_stats(space: Space = Depends(current_space),
     data["ok"] = True
     data["space_id"] = space.id
     return data
+
+
+@app.get("/api/board")
+async def api_board(refresh: int = 0, space: Space = Depends(current_space),
+                    _auth=Depends(require_api_token)):
+    """网页看板的一次性数据源（D82）。
+
+    `refresh=1` 跳过 30 秒缓存：看板上点了「办了/明天」之后要立刻看到变化。
+    """
+    return await asyncio.to_thread(_board_sync, space, bool(refresh))
+
+
+@app.get("/api/weather")
+async def api_weather(refresh: int = 0, _auth=Depends(require_api_token)):
+    """结构化天气（看板顶栏 + 三天预报弹层）。失败时 `ok=false`，前端整块隐藏。"""
+    return await asyncio.to_thread(_weather_snapshot, bool(refresh))
 
 
 @app.get("/api/thinking")

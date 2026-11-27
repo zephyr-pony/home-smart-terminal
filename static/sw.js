@@ -8,7 +8,7 @@
  * 策略：页面导航用「网络优先，失败回退缓存」；静态资源缓存优先；
  * /api/ 一律走网络，不缓存（数据实时性优先）。
  */
-var CACHE_NAME = 'xiaoma-shell-v5';
+var CACHE_NAME = 'xiaoma-shell-v6';
 var SHELL = [
   '/',
   '/manifest.json',
@@ -22,12 +22,12 @@ function offlinePage() {
   var html = '<!doctype html><meta charset="utf-8">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<title>小马连不上</title>'
-    + '<body style="margin:0;background:#1b1f2a;color:#e8ecf4;'
+    + '<body style="margin:0;background:#faf4ea;color:#332a24;'
     + 'font:16px/1.6 -apple-system,BlinkMacSystemFont,\'PingFang SC\',sans-serif;'
     + 'display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px">'
     + '<div style="max-width:22em">'
     + '<h1 style="font-size:18px;margin:0 0 12px">连不上小马</h1>'
-    + '<p style="color:#8b93a8;margin:0 0 18px">服务可能没启动，或者手机不在同一个网络里。</p>'
+    + '<p style="color:#8a7a6c;margin:0 0 18px">服务可能没启动，或者手机不在同一个网络里。</p>'
     + '<p style="color:#8b93a8;margin:0 0 18px">地址：'
     + self.location.origin + '</p>'
     + '<button onclick="location.reload()" style="padding:10px 18px;border:0;'

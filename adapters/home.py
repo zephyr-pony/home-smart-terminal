@@ -453,6 +453,35 @@ class HomeDevices:
                 hits.append(row)
         return hits
 
+    def snapshot(self, limit=14):
+        """结构化设备清单（看板用）：名字、状态、单位，不念句子。
+
+        看板要自己排版，不能解析 query() 的中文句子；这里只把白名单设备摊平。
+        读不到就给空表 + 一句原因，页面据此决定显示「未配置」还是报错。
+        """
+        if not self.configured:
+            return {"configured": False, "devices": []}
+        try:
+            devices = self._devices()
+        except HomeUnavailable as exc:
+            return {"configured": True, "error": str(exc), "devices": []}
+        except Exception as exc:  # 网络抖动之类，看板不该整块挂掉
+            print("⚠️ 设备快照失败：%s" % exc)
+            return {"configured": True, "error": "设备读数暂时拿不到", "devices": []}
+
+        rows = []
+        for row in devices[:limit]:
+            attrs = row.get("attributes") or {}
+            entity_id = row.get("entity_id") or ""
+            rows.append({
+                "entity_id": entity_id,
+                "name": attrs.get("friendly_name") or entity_id,
+                "state": row.get("state", ""),
+                "unit": attrs.get("unit_of_measurement") or "",
+                "domain": entity_id.split(".")[0],
+            })
+        return {"configured": True, "devices": rows}
+
     def query(self, keyword="", limit=None):
         """按名字找设备并带上状态。一次调用拿到「有没有」+「什么样」。"""
         if not self.configured:
