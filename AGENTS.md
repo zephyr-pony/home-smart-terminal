@@ -374,6 +374,16 @@ pytest tests -q
   到 `SOFT_REMINDER_LAST_CALL`（默认 20:30）还没机会说，才按原通道投递一次（晚间兜底）。
   soft 的兜底文案用 `SOFT_REMINDER_PROMPT`（像忽然想起来），失败或没说对名字仍回落模板。
   注入只在这一轮、不进会话历史；物品过期超过 7 天不再提（`SOFT_NOTE_ITEM_OVERDUE_DAYS`）。
+- **设备事件**（Home Assistant，`HOME_WATCH_EVENTS`）走 WS 秒级推送 + 15 秒轮询兜底，
+  去重靠 `home_alerts` 的 `last_value`。门锁事件用 `describe_lock_event()` 把 MIoT 数字码
+  翻成「妈妈用指纹开了门」「门从里面打开了」；`HOME_LOCK_USERS=501=爸爸,2001=爸爸`
+  把操作ID换成名字（**ID 是凭据编号，人脸/指纹各一个**），没配就念「501 号用户」。
+  **门锁不走 10 分钟事件冷却**（`HOME_LOCK_COOLDOWN_SECONDS=0`），否则第二个人进门不报；
+  自动上锁（每次关门都来一条）静默，只记状态不播报。
+  门锁的 `exception-occurred` 事件由 `describe_lock_exception()` 翻译（撬锁、频繁失败、
+  钥匙未取出…），其中 23/24（门未关/门虚掩）**不在这里报**——交给门状态传感器，避免
+  同一件事报两遍。门状态传感器（`options` 里有「门虚掩」的 sensor）在值变成
+  「门未关/门虚掩」时提醒，只按状态变化去重、不设时间冷却；它要列进 `HOME_DEVICES` 才读得到。
 - **提醒文案由模型组织**（2026-11-27）：`Assistant.reminder_sentence(facts, fallback, must_include)`
   拿事实说一句人话；失败、超长、**没说对名字**就回落 `wording` 的模板。事实由 `_item_reminder_facts`
   / `_task_reminder_facts` 拼（只给名字、到期、逾期天数、周期、现在几点）。模板是兜底不是主路径。

@@ -793,6 +793,7 @@ async def _on_home_event(entity_id, new_state, attributes):
         entity_id,
         new_state,
         attributes.get("friendly_name") or entity_id,
+        attributes,
     )
     if not alert:
         return

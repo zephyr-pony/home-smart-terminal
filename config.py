@@ -162,6 +162,13 @@ HOME_ALERT_COOLDOWN_HOURS = _get_int("HOME_ALERT_COOLDOWN_HOURS", 24)
 # 因为移动侦测的触发频率按小时算，默认开会把客厅变成刷屏机器。
 HOME_WATCH_EVENTS = _get("HOME_WATCH_EVENTS", "")
 HOME_EVENT_COOLDOWN_SECONDS = _get_int("HOME_EVENT_COOLDOWN_SECONDS", 600)
+# 门锁事件里的「操作ID」是锁上报的凭据编号，换成名字才好念：
+# `501=爸爸,2001=爸爸,2004=妈妈`。人脸和指纹各一个号，同一人可能要写两遍。
+# 不配就念「501 号用户」——听见编号再补，比先去哪里查编号现实。
+HOME_LOCK_USERS = _get("HOME_LOCK_USERS", "")
+# 门锁事件的冷却（秒）：默认 0 = 每条都报。10 分钟里进来两个人，
+# 第二个不能被普通事件的冷却吞掉；重复上报靠时间戳去重。
+HOME_LOCK_COOLDOWN_SECONDS = _get_int("HOME_LOCK_COOLDOWN_SECONDS", 0)
 # 设备巡检间隔：门铃/有人停留这类事件等 60 秒就没意义了，单独跑短周期
 HOME_SCAN_SECONDS = _get_int("HOME_SCAN_SECONDS", 15)
 

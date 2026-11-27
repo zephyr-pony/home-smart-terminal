@@ -25,11 +25,16 @@ from config import (
     HOME_ALERT_COOLDOWN_HOURS,
     HOME_EVENT_COOLDOWN_SECONDS,
     HOME_FILTER_ALERT_PERCENT,
+    HOME_LOCK_COOLDOWN_SECONDS,
+    HOME_LOCK_USERS,
     HOME_WATCH_EVENTS,
 )
 
 # 事件实体给的时间戳形如 2026-11-22T12:04:16.754+00:00
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+# event_type 只有带中文才拿来念：HA 给门铃是「门铃响了」，给别的集成可能是
+# `completed` 这种英文枚举，念出来比实体名还费解。
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 # 事件时间戳在这个窗口内，才认为是「刚发生的」。超出的只记下来不播报，
 # 否则一开机就把历史事件当新闻推一遍。
 EVENT_FRESH_SECONDS = 180
@@ -83,9 +88,183 @@ def _to_number(value):
         return None
 
 
+def _to_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# 门锁事件（MIoT `lock-event`）把「谁、怎么开的」编成几个数字放在事件属性里。
+# 表格来自 loock.lock.t3pul 的 MIoT spec（小米智能门锁 2 Pro），小米/鹿客这套锁
+# 基本共用；不翻译的话，一条开门事件念出来只是「亚拉锁 门锁 锁事件」。
+LOCK_METHODS = {
+    1: "手机", 2: "指纹", 3: "密码", 4: "NFC", 5: "人脸", 6: "指静脉",
+    7: "掌纹", 8: "机械钥匙", 9: "一次性密码", 10: "周期性密码", 11: "HomeKit",
+    12: "胁迫", 13: "双重验证", 14: "转盘", 15: "手动", 16: "自动",
+}
+# 15 手动 / 16 自动不是「验证方式」，句子结构不一样，单独处理
+LOCK_VERIFY_METHODS = tuple(m for m in LOCK_METHODS if m not in (15, 16))
+LOCK_ACTIONS = {
+    1: "上锁", 2: "开锁", 3: "上提加固", 4: "开启反锁", 5: "关闭反锁",
+    6: "开启童锁", 7: "关闭童锁", 8: "开启离家模式", 9: "关闭离家模式",
+}
+# `exception-occurred` 事件里的异常码：这些比「谁开了门」更该说，尤其撬锁和频繁失败。
+LOCK_EXCEPTIONS = {
+    1: "多种方式连续开锁失败，有人在试",
+    2: "密码连续输错",
+    3: "指纹连续识别失败",
+    4: "NFC 连续识别失败",
+    5: "面容连续识别失败",
+    6: "掌纹连续识别失败",
+    7: "指静脉连续识别失败",
+    8: "机械钥匙连续使用失败",
+    9: "门锁被撬了，注意安全",
+    10: "门一直没上锁",
+    11: "开启离家模式后，有人从里面开了门",
+    12: "门锁被重置了",
+    13: "钥匙孔里有异物",
+    14: "钥匙还插在门上",
+    15: "指纹传感器异常",
+    16: "机械故障",
+    17: "锁体传感器故障",
+    18: "电池温度过高",
+    19: "门锁电量低",
+    20: "门锁电量快没了",
+    21: "猫眼电量低",
+    22: "猫眼电量快没了",
+    25: "有人在撬门，注意安全",
+    26: "摄像头频繁录像",
+}
+# 23 门未关 / 24 门虚掩交给门状态传感器（它是持续状态，不会一闪而过），
+# 从这里播报会和传感器重复，同一件事报两遍。
+_DOOR_CODES = (23, 24)
+
+
+def parse_lock_users(value):
+    """HOME_LOCK_USERS：`1=爸爸,2=妈妈` → {1: '爸爸', 2: '妈妈'}。
+
+    操作ID 是锁上报的凭据编号（实测人脸是 2001/2004 这种四位数、指纹是 501），
+    同一人的人脸和指纹可能是两个号——所以这里按「凭据」映射，不是按家庭成员。
+    只有家里人才知道 501 是谁，所以名字必须可配；没配就念编号，也比「有人」强。
+    """
+    users = {}
+    for part in str(value or "").replace("，", ",").split(","):
+        key, sep, name = part.partition("=")
+        if not sep:
+            continue
+        uid = _to_int(key.strip())
+        name = name.strip()
+        if uid is not None and name:
+            users[uid] = name
+    return users
+
+
+def describe_lock_event(attrs, users=None):
+    """把一条门锁事件翻译成人话。
+
+    Returns:
+        None：不是锁事件（看不懂），调用方回落到实体名；
+        ""：是锁事件，但不用播报（比如每次关门都跟着的自动上锁）；
+        其它：要念的整句。
+
+    只给事实：谁（操作ID）、用什么（操作方式）、做了什么（锁动作）、门内还是门外。
+    拼句子是因为这条文本会被直接念出来，不是给模型看的素材。
+    """
+    attrs = attrs or {}
+    action = _to_int(attrs.get("锁动作"))
+    if action is None:
+        return None
+    method = _to_int(attrs.get("操作方式"))
+    position = _to_int(attrs.get("操作位置"))
+    uid = _to_int(attrs.get("操作ID")) or 0
+    who = (users or {}).get(uid) or ("%d 号用户" % uid if uid else "")
+
+    if action == 2:  # 开锁
+        if method == 12:
+            # 胁迫开锁：被逼着开门时输的密码，是这盏锁唯一的安全信号，必须说清
+            return "%s用胁迫方式开了门，注意安全" % (who or "有人")
+        if position == 1:
+            return ("%s从门里面开了门" % who) if who else "门从里面打开了"
+        if method == 5:
+            # 真实数据里 3D 面容就是这个码；「刷脸」比「用人脸」更像人话
+            return "%s刷脸开了门" % (who or "有人")
+        if method in LOCK_VERIFY_METHODS:
+            return "%s用%s开了门" % (who or "有人", LOCK_METHODS[method])
+        if method == 15:
+            if who:
+                return "%s手动开了门" % who
+            # 位置为 3 时锁自己也不知道门内门外，别替他断言
+            return "有人在门外手动开了门" if position == 2 else "门被手动打开了"
+        if method == 16:
+            return "门自动开了"
+        return ("%s开了门" % who) if who else "门开了"
+
+    if action == 1:  # 上锁
+        if method == 16:
+            # 每次关门都跟着一条自动上锁，念出来纯属噪音；看懂了但不播报
+            return ""
+        if who and method in LOCK_VERIFY_METHODS:
+            return "%s用%s锁了门" % (who, LOCK_METHODS[method])
+        return ("%s锁了门" % who) if who else "门锁上了"
+
+    tail = {
+        3: "门上提加固了",
+        4: "开启了反锁",
+        5: "解除了反锁",
+        6: "开启了童锁",
+        7: "关闭了童锁",
+        8: "开启了离家模式",
+        9: "关闭了离家模式",
+    }.get(action)
+    return tail
+
+
+def describe_lock_exception(attrs):
+    """把 `exception-occurred` 的异常码翻译成人话。
+
+    Returns: None（不是异常事件）/ ""（交给门状态传感器，不重复播报）/ 整句。
+    """
+    code = _to_int((attrs or {}).get("异常情况"))
+    if code is None:
+        return None
+    if code in _DOOR_CODES:
+        return ""
+    return LOCK_EXCEPTIONS.get(code)
+
+
+def _is_door_state_sensor(row):
+    """门状态传感器：用 HA 给的 options 认，别靠实体名猜。"""
+    options = (row.get("attributes") or {}).get("options") or []
+    return any("门虚掩" in str(option) for option in options)
+
+
+def _door_alert_text(raw):
+    """门没关好时念什么；正常状态（已上锁/已开锁/unknown）返回空串。"""
+    text = str(raw or "")
+    if "门虚掩" in text:
+        return "门虚掩着，可能没关好"
+    if "门未关" in text:
+        return "门没关，去看一下"
+    return ""
+
+
+def _event_text(attrs, name):
+    """非门锁事件念什么：优先 HA 的 event_type（「门铃响了」），否则实体名。
+
+    实体名往往带厂商和分组前缀（「亚拉锁 可视门铃 门铃响了」），念出来像报设备
+    型号；event_type 才是这件事本身。
+    """
+    label = str((attrs or {}).get("event_type") or "").strip()
+    if label and _CJK_RE.search(label):
+        return label
+    return name
+
+
 class HomeWatcher:
     def __init__(self, devices, store, filter_percent=None, cooldown_hours=None,
-                 event_ids=None, event_cooldown_seconds=None):
+                 event_ids=None, event_cooldown_seconds=None, lock_users=None,
+                 lock_cooldown_seconds=None):
         self.devices = devices
         self.store = store
         self.filter_percent = (
@@ -101,6 +280,15 @@ class HomeWatcher:
             HOME_EVENT_COOLDOWN_SECONDS
             if event_cooldown_seconds is None
             else event_cooldown_seconds
+        )
+        self.lock_users = (
+            parse_lock_users(HOME_LOCK_USERS) if lock_users is None else dict(lock_users)
+        )
+        # 门锁事件默认不冷却：10 分钟里进来两个人，第二个也得报
+        self.lock_cooldown_seconds = (
+            HOME_LOCK_COOLDOWN_SECONDS
+            if lock_cooldown_seconds is None
+            else lock_cooldown_seconds
         )
         # WS 推送在事件循环里，轮询在线程里，两边都会读写去重状态
         self._event_lock = threading.Lock()
@@ -179,6 +367,25 @@ class HomeWatcher:
                     self.store.record_home_alert(
                         "fault", entity_id, raw, now.isoformat(),
                     )
+            elif _is_door_state_sensor(row):
+                # 门状态不是事件：它是持续状态（已上锁/已开锁/门未关/门虚掩），
+                # 所以只在值变化时判断，不设时间冷却——门关好了又虚掩，第二次也得报。
+                seen = self.store.get_home_alert("door", entity_id)
+                changed = not seen or seen.get("last_value") != raw
+                if not changed:
+                    continue
+                if apply:
+                    self.store.record_home_alert(
+                        "door", entity_id, raw, now.isoformat(),
+                    )
+                text = _door_alert_text(raw)
+                if text:
+                    out.append({
+                        "kind": "door",
+                        "entity_id": entity_id,
+                        "tag": "door-%s" % entity_id.split(".")[-1],
+                        "text": text,
+                    })
         return out
 
     def _check_events(self, now, apply=True):
@@ -200,21 +407,38 @@ class HomeWatcher:
                 continue
             attrs = row.get("attributes") or {}
             alert = self.annotate_event(
-                entity_id, raw, attrs.get("friendly_name") or entity_id, now, apply,
+                entity_id, raw, attrs.get("friendly_name") or entity_id,
+                attrs=attrs, now=now, apply=apply,
             )
             if alert:
                 out.append(alert)
         return out
 
-    def annotate_event(self, entity_id, raw, name, now=None, apply=True):
+    def annotate_event(self, entity_id, raw, name, attrs=None, now=None, apply=True):
         """一条事件该不该播报。WS 推送和轮询共用这一套判定，避免推两遍。
 
         两种通道都会调到这里，所以去重状态（`home_alerts`）是唯一裁判：
         先到的记下 last_value，后到的看到值一样就跳过。
+
+        门锁事件带上「谁、用什么、做了什么」，其余事件还是念实体名。
         """
         now = now or datetime.now()
         if not _ISO_RE.match(str(raw or "")):
             return None
+        text = describe_lock_event(attrs, self.lock_users)
+        if text is None:
+            text = describe_lock_exception(attrs)
+        if text == "":
+            # 看懂了但不用播报（关门后的自动上锁）：记下来，下次别当新事件
+            if apply:
+                self.store.record_home_alert("event", entity_id, str(raw), now.isoformat())
+            return None
+        # 门锁的每一条都是「谁进出了」，不能被 10 分钟的事件冷却吞掉第二个人；
+        # 摄像头那种高频事件才需要冷却。
+        cooldown = (
+            self.lock_cooldown_seconds if text is not None
+            else self.event_cooldown_seconds
+        )
         with self._event_lock:
             seen = self.store.get_home_alert("event", entity_id)
             if seen and seen.get("last_value") == str(raw):
@@ -224,7 +448,7 @@ class HomeWatcher:
                 if apply:
                     self.store.touch_home_alert("event", entity_id, raw)
                 return None
-            if not self._cooled(seen, now, self.event_cooldown_seconds):
+            if not self._cooled(seen, now, cooldown):
                 if apply:
                     self.store.touch_home_alert("event", entity_id, raw)
                 return None
@@ -234,7 +458,7 @@ class HomeWatcher:
             "kind": "event",
             "entity_id": entity_id,
             "tag": "event-%s" % entity_id.split(".")[-1],
-            "text": "%s" % name,
+            "text": text if text is not None else _event_text(attrs, name),
         }
 
 
