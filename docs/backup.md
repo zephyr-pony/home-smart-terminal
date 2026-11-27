@@ -12,6 +12,7 @@
 | `data/tasks.db` | 提醒和账单 |
 | `data/items.db` | 物品与到期日 |
 | `data/agent.db` | 实体、别名、审计、待澄清动作 |
+| `data/dialogue.db` | 最近几天的对话原文（默认 7 天）。画像和记忆是提炼后的结论，已另存在 `facts.db` / `memory.db`；这份只影响「接着聊」，含原话，离机备份务必加密 |
 | `data/push.db` | 推送订阅（丢了手机要重新开一遍通知） |
 | `.env` | **VAPID 私钥**在这里；丢了所有推送订阅全部作废 |
 

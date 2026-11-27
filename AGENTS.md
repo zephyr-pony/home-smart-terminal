@@ -18,12 +18,16 @@
 | `domain/tasks.py` | 通用任务/提醒：账单、日程、自定义（SQLite，`data/tasks.db`） |
 | `domain/facts.py` | 结构化事实：户号、地址、品牌、型号（SQLite，`data/facts.db`） |
 | `domain/push.py` | Web Push 订阅：endpoint、密钥、失败计数（SQLite，`data/push.db`） |
+| `domain/prints.py` | 打印记录：文件元数据与出纸结果（SQLite，`data/prints.db`，D65） |
+| `domain/dialogue.py` | 对话记录：原文只留最近几天，给跨天上下文和夜间提炼当原料（SQLite，`data/dialogue.db`，D84） |
+| `domain/space.py` | 空间隔离：`space_id` 规则、各库/目录路径组合（D68） |
 | `push_sender.py` | Web Push 发送适配器：`pywebpush` 封装，异常统一转结果 |
 | `agent/clarify.py` | 澄清引擎：识别歧义、生成问题、合并回答 |
 | `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
 | `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
 | `agent/verify.py` | 回复事实校验：口播的日期/星期/名字须与工具参数一致 |
 | `agent/distill.py` | 记忆蒸馏：同主题合并、只重算 summary，深夜/超阈值后台跑（D60） |
+| `agent/profile_miner.py` | 夜间画像提炼：读昨天的对话，产出待确认的习惯候选（D84） |
 | `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
 | `adapters/printer.py` | Linux CUPS 打印队列：PDF/图片/文本 + LibreOffice 转 Office（D61） |
 | `adapters/documents.py` | 读附件内容（表格/PDF/Word/文本）+ 临时目录跑模型写的 Python（D62） |
@@ -35,7 +39,7 @@
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
-| `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒/记忆蒸馏、静态页面 |
+| `server.py` | FastAPI 服务端：REST + SSE、后台到期提醒/记忆蒸馏/画像提炼、静态页面 |
 | `assistant.py` | 核心编排 + 手写 Agent loop；CLI 与服务端共用 |
 | `tools.py` | OpenAI function calling 工具注册表（schema + execute） |
 | `llm.py` | OpenAI 兼容 `/chat/completions` 客户端（带 tools） |
@@ -148,7 +152,8 @@ pytest tests -q
   **不能替代**「另一台设备能不能连小智端口（当前 8400/8403）」的验证。
 - 旧数据迁移：`python scripts/migrate_legacy.py`（默认 dry-run，`--apply` 才写入并自动备份）。迁移逻辑在 `agent/legacy.py`，测试在 `tests/test_legacy.py`。
 - 测试里用 `Memory(":memory:")` / `Items(":memory:")` / `AgentStore(":memory:")`，不要碰 `data/`。
-- 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`；任务/事实在 `tests/test_tasks.py` / `tests/test_facts.py`。
+- 澄清测试在 `tests/test_clarify.py`；写提案在 `tests/test_propose.py`；确认流程在 `tests/test_confirm.py`；实体管理在 `tests/test_entities.py`；任务/事实在 `tests/test_tasks.py` / `tests/test_facts.py`；对话记录在 `tests/test_dialogue.py`，夜间提炼在 `tests/test_profile_miner.py`。
+- `tests/conftest.py` 默认把 `domain.dialogue.DIALOGUE_ENABLED` 关掉（否则每个 `Assistant()` 都会建 `data/dialogue.db`）；要测记录行为就显式传 `DialogueStore(":memory:", enabled=True)`。
 - 服务端测试通过 `monkeypatch.setattr(server, "assistant", FakeAssistant())` 注入假实现；`assistant` 测试通过注入带 `chat_with_tools` 方法的 FakeLLM 模拟 LLM。
 - Web API 的统计/列表/搜索/分页/删除/编辑/配置测试在 `tests/test_server.py`；配置写入测试用 `monkeypatch.setattr(server, "ENV_PATH", ...)` 指向临时文件。
 

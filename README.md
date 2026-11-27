@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="docs/images/board-mobile.jpg" width="45%" alt="看板：今天要办的事、家里状态、最近记录">&nbsp;
-  <img src="docs/images/overview-mobile.jpg" width="45%" alt="概览：统计与到期提醒">
+  <img src="docs/images/overview-mobile.jpg" width="45%" alt="概览：统计、待确认的习惯与到期提醒">
 </p>
 <p align="center">
   <img src="docs/images/data-mobile.jpg" width="45%" alt="数据：任务列表，可直接完成或改期">&nbsp;
@@ -19,7 +19,7 @@
 
 <p align="center"><sub>手机四屏依次为：看板 · 概览 · 数据 · 设置（iPhone 12，390×844，默认暖米主题）</sub></p>
 
-打开网页先看见的是看板：今天要办的事（点一下就「办好了 / 挪明天」）、家里的状态（门锁、温湿度、打印机）和最近记下的事；右下角或「按住说话」叫出聊天浮层。截图用的是示例数据，不是真实家庭记录。
+打开网页先看见的是看板：今天要办的事（点一下就「办好了 / 挪明天」）、家里的状态（门锁、温湿度、打印机）和最近记下的事；右下角或「按住说话」叫出聊天浮层。概览里的「待确认的习惯」是夜里从聊天中整理出的偏好候选，你点头才写进画像。截图用的是示例数据，不是真实家庭记录。
 
 ## 功能特性
 
@@ -234,6 +234,9 @@ docker compose up -d --build
 | `/api/spaces` | GET | 已存在的空间（`X-Space-Id` 请求头选空间，不带 = 默认空间） |
 | `/api/stats` | GET | 概览统计：数量、任务状态、到期物品/任务 |
 | `/api/thinking` | GET | 「这轮有没有开思考」的观察记录（最近 20 轮 + 统计），`limit` 可调 |
+| `/api/dialogue` | GET / DELETE | 对话记录：存了几句、保留几天、最近几句；`DELETE` 清空原文（画像和记忆是提炼后的结论，不清） |
+| `/api/profile/suggestions` | GET | 等用户点头的画像候选：结论 + 原话证据（夜里提炼出来的） |
+| `/api/profile/suggestions/{id}` | POST | 采纳 / 忽略一条候选：`{action: "accept" \| "dismiss"}`；采纳就是 D59 要的那声点头 |
 | `/api/prints` | GET | 打印历史：名字、时间、份数、结果、CUPS 任务号；`q` / `status` / `limit` / `offset` |
 | `/api/printer` | GET | 打印机状态：在线 / 队列 / 积压 / 原因（30 秒缓存，断电不会挂住页面） |
 | `/api/memories` | GET | 记忆列表，支持 `q` / `limit` / `offset` |
@@ -482,6 +485,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
         右下角气泡或「按住说话」进聊天；提醒到达时顶部浮一条，不切页面也能处理
 聊天    文字 / 语音对话，保留 SSE 提醒（手机整屏，宽屏右侧抽屉）
 概览    记忆 / 物品 / 任务 / 事实 / 实体数量，到期提醒
+        待确认的习惯：夜里从对话里提炼的偏好候选（结论 + 原话），点「是，记住」才写进画像
         思考开关：最近 20 轮开没开、原因、工具、耗时（GET /api/thinking）
         最近打印：打印机在线/队列状态，结果、时间、份数，点「再打一份」回到确认
                   （GET /api/printer、GET /api/prints）
@@ -491,6 +495,8 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
         任务可完成 / 取消 / 编辑；删除需二次确认
 设置    外观：暖米 / 陶土 / 鼠尾草 / 暖深四套主题、纯色或晨光背景、可开「19:00 后自动切暖深」（默认关）
         （只存这台设备的 localStorage，不影响别人）
+        聊天记录：本机 localStorage，最多 120 条，可一键清空
+        对话记录：服务端存了几句、保留几天、最近几句；可刷新、可清空原文
         语音角色、提醒天数/间隔/冷却、上下文轮数等
         写本地 .env，重启服务端后生效，密钥不返回前端
 ```
@@ -558,8 +564,8 @@ Web Push 也走同一个入口（见上一节）。
 ├── memory.py        # SQLite FTS5 中文记忆检索
 ├── items.py         # SQLite 物品管理（名称/到期日）
 ├── tts.py           # Edge TTS 语音合成
-├── agent/           # 澄清 / 提案 / 确认 / 护栏 / 回复校验 / 任务提示 / 设备巡检
-├── domain/          # 领域层：实体 / 待澄清 / 提案 / 任务 / 事实 / 空间 / 打印记录
+├── agent/           # 澄清 / 提案 / 确认 / 护栏 / 回复校验 / 蒸馏 / 画像提炼 / 设备巡检
+├── domain/          # 领域层：实体 / 待澄清 / 提案 / 任务 / 事实 / 空间 / 打印 / 对话记录
 ├── adapters/        # Home Assistant、打印机（CUPS）、文档、命令、上网、小智 MCP
 ├── static/index.html # Web 客户端（单文件，无构建）
 ├── infra/           # 部署件：小智提醒桥补丁、ESP32 固件补丁、Ubuntu 部署
@@ -599,7 +605,8 @@ Web Push 也走同一个入口（见上一节）。
 
 ## 隐私说明
 
-- 记忆、物品、任务、事实、打印记录只存在本地 `DATA_DIR`（`memory.db` / `items.db` / `tasks.db` / `facts.db` / `agent.db` / `push.db` / `prints.db`），不上传、不入库
+- 记忆、物品、任务、事实、打印记录只存在本地 `DATA_DIR`（`memory.db` / `items.db` / `tasks.db` / `facts.db` / `agent.db` / `push.db` / `prints.db` / `dialogue.db`），不上传、不入库
+- 对话原文另存在 `dialogue.db`，默认只留 7 天、过期自动删；设置页能看到存了什么、一键清空，`DIALOGUE_ENABLED=0` 可整体关掉（连库都不建）。夜里提炼出的习惯只是候选，你在网页上点头才写进画像
 - 打印原件留在 `DATA_DIR/print`，按 `PRINT_KEEP_DAYS` 清理；`data/thinking.jsonl` 只是调试观测（可关）
 - 对话文本会发给你在 `.env` 里配置的 LLM 服务（本地服务则不出内网）——这是它回答问题的前提；API 密钥只存在本地 `.env`
 - 语音音频是临时文件，处理完即删；摄像头图片只在内存里用一次，不落盘、不做人脸识别

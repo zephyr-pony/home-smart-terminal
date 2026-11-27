@@ -203,17 +203,21 @@ def run(config=None):
 
     check_llm(report, config.LLM_BASE_URL, config.LLM_API_KEY, config.LLM_MODEL)
     check_exposure(report, config.SERVER_HOST, config.API_TOKEN)
+    db_paths = [
+        config.MEMORY_DB_PATH,
+        config.ITEMS_DB_PATH,
+        config.AGENT_DB_PATH,
+        config.TASKS_DB_PATH,
+        config.FACTS_DB_PATH,
+        config.PUSH_DB_PATH,
+    ]
+    # 对话记录关掉时不建库，别为一个不会用到的路径报目录不存在
+    if getattr(config, "DIALOGUE_ENABLED", 0):
+        db_paths.append(config.DIALOGUE_DB_PATH)
     check_data_dir(
         report,
         config.DATA_DIR,
-        [
-            config.MEMORY_DB_PATH,
-            config.ITEMS_DB_PATH,
-            config.AGENT_DB_PATH,
-            config.TASKS_DB_PATH,
-            config.FACTS_DB_PATH,
-            config.PUSH_DB_PATH,
-        ],
+        db_paths,
     )
     check_port(report, config.SERVER_HOST, config.SERVER_PORT)
     check_optional(
