@@ -453,11 +453,15 @@ class HomeDevices:
                 hits.append(row)
         return hits
 
-    def snapshot(self, limit=14):
+    def snapshot(self, limit=50):
         """结构化设备清单（看板用）：名字、状态、单位，不念句子。
 
         看板要自己排版，不能解析 query() 的中文句子；这里只把白名单设备摊平。
         读不到就给空表 + 一句原因，页面据此决定显示「未配置」还是报错。
+
+        上限给到 50：白名单是有顺序的，门锁、湿度这些常被写在最后，14 个的上限
+        会把它们截掉（2026-11-27 真机上「家里」卡没有门锁，就是这条）。
+        看板只用其中几类，多带十几个设备的代价远小于少一行。
         """
         if not self.configured:
             return {"configured": False, "devices": []}

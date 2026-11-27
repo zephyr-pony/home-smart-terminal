@@ -1,4 +1,6 @@
 """热点上下文（D58）：画像/常用事实/最近记忆冻结快照注入 system prompt。"""
+import json
+
 from agent.clarify import Clarifier
 from assistant import Assistant
 from domain.facts import Facts
@@ -20,6 +22,35 @@ class RecordingLLM:
                 "finish_reason": "stop",
             }]
         }
+
+
+class ScriptedLLM:
+    """按顺序返回预设响应，用来走一遍「模型调写工具」的真实链路。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    def chat_with_tools(self, messages, tools=None, **kwargs):
+        return self.responses.pop(0)
+
+
+def _tool_call(name, arguments):
+    return {
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call-1",
+                    "function": {"name": name, "arguments": json.dumps(arguments)},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }]
+    }
+
+
+def _stop(content="好"):
+    return {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
 
 
 def make_assistant(llm=None):
@@ -109,3 +140,44 @@ def test_hot_context_is_not_injected_when_disabled():
     assistant.process_text("你好", "cli")
 
     assert "123456" not in llm.messages[0]["content"]
+
+
+def test_write_invalidates_frozen_snapshot():
+    """改完事实立刻再问，不能还念旧值。
+
+    旧值本来就在系统提示里，六位以上数字的出处校验会认为它「有出处」而放行，
+    所以只能靠写库之后作废快照（`_invalidate_hot_contexts`）。
+    """
+    llm = ScriptedLLM([
+        _tool_call("fact_store", {
+            "subject": "冰箱", "predicate": "品牌", "value": "海尔",
+        }),
+        _stop("好的，换成海尔了。"),
+    ])
+    assistant = make_assistant(llm)
+    assistant.facts.store("冰箱", "品牌", "西门子")
+    assert "西门子" in assistant._hot_context("cli")
+
+    assistant.process_text("冰箱品牌换成海尔", "cli")
+
+    text = assistant._hot_context("cli")
+    assert "海尔" in text
+    assert "西门子" not in text
+
+
+def test_confirmation_invalidates_frozen_snapshot():
+    """确认类写入（画像）也要让快照失效，不能等 TTL 到期。"""
+    llm = ScriptedLLM([
+        _tool_call("profile_set", {
+            "subject": "用户", "predicate": "口味", "value": "偏清淡",
+            "evidence": "连着几次说想吃清淡点",
+        }),
+        _stop("是这么觉得。"),
+    ])
+    assistant = make_assistant(llm)
+    assistant.process_text("你是不是觉得我口味偏淡", "cli")
+    assert "偏清淡" not in assistant._hot_context("cli")
+
+    assistant.process_text("确认", "cli")
+
+    assert "偏清淡" in assistant._hot_context("cli")

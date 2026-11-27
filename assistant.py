@@ -328,6 +328,9 @@ class Assistant:
                 return self._result("chat", reply, "confirm", "cancel")
             if kind == "done":
                 reply = outcome.get("reply", "")
+                # 确认之后落库的同样是写操作（画像、删除、弱模型模式下的写工具）：
+                # 不在这里作废快照，用户确认完再问，模型还会念旧值
+                self._invalidate_hot_contexts()
                 extra = {}
                 if "deleted" in outcome:
                     extra["deleted"] = outcome["deleted"]
@@ -533,6 +536,19 @@ class Assistant:
                 )
                 self.hot_contexts.pop(oldest, None)
         return text
+
+    def _invalidate_hot_contexts(self):
+        """写库之后作废冻结的热点快照，下一轮重建。
+
+        快照是为了保住前缀缓存（D58），但它本来要活到 TTL 到期（默认 24 小时）：
+        上午把电费户号改了，下午再问，模型仍会从「已知信息」里念出旧号码——旧号码
+        就在系统提示里，六位以上数字的出处校验也只认「提示词里有没有」，拦不住。
+        写操作之后清一次，代价只是下一轮重建快照（本地查两个库，毫秒级）。
+
+        不分客户端清：单家庭就几个终端，写的是同一套库，别的终端手里也是同一份旧值。
+        """
+        with self._session_lock:
+            self.hot_contexts.clear()
 
     def _build_hot_context(self):
         """按 画像 > 常用事实 > 最近记忆 的优先级拼，超出预算就停。"""
@@ -1299,6 +1315,11 @@ class Assistant:
             break
         else:
             answer = "抱歉，我绕晕了，能再说一遍吗？"
+
+        # 写进去之后必须让热点快照失效：否则同一天里改过的户号/删掉的记忆，
+        # 下一轮还会从「已知信息」里被当成事实念出来（见 _invalidate_hot_contexts）
+        if executed_writes:
+            self._invalidate_hot_contexts()
 
         # 要看东西：把工具调用交给调用方去设备端执行。这里不生成回复（设备会把
         # 画面描述直接念出来），也不写库——照片是一次性的，不进记忆。

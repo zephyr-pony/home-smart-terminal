@@ -359,6 +359,28 @@ SPACED_LIGHT = {
 }
 
 
+def test_snapshot_keeps_devices_beyond_fourteen(monkeypatch):
+    """白名单是有顺序的，门锁/湿度常写在最后：上限太小会把「家里」卡的门锁截掉。
+
+    2026-11-27 真机就是这条：18 个设备只给了 14 个，门锁和湿度正好在最后。
+    """
+    rows = [
+        {"entity_id": "sensor.d%d" % index, "state": str(index),
+         "attributes": {"friendly_name": "设备%d" % index}}
+        for index in range(18)
+    ]
+    monkeypatch.setattr(
+        "adapters.home.HOME_DEVICES",
+        ", ".join("sensor.d%d=设备%d" % (index, index) for index in range(18)),
+    )
+
+    snap = HomeDevices(client=FakeClient(rows)).snapshot()
+
+    names = [row["name"] for row in snap["devices"]]
+    assert len(names) == 18
+    assert names[-1] == "设备17"
+
+
 def test_miot_property_entities_are_filtered_out():
     """空调一台就有十几条「电加热实际开关」这类属性实体，不能塞给模型。"""
     home = _devices([MIOT_HEATER, SPACED_LIGHT])

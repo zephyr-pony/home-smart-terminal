@@ -168,6 +168,20 @@ def test_context_messages_clips_long_history():
     assert messages[1]["content"] == "很长的助…"
 
 
+def test_context_messages_injects_configured_turns():
+    """注入轮数按配置走（本机 8）：只带最近 8 轮，早的滚出去。"""
+    assistant = make_assistant()
+    assistant.session_context_turns = 8
+    for index in range(1, 11):
+        assistant._record_turn("c1", "第%d句" % index, "回%d" % index)
+
+    messages = assistant._context_messages("c1")
+
+    assert len(messages) == 16          # 8 轮 × (user + assistant)
+    assert messages[0] == {"role": "user", "content": "第3句"}
+    assert messages[-1] == {"role": "assistant", "content": "回10"}
+
+
 def test_agent_loop_returns_record_summary():
     assistant = make_assistant(ScriptedLLM([
         _tool_call_reply(
