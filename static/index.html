@@ -1401,13 +1401,22 @@ html, body {
       rows.push('<div class="bempty">' + esc(home.error) + '</div>');
     } else {
       var lock = findDevice(devices, '门锁状态') || findDevice(devices, '门锁');
-      var battery = findDevice(devices, '电量');
+      var battery = findDevice(devices, '门锁电量') || findDevice(devices, '电量');
+      // 猫眼（摄像头）是另一块电池，比门锁本体掉得快；低于 20% 才在这行末尾提一句，
+      // 正常时不占字。白名单里它的别名固定叫「猫眼电量」，别和门锁电量混。
+      var cameraBattery = findDevice(devices, '猫眼电量');
       if (lock) {
         var lockText = String(lock.state || '未知');
         if (battery) lockText += ' · 电量 ' + battery.state + (battery.unit || '%');
         var lockWarn = /未关|虚掩|unknown|unavailable/i.test(String(lock.state || ''));
         if (lockWarn) attention++;
-        rows.push(kvRow('门锁', lockText, lockWarn ? 'warn' : ''));
+        var cameraLevel = cameraBattery ? parseFloat(cameraBattery.state) : NaN;
+        var cameraLow = !isNaN(cameraLevel) && cameraLevel < 20;
+        if (cameraLow) {
+          lockText += ' · 猫眼 ' + cameraBattery.state + (cameraBattery.unit || '%');
+          attention++;
+        }
+        rows.push(kvRow('门锁', lockText, lockWarn || cameraLow ? 'warn' : ''));
       }
 
       var temp = findDevice(devices, '室内温度');
