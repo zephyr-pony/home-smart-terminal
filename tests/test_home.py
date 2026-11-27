@@ -3,6 +3,7 @@ from adapters.home import (
     HomeUnavailable,
     build_home,
     control_allowed,
+    human_state,
     parse_control_allow,
     parse_devices,
 )
@@ -357,6 +358,59 @@ SPACED_LIGHT = {
     "state": "on",
     "attributes": {"friendly_name": "客厅 灯"},
 }
+
+
+def test_miot_lock_state_becomes_human_text():
+    """MIoT 的门锁枚举带着状态码和反锁/童锁位，念出来是机器话（2026-11-27 真机）。
+
+    「（1<<4）已上锁(反锁：0；童锁：0)」在看板上就是原样一串，用户看不懂；
+    反锁/童锁只有真的开着才值得提一句。
+    """
+    assert human_state("（1<<4）已上锁(反锁：0；童锁：0)") == "已上锁"
+    assert human_state("(2<<4)已开锁") == "已开锁"
+    assert human_state("（3<<4）门未关（门超时未关）") == "门未关（门超时未关）"
+    assert human_state("已上锁(反锁：1；童锁：0)") == "已上锁（反锁）"
+    assert human_state("已上锁(反锁：0；童锁：1)") == "已上锁（童锁）"
+    # MIoT 重复枚举的尾巴
+    assert human_state("已开锁_2") == "已开锁"
+    # 不是 MIoT 枚举的照旧
+    assert human_state("off") == "off"
+
+
+def test_snapshot_speaks_lock_state_without_miot_codes(monkeypatch):
+    """看板的门锁行要能直接显示，别把（1<<4）丢给用户。"""
+    lock = {
+        "entity_id": "sensor.loock_door_state",
+        "state": "（1<<4）已上锁(反锁：0；童锁：0)",
+        "attributes": {
+            "friendly_name": "亚拉锁  门 门状态",
+            "options": ["（1<<4）已上锁(反锁：0；童锁：0)", "(2<<4)已开锁"],
+        },
+    }
+    monkeypatch.setattr(
+        "adapters.home.HOME_DEVICES", "sensor.loock_door_state=门锁状态"
+    )
+
+    snap = HomeDevices(client=FakeClient([lock])).snapshot()
+
+    assert snap["devices"][0]["state"] == "已上锁"
+
+
+def test_query_describes_lock_state_in_human_text(monkeypatch):
+    lock = {
+        "entity_id": "sensor.loock_door_state",
+        "state": "（1<<4）已上锁(反锁：0；童锁：0)",
+        "attributes": {"friendly_name": "亚拉锁  门 门状态"},
+    }
+    monkeypatch.setattr(
+        "adapters.home.HOME_DEVICES", "sensor.loock_door_state=门锁状态"
+    )
+
+    out = _devices([lock]).query("门锁")
+
+    assert "已上锁" in out
+    assert "1<<" not in out
+    assert "反锁：0" not in out
 
 
 def test_snapshot_keeps_devices_beyond_fourteen(monkeypatch):

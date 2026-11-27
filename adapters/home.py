@@ -61,6 +61,31 @@ _STATE_LABELS = {
     "auto": "自动",
 }
 
+# MIoT 把状态码和「反锁/童锁」位拼进了枚举值（「（1<<4）已上锁(反锁：0；童锁：0)」），
+# HA 面板里能看，念出来和放到看板上就是机器话。只留人话；反锁/童锁真的开着才补一句。
+_MIOT_CODE_RE = re.compile(r"^[（(]\s*\d+\s*<<\s*\d+\s*[）)]\s*")
+_LOCK_BITS_RE = re.compile(r"\s*[（(]\s*反锁：([01])\s*[；;]\s*童锁：([01])\s*[）)]")
+_MIOT_SUFFIX_RE = re.compile(r"_\d+$")
+
+
+def human_state(raw):
+    """把 MIoT 的枚举值还原成人话（「已上锁」），认不出的原样返回。"""
+    text = str(raw or "")
+    text = _MIOT_CODE_RE.sub("", text)
+    bits = _LOCK_BITS_RE.search(text)
+    notes = []
+    if bits:
+        text = _LOCK_BITS_RE.sub("", text)
+        if bits.group(1) == "1":
+            notes.append("反锁")
+        if bits.group(2) == "1":
+            notes.append("童锁")
+    text = _MIOT_SUFFIX_RE.sub("", text).strip()
+    if notes:
+        text += "（%s）" % "、".join(notes)
+    return text
+
+
 _DEVICE_CLASS_LABELS = {
     "door": "门",
     "window": "窗",
@@ -147,7 +172,7 @@ def _describe(state, with_id=True):
     entity_id = state.get("entity_id", "")
     domain = str(entity_id).split(".")[0]
     raw = str(state.get("state", ""))
-    value = _STATE_LABELS.get(raw, raw)
+    value = _STATE_LABELS.get(raw) or human_state(raw)
 
     if domain == "light":
         if raw == "on" and attrs.get("brightness") is not None:
@@ -480,7 +505,7 @@ class HomeDevices:
             rows.append({
                 "entity_id": entity_id,
                 "name": attrs.get("friendly_name") or entity_id,
-                "state": row.get("state", ""),
+                "state": human_state(row.get("state", "")),
                 "unit": attrs.get("unit_of_measurement") or "",
                 "domain": entity_id.split(".")[0],
             })
