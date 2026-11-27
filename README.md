@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/zephyr-pony/home-smart-terminal/actions/workflows/tests.yml/badge.svg)](https://github.com/zephyr-pony/home-smart-terminal/actions/workflows/tests.yml)
 
-以**记忆**为核心的家庭 AI 助手。通过语音记录家庭琐事（"酸奶 8 月 5 号过期"、"明天交电费"），之后随时语音提问（"酸奶还有几天过期？"），系统自动检索并回答。
+以**记忆**为核心的家庭 AI 助手：记得家里的事，也会提醒、看家、打印、上网查。通过语音记录家庭琐事（"酸奶 8 月 5 号过期"、"明天交电费"），之后随时语音提问（"酸奶还有几天过期？"），系统自动检索并回答。
 
 ## 功能特性
 
@@ -17,11 +17,15 @@
 - 🧮 **时间、算术与农历**：问「现在几点」「三天后是哪天」走 `time_now`，折扣/分摊/百分比走 `calc`，农历/节气/传统节日走 `lunar_calendar`（公历↔农历双向），都不让模型口算
 - 🤖 **Agent 驱动**：LLM 通过 function calling 自主选择工具（记忆 / 物品 / 日期），不是硬编码规则
 - 💬 **多轮对话**：同一客户端最近几轮上下文注入 agent，支持"那个、它、还有呢"这类追问
-- 🗓️ **物品与到期提醒**：记录物品到期日，服务端主动推送（SSE）即将到期 / 已过期提醒并语音播报
+- 🗓️ **物品与到期提醒**：记录物品到期日，服务端主动推送（设备 / 网页 SSE / Web Push）即将到期 / 已过期提醒并语音播报
 - ✅ **通用任务提醒**：账单、日程、自定义提醒统一进 tasks，和物品到期一起推送；说「电费交了」可标记完成
 - 🔁 **周期提醒**：说「每天八点吃药」「每周三下午三点开会」「每月1号交房租」，到点才提醒；完成只跳过这一次，取消才停整个系列
-- 🏠 **设备主动提醒**（Home Assistant）：滤芯余量、故障码巡检，门铃/门锁事件秒级推送；门锁会说清「谁用指纹/密码开了门」「从里面开了门」，用户编号可映射成名字
+- 🗣️ **软提醒**（D81）：该准点的事照常响（吃药、出门、开会），牛奶过期 / 取快递这类则等你聊天时顺口提一句，由你当场定「办了 / 往后放」；到 20:30 还没机会说，才兜底播报一次。提醒那句话由模型拿事实组织，不是模板句
+- 🏠 **设备主动提醒**（Home Assistant）：滤芯余量、故障码巡检，门铃/门锁事件秒级推送；门锁会说清「爸爸用指纹开了门」「妈妈刷脸开了门」「门从里面打开了」，还会报撬锁、频繁开锁失败、门未关 / 门虚掩
+- 🔌 **客厅语音终端**（小智 + ESP32）：唤醒、对话、反向提醒、拍照问答；MCP 接入点与 OpenAI 兼容 `/v1` 两种接法，终端待机也不断线。要不要结束会话（「再见」「先这样」）由模型判断，不靠关键词
 - 🖥️ **Web 控制台**：聊天之外提供概览统计、数据列表、搜索/筛选/分页、任务编辑和系统配置，移动端可用
+- 🖨️ **打印**（D61）：网页/手机传文件 → 说要求 → 确认 → 远程 CUPS 出纸；Office 转 PDF，纯文本含中文自动转 PDF（D77）
+- 🌐 **通用能力**（D62/D74）：读附件、跑 Python、执行命令、上网搜索和抓页面，都由模型现场组合；不为「缩到一页」「转格式」这类需求单独加工具
 - 📷 **摄像头看一眼**（带摄像头的语音终端）：说「看看桌上有什么」，设备拍一张图由模型回答；图片只在内存里用一次，不落盘、不做人脸识别，详见 [ROADMAP §26](docs/ROADMAP.md)
 - ⚙️ **配置集中管理**：所有参数在 `.env` 中，密钥不入库
 
@@ -38,8 +42,21 @@
 3. RAG + 地图、公交、天气等本地生活工具
 4. 统一网关与多渠道接入
 
-> 当前优先：语音设备真机（小智 + ESP32）与真机验收；Web 控制台与 CLI 已落地并继续维护；Android App 与 RAG 延后。
+> 当前优先：语音设备（小智 + ESP32）已上真机，正在做迁移到 Ubuntu Server 的部署件与运维；Web 控制台与 CLI 已落地并继续维护；Android App 与 RAG 延后。
 > 配置页只允许白名单字段写入本地 `.env`，密钥不会返回前端；保存后重启服务端生效。
+
+### 设计取向
+
+同一个模型，编排不同，可能是「语音版命令行」，也可能是家里人。几条写进代码的取向：
+
+- **先「说得对」，再「说得自然」**。冲突时选对的——生硬但正确，好过顺耳但错误。
+- **该模型开口的地方别替它写话**。工具给事实和边界，不给成品话术；模板只留在「说了就得对」的两处（写操作回显、校验失败兜底）。
+- **时机也是智能**。什么时候说和说什么一样重要（软提醒顺口提，不到点弹）。
+- **「活」不等于放任**。编造日期、说错号码、危险动作由代码拦（`guard` / `verify` / `confirm`）——这些兜底是为了让模型敢自由说话。
+- **不把交互写成硬指令**。没有关键词路由、没有「只有…才能…」的规则墙；默认值都能被一句话推翻。
+- **歧义靠画像，事实不靠猜**。中性、有歧义的问题按用户习惯（画像层）靠；户号、日期、谁是谁这种确定性问题一律以事实和工具结果为准。
+
+展开见 [AGENTS.md](AGENTS.md) 的「让助手像个人」和 [ROADMAP §1](docs/ROADMAP.md)。
 
 ## 工作流程
 
@@ -47,20 +64,23 @@
 输入（语音 / 文字）
    ↓  （语音先经 FunASR 识别）
 Agent：LLM 按 function calling 自主决策调哪个工具
-   ├─ memory_* / fact_*             → 记 / 查家庭事实与结构化信息
-   ├─ item_*                        → 物品与到期
-   ├─ task_*                        → 账单 / 日程 / 提醒
-   └─ get_current_date              → 时间推理（还有几天 / 是否过期）
+   ├─ memory_* / fact_* / entity_*   → 记 / 查家庭事实、结构化信息与别名
+   ├─ item_* / task_*                → 物品到期、账单 / 日程 / 提醒（软 / 硬）
+   ├─ time_now / calc / lunar_calendar → 时刻与日期推算、算术、农历
+   ├─ file_read / run_python / run_shell / web_search / web_fetch → 通用能力
+   ├─ printer_print                  → 上传的文件出纸（确认后）
+   ├─ home_* / camera_look           → 家庭设备查询控制、设备拍照（终端带摄像头时）
    ↓
-回答（文字 + Edge TTS 语音）
+回答（文字 + Edge TTS 语音；设备在线时直接推到客厅音响）
 ```
 
 ## 环境要求
 
-- Windows / Linux
+- Windows（CLI / 开发）或 Linux（服务端、打印）
 - Python 3.9+
-- 麦克风 + 音箱
-- 网络（Edge TTS 需联网；LLM 视部署方式而定，可用本地服务）
+- 麦克风 + 音箱（语音链路需要；只聊天可以不要）
+- 网络（Edge TTS 需联网；LLM 可用本机服务）
+- Docker（可选，长期部署推荐：Linux 镜像，打印走 CUPS）
 
 ## 快速开始
 
@@ -161,6 +181,7 @@ docker compose up -d --build
 - 容器日志默认 JSON 文件会一直长；`docker-compose.example.yml` 里已配
   `logging`（10MB × 3 份轮转）。自己改过 compose 的别忘了抄这一段，否则跑几个月能把盘吃满。
 - 语音模型缓存在 `xiaoma-cache` 卷（`/home/xiaoma/.cache`），重建容器不用重下 900MB 模型。
+- 长期部署（Ubuntu Server + 开机自启 + 定时加密备份）见 [`infra/ubuntu/README.md`](infra/ubuntu/README.md)。
 - 拉不到 `docker.io` 时（国内网络常见）先给 Docker 配镜像加速器或改用可访问的镜像源拉
   `python:3.12-slim` 并打回同名标签，Dockerfile 本身不用改。系统包/ pip 也连不上时，
   构建加镜像源参数：`APT_MIRROR=mirrors.aliyun.com`、`PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`
@@ -180,9 +201,11 @@ docker compose up -d --build
 |---|---|---|
 | `/healthz` | GET | 探活，**不需要鉴权**，只回 `{"ok": true}`（容器/反代用） |
 | `/api/status` | GET | 状态、记忆/物品/任务数量和当前到期提醒（`due_items` / `due_tasks`）；`runtime` 里有运行时长、数据大小、磁盘剩余 |
+| `/api/spaces` | GET | 已存在的空间（`X-Space-Id` 请求头选空间，不带 = 默认空间） |
 | `/api/stats` | GET | 概览统计：数量、任务状态、到期物品/任务 |
 | `/api/thinking` | GET | 「这轮有没有开思考」的观察记录（最近 20 轮 + 统计），`limit` 可调 |
 | `/api/prints` | GET | 打印历史：名字、时间、份数、结果、CUPS 任务号；`q` / `status` / `limit` / `offset` |
+| `/api/printer` | GET | 打印机状态：在线 / 队列 / 积压 / 原因（30 秒缓存，断电不会挂住页面） |
 | `/api/memories` | GET | 记忆列表，支持 `q` / `limit` / `offset` |
 | `/api/items` | GET | 物品列表，支持 `q` / `status` / `limit` / `offset` |
 | `/api/tasks` | GET | 任务列表，支持 `q` / `status` / `limit` / `offset` |
@@ -198,15 +221,16 @@ docker compose up -d --build
 | `/api/push/subscribe` | POST | 保存设备推送订阅 `{endpoint, keys}` |
 | `/api/push/unsubscribe` | POST | 删除设备推送订阅 |
 | `/api/push/test` | POST | 给已订阅设备发一条测试通知 |
-| `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64；打印可带 `file_id` |
-| `/api/print/files` | POST | 上传待打印文件（multipart: file + client_id），返回 `file_id`；只支持 Windows |
+| `/api/chat` | POST | 文字交互 `{text, client_id}` → 回复 + mp3 音频 base64；可带 `file_id`（打之前传的文件）、`task_id`（点开的那条提醒） |
+| `/api/print/files` | POST | 上传待打印文件（multipart: file + client_id），返回 `file_id`；落 `DATA_DIR/print`，由 Linux CUPS 出纸 |
 | `/api/voice` | POST | WAV 语音交互（multipart: file + client_id） |
 | `/api/asr` | POST | 设备网关：WAV → 文本（只识别，不进 Agent） |
 | `/api/tts` | POST | 设备网关：`{text}` → mp3 字节 |
 | `/api/ask` | POST | 设备网关：`{text, client_id, want_audio}` → Agent 回复（ask_xiaoma 的后端） |
-| `/api/events` | GET | SSE 事件流，主动推送到期提醒（`{"type":"reminder", ...}`） |
+| `/v1/chat/completions` | POST | 小智 / ESP32 的 OpenAI 兼容入口：带工具时回 `tool_calls`（拍照），带图时走视觉问答 |
+| `/api/events` | GET | SSE 事件流，主动推送提醒；`?role=device` 给小智提醒桥（设备自己念，不带 mp3） |
 
-配置 `API_TOKEN` 后，所有 API 都需要请求头 `Authorization: Bearer <API_TOKEN>`。当前服务端限制文本 2000 字符、音频 10MB/30 秒；Web 页面会保存并自动发送 Token。
+配置 `API_TOKEN` 后，除 `/healthz` 外所有接口都需要请求头 `Authorization: Bearer <API_TOKEN>`。当前服务端限制文本 2000 字符、音频 10MB/30 秒；Web 页面会保存并自动发送 Token。
 
 > `/api/events` 返回 `text/event-stream`；因浏览器 `EventSource` 无法携带请求头，Web 客户端改用 `fetch` 流式读取以便统一鉴权。
 
@@ -284,7 +308,7 @@ python scripts/mcp_probe.py --token <MCP_TOKEN> \
 
 ## 到期提醒
 
-- 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品和任务，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的会**主动推送**：有网页在线时走 SSE，弹出提醒并语音播报；没有网页在线时走 Web Push，发系统通知。
+- 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品和任务，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的会**主动推送**。投递顺序固定为 **设备 → 网页 → Web Push**，同一条提醒只走一条：客厅设备在线就让它自己念，页面在线就弹 SSE 并播报，都没有才发系统通知。
 - **软提醒**（D81）：`mode=soft` 的任务（牛奶过期、取快递这类当天提一句就行的事，软硬由模型判断）和物品到期，白天不在固定时间播报，只在聊天里顺口带一句，由你当场定「办了 / 往后放」；到 `SOFT_REMINDER_LAST_CALL`（默认 20:30）还没机会说，才按准点提醒发一次。吃药、出门、开会这类错过就没用的仍走准点提醒（`mode=timely`，默认）。
 - 同一物品在 `REMINDER_COOLDOWN_HOURS`（默认 24h）内不重复提醒；设为 `0` 表示只提醒一次。
 - 提醒状态落库（`reminded_at`），重启服务也不会重复打扰。
@@ -402,6 +426,8 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `PRINTER_MAX_COPIES` | `20` | 一次最多打印多少份 |
 | `PRINT_KEEP_DAYS` | `7` | 打印文件保留几天（`DATA_DIR/print`），过期连文件一起清；历史记录一直在 |
 | `PRINT_REUSE_HOURS` | `24` | 多久内算「刚才的文件」；「再打一份」不用重传，重启后也算 |
+| `PRINT_FILES_DIR` | `<DATA_DIR>/print` | 打印原件目录（要在卷上，容器重建不丢） |
+| `PRINTS_DB_PATH` | `<DATA_DIR>/prints.db` | 打印记录库（文件 id、结果、CUPS 任务号） |
 
 ## 使用方式
 
@@ -429,7 +455,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 
 支持安装成 PWA：手机浏览器打开后「添加到主屏幕」，全屏运行、有独立图标；
 断网时至少能打开界面（数据接口仍需要服务端在线）。Service Worker 挂在 `/sw.js`，
-后续 Web Push 提醒复用同一套入口。
+Web Push 也走同一个入口（见上一节）。
 
 ### 打印文件（Linux + CUPS）
 
@@ -469,7 +495,10 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | 我的酸奶还有几天过期？ | 查物品 → 结合今天日期回答"还有 4 天"（或已过期 X 天） |
 | 冰箱里有什么东西？ | 列出物品清单及到期情况 |
 | 我什么时候换的鼠标电池？ | 检索记忆 → 回答（带正确的记忆日期） |
-| 看看记忆 / 忘掉酸奶 | 内置命令：列出最近记忆 / 删除相关记忆 |
+| 看看我的记忆 / 忘掉酸奶 | 模型自己选 `memory_list` / `memory_delete`；删除仍要回「确认」 |
+| 牛奶今天过期 | 记入物品；白天不弹提醒，聊到相关话题时顺口问一句，20:30 还没说才兜底播报 |
+| 每天八点提醒我吃药 | 创建周期任务，到点准点提醒（`mode=timely`） |
+| （门锁被打开时） | 设备/网页/手机会主动说「爸爸用指纹开了门」「妈妈刷脸开了门」，不用问 |
 | 你好 | 闲聊回复 |
 
 ## 目录结构
@@ -477,9 +506,9 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ```
 ├── main.py          # CLI 入口（含唤醒词常驻模式）
 ├── wake_word.py     # 唤醒词解析
-├── assistant.py     # 核心编排和 Agent loop
+├── assistant.py     # 核心编排和 Agent loop（软提醒注入、回复校验、提醒措辞）
 ├── tools.py         # OpenAI function calling 工具注册
-├── server.py        # FastAPI 服务端
+├── server.py        # FastAPI 服务端：REST / SSE / MCP 接入点 / 提醒循环
 ├── config.py        # 集中配置（从 .env 加载）
 ├── audio_io.py      # PyAudio 录音与 pygame 播放
 ├── stt.py           # FunASR SenseVoice 语音识别
@@ -487,12 +516,17 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 ├── memory.py        # SQLite FTS5 中文记忆检索
 ├── items.py         # SQLite 物品管理（名称/到期日）
 ├── tts.py           # Edge TTS 语音合成
-├── static/index.html # Web 客户端
+├── agent/           # 澄清 / 提案 / 确认 / 护栏 / 回复校验 / 任务提示 / 设备巡检
+├── domain/          # 领域层：实体 / 待澄清 / 提案 / 任务 / 事实 / 空间 / 打印记录
+├── adapters/        # Home Assistant、打印机（CUPS）、文档、命令、上网、小智 MCP
+├── static/index.html # Web 客户端（单文件，无构建）
+├── infra/           # 部署件：小智提醒桥补丁、ESP32 固件补丁、Ubuntu 部署
+├── docs/            # ROADMAP、changes、备份/小智/提醒等文档
 ├── scripts/
 │   ├── backup.py             # 数据备份 / 校验 / 恢复（见 docs/backup.md）
 │   ├── backup_docker.py      # 命名卷备份 / 恢复（容器里走 sqlite 热备）
 │   ├── doctor.py             # 启动前自检（配置 / 目录 / 端口 / 可选模块）
-│   ├── eval_accuracy.py      # 41 条固定评测集（真模型，不进 pytest）
+│   ├── eval_accuracy.py      # 43 条固定评测集（真模型，不进 pytest）
 │   ├── fake_camera_device.py # 假设备：无硬件验摄像头整条链
 │   └── record_diagnostic.py  # 手工录音/播放诊断（不参与 pytest）
 ├── tests/           # pytest 自动化测试
@@ -517,13 +551,17 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - **语音合成**：Edge TTS（微软神经网络语音，免费）
 - **大模型**：任意 OpenAI 兼容服务（llama.cpp / LM Studio / OneAPI 网关 / 云端 API），需支持 function calling
 - **记忆存储**：SQLite FTS5（中文逐字空格化实现任意子串检索，零依赖）
-- **物品存储**：SQLite（名称 + 到期日，线程安全）
+- **家庭设备**：Home Assistant（小米官方集成）+ 本地 REST / WebSocket；语音终端走自建小智服务端
+- **打印**：Linux CUPS（`lp` / `lpstat`）+ LibreOffice（Office 转 PDF）
+- **部署**：Docker Compose；手机经 Tailscale + PWA 访问
 
 ## 隐私说明
 
-- 记忆与物品数据仅保存在本地 `DATA_DIR`（默认 `data/`，含 `memory.db` / `items.db` / `tasks.db` / `facts.db` / `agent.db` / `push.db`），不会上传
-- API 密钥仅存于本地 `.env`（已被 `.gitignore` 排除）
-- 语音音频为临时文件，处理完即删除
+- 记忆、物品、任务、事实、打印记录只存在本地 `DATA_DIR`（`memory.db` / `items.db` / `tasks.db` / `facts.db` / `agent.db` / `push.db` / `prints.db`），不上传、不入库
+- 打印原件留在 `DATA_DIR/print`，按 `PRINT_KEEP_DAYS` 清理；`data/thinking.jsonl` 只是调试观测（可关）
+- 对话文本会发给你在 `.env` 里配置的 LLM 服务（本地服务则不出内网）——这是它回答问题的前提；API 密钥只存在本地 `.env`
+- 语音音频是临时文件，处理完即删；摄像头图片只在内存里用一次，不落盘、不做人脸识别
+- Home Assistant 的令牌、Web Push 私钥都只放 `.env`，接口不返回前端
 
 ## 路线图
 
@@ -551,10 +589,16 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 - [x] 备份可加密（AES-256-GCM，`--encrypt`）+ Linux systemd timer 定时（`docs/backup.md`）
 - [x] 概览「打印机状态」：在线/队列/积压/原因，上传前就能看到（`GET /api/printer`）
 - [x] 空间隔离地基（D68）+ 手动路由（D71）：一个空间一套库（默认空间路径不变，其它在 `data/spaces/<id>/`）；请求带 `X-Space-Id` 就落到那个空间，`GET /api/spaces` 可列
+- [x] 设备保持连接（D78）：待机不收麦克风、WebSocket 常驻，提醒不用先喊一声；固件开机自连 + 断线重连
+- [x] 软提醒（D81）：`mode=timely/soft` 由模型判，白天软提醒只在聊天里顺口提，`SOFT_REMINDER_LAST_CALL`（默认 20:30）兜底；提醒文案由模型组织
+- [x] 门锁事件解码：谁、用什么方式、门内门外、撬锁/频繁失败/门未关/门虚掩都能说清（`HOME_LOCK_USERS` 把凭据编号映射成名字）
+- [x] 迁移预演：`infra/ubuntu/`（compose oneshot + 加密备份 systemd 单元），目标机 HPE Gen10 Plus / Ubuntu Server 26.04
 
 下一步：
 
-- [ ] 设备真机验收（唤醒词、反向提醒、拍照、延迟）
+- [ ] 迁移到 Ubuntu Server 真机（Gen10 Plus）：卷名、端口暴露、UPS/iLO、加密备份异地
+- [ ] 软提醒真机验收：聊到相关话题时是否顺口提、白天是否不再播报、20:30 是否兜底
+- [ ] 门锁异常 / 门未关真机验证（异常事件 6 天未触发过，目前只有单测）
 - [ ] 传感器事件（水浸 / 烟感 / 门磁）真机验证
 - [ ] Android App / 小程序
 - [ ] 记忆分层 + RAG + 本地生活工具（延后）
