@@ -2418,16 +2418,22 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    response = FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    # iOS 的启发式缓存很凶：没有 Cache-Control 时会把 HTML 存很久，装了主屏图标
+    # 之后一直看到旧界面。首页必须每次回源校验（带 ETag，没变就是 304）。
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/manifest.json")
 async def manifest():
     """PWA 清单：安卓 Chrome / iOS Safari 靠它识别「可安装」。"""
-    return FileResponse(
+    response = FileResponse(
         os.path.join(STATIC_DIR, "manifest.json"),
         media_type="application/manifest+json",
     )
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/sw.js")

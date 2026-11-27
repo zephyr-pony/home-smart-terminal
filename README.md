@@ -4,6 +4,23 @@
 
 以**记忆**为核心的家庭 AI 助手：记得家里的事，也会提醒、看家、打印、上网查。通过语音记录家庭琐事（"酸奶 8 月 5 号过期"、"明天交电费"），之后随时语音提问（"酸奶还有几天过期？"），系统自动检索并回答。
 
+## 界面
+
+<img src="docs/images/board-desktop.jpg" alt="桌面端看板：今天、家里、最近三张卡" width="100%">
+
+<p align="center">
+  <img src="docs/images/board-mobile.jpg" width="45%" alt="看板：今天要办的事、家里状态、最近记录">&nbsp;
+  <img src="docs/images/overview-mobile.jpg" width="45%" alt="概览：统计与到期提醒">
+</p>
+<p align="center">
+  <img src="docs/images/data-mobile.jpg" width="45%" alt="数据：任务列表，可直接完成或改期">&nbsp;
+  <img src="docs/images/settings-mobile.jpg" width="45%" alt="设置：主题外观与系统配置">
+</p>
+
+<p align="center"><sub>手机四屏依次为：看板 · 概览 · 数据 · 设置（iPhone 12，390×844，默认暖米主题）</sub></p>
+
+打开网页先看见的是看板：今天要办的事（点一下就「办好了 / 挪明天」）、家里的状态（门锁、温湿度、打印机）和最近记下的事；右下角或「按住说话」叫出聊天浮层。截图用的是示例数据，不是真实家庭记录。
+
 ## 功能特性
 
 - 🎤 **全程语音交互**：麦克风说话 → 识别 → 理解 → 语音回答
@@ -194,6 +211,16 @@ docker compose up -d --build
   ```
   加完从**手机或另一台电脑**访问 `http://<这台机器 IP>:8208` 验证；
   宿主机自己访问自己的局域网 IP 可能超时（WSL 镜像模式的 hairpin），这不算失败。
+  如果 Hyper-V 规则加了还是连不上（本机实测：WSL 监听只在 VM 里，Windows 侧没有监听），
+  再补一条 Windows 端口转发，和小智的 8400/8403 同样做法：
+  ```powershell
+  # 管理员 PowerShell；listenaddress 换成这台机器的局域网 IP
+  netsh interface portproxy add v4tov4 listenaddress=192.168.2.40 listenport=8208 connectaddress=127.0.0.1 connectport=8208
+  netsh interface portproxy show all   # 确认已生效
+  ```
+  手机装 PWA / 开 Web Push 要用 HTTPS，推荐 `tailscale serve --bg http://127.0.0.1:8208`，
+  用返回的 `https://<机器名>.<tailnet>.ts.net` 打开（手机 Tailscale 要在线）；
+  局域网 IP 那条（HTTP）只适合临时看，装不了 PWA、收不到推送。
 
 ## 服务端 API
 

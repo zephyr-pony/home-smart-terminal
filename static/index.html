@@ -227,6 +227,9 @@ html, body {
 .view { display: none; flex: 1; min-height: 0; }
 .view.active { display: flex; flex-direction: column; }
 .view-inner { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px; }
+/* 内容照常滚，但不画滚动条：手机上是灰杠很难看，桌面上这条也比默认细条扎眼 */
+.view-inner, #view-board { scrollbar-width: none; -ms-overflow-style: none; }
+.view-inner::-webkit-scrollbar, #view-board::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .view-title { font-size: 18px; margin-bottom: 14px; }
 .section-title { font-size: 14px; color: var(--text-secondary); margin: 18px 0 8px; }
 .muted { color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
@@ -271,6 +274,11 @@ html, body {
   color: var(--accent); font-size: 12px; cursor: pointer;
 }
 .small-btn.danger { color: var(--danger); }
+.small-btn:disabled { opacity: .45; cursor: default; }
+/* 设置页的数据库路径收进折叠块：六行绝对路径平时没用，排查时才展开 */
+.db-files { margin-top: 6px; }
+.db-files summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+.db-files .db-line { font-size: 12px; line-height: 1.7; color: var(--text-secondary); }
 .empty { color: var(--text-secondary); font-size: 13px; padding: 10px 0; }
 .subtabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 .subtab {
@@ -527,7 +535,9 @@ html, body {
   /* 手机上让三张卡都落在屏幕里：家里/最近按自然高度、绝不内部滚，
      今天吃掉剩下的空间、自己内部滚动。网关接上后家里会多几行，
      所以今天的最低高度压到 110px，宁可它滚也不让家里被裁。 */
-  #view-board { display: flex; flex-direction: column; overflow-y: auto; align-items: stretch; }
+  /* 必须带 .active：.view{display:none} 是类选择器，这个 ID 选择器会把它盖掉，
+     导致切到概览/数据/设置时看板还挤在旁边（2026-11-27 手机实拍发现） */
+  #view-board.active { display: flex; flex-direction: column; overflow-y: auto; align-items: stretch; }
   /* margin auto 在 flex 交叉轴上会让卡片按内容收缩（实测窄一圈），这里铺满 */
   .board { flex: 1 1 auto; min-height: 0; width: 100%; margin: 0; display: flex; flex-direction: column; gap: 10px; }
   #card-today { flex: 0 1 auto; min-height: 110px; display: flex; flex-direction: column; }
@@ -552,6 +562,22 @@ html, body {
   }
   #view-board { scrollbar-width: none; -ms-overflow-style: none; }
   #view-board::-webkit-scrollbar { display: none; }
+  /* 概览/数据/设置同样不画滚动条：内容照常滚，边缘那条灰杠在手机上很难看 */
+  .view-inner {
+    padding: 14px 16px 18px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .view-inner::-webkit-scrollbar { width: 0; height: 0; display: none; }
+  /* 概览六张统计卡在手机上排三列，别把「到期提醒」挤到一屏之外 */
+  .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .card { padding: 10px; }
+  .card .num { font-size: 20px; }
+  .card .label { font-size: 11px; }
+  .list-row { padding: 9px 11px; }
+  .section-title { margin-top: 16px; }
+  /* iOS 聚焦输入框时，字号小于 16px 会把整页放大 */
+  .data-toolbar input, .data-toolbar select, .field input, #token-input { font-size: 16px; }
 }
 .kvline { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 14px; padding: 5px 0; color: var(--text-primary); }
 .kvline .k { color: var(--text-secondary); }
@@ -613,6 +639,16 @@ html, body {
   #chat-sheet.open { transform: none; }
   .board { grid-template-columns: 1.55fr 1fr; align-items: start; }
   .view-inner { max-width: 880px; margin: 0 auto; width: 100%; }
+  /* 宽屏别把六张统计卡拉成六条大横杠：一排六个，数字和标签紧凑 */
+  .cards { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .card { padding: 10px 12px; }
+  .card .num { font-size: 20px; }
+  /* 列表两列，880px 宽的单列一行只有十几个字，太散 */
+  #overview-due, #thinking-list, #prints-list, #data-list {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start;
+  }
+  /* 设置项两列，省一半滚动 */
+  #settings-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
   /* 宽屏上「按住说话」不必拉满一整行，居中一条更好按 */
   #dock { max-width: 560px; width: 100%; margin: 0 auto; }
 }
@@ -675,7 +711,7 @@ html, body {
         <section class="bcard" id="card-today">
           <h2>今天 <span id="today-count"></span></h2>
           <div id="today-list"></div>
-          <div id="today-more" class="scroll-hint hidden">往下滑看更多</div>
+          <div id="today-more" class="scroll-hint hidden">往上滑看更多</div>
           <div id="today-done" class="done-line hidden"></div>
         </section>
         <div class="board-side">
@@ -1086,6 +1122,27 @@ html, body {
     return left < 0 ? '已过期 ' + (-left) + ' 天' : '剩 ' + left + ' 天';
   }
 
+  // 任务/物品里的日期别把 ISO 串直接丢给用户看（语音里念不出来的那种）
+  function fmtDueAt(value) {
+    if (!value) return '未定';
+    var due = new Date(String(value).replace(' ', 'T'));
+    if (isNaN(due.getTime())) return String(value);
+    var now = new Date();
+    var hh = ('0' + due.getHours()).slice(-2) + ':' + ('0' + due.getMinutes()).slice(-2);
+    var dayText = (due.getMonth() + 1) + '月' + due.getDate() + '日';
+    if (due.toDateString() === now.toDateString()) return '今天 ' + hh;
+    var tomorrow = new Date(now.getTime() + 86400000);
+    if (due.toDateString() === tomorrow.toDateString()) return '明天 ' + hh;
+    return dayText + ' ' + hh;
+  }
+
+  function fmtDay(value) {
+    if (!value) return '未知';
+    var day = new Date(String(value).slice(0, 10) + 'T00:00:00');
+    if (isNaN(day.getTime())) return String(value);
+    return (day.getMonth() + 1) + '月' + day.getDate() + '日';
+  }
+
   function scrollBottom() {
     requestAnimationFrame(function() { msgBox.scrollTop = msgBox.scrollHeight; });
   }
@@ -1299,7 +1356,7 @@ html, body {
     var when = whenText(task.due_at, task.days_left);
     var meta = daysLeftText(task.days_left);
     if (task.mode === 'soft') meta += ' · 聊天时顺口提';
-    if (task.recur) meta += ' · ' + task.recur;
+    if (task.recur) meta += ' · ' + (recurLabel(task) || task.recur);
     return '<div class="brow">' +
       '<div class="bwhen' + (when.warn ? ' warn' : '') + '">' + esc(when.text) + '</div>' +
       '<div class="bbody">' +
@@ -1320,7 +1377,7 @@ html, body {
       '<div class="bbody">' +
         '<div class="btitle">' + esc(item.name) + '</div>' +
         '<div class="bmeta' + (item.days_left < 0 ? ' warn' : '') + '">' +
-          esc(item.expiry_date || '') + ' · ' + esc(daysLeftText(item.days_left)) + '</div>' +
+          esc(fmtDay(item.expiry_date)) + ' · ' + esc(daysLeftText(item.days_left)) + '</div>' +
         '<div class="bacts">' +
           '<button data-act="item-delete" data-id="' + esc(item.id) + '" type="button">扔了</button>' +
         '</div>' +
@@ -1722,12 +1779,18 @@ html, body {
       Math.floor((seconds % 86400) / 3600) + ' 小时';
   }
 
+  // 打印时间也按中文念法给：今天/昨天/几月几日。裸的「11-27」在语音里读不出来，
+  // 手机上看着也像一串编号。
   function fmtTime(ts) {
     if (!ts) return '';
     var d = new Date(ts * 1000);
     function two(n) { return (n < 10 ? '0' : '') + n; }
-    return (d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' +
-      two(d.getHours()) + ':' + two(d.getMinutes());
+    var clock = two(d.getHours()) + ':' + two(d.getMinutes());
+    var now = new Date();
+    if (d.toDateString() === now.toDateString()) return '今天 ' + clock;
+    var yesterday = new Date(now.getTime() - 86400000);
+    if (d.toDateString() === yesterday.toDateString()) return '昨天 ' + clock;
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + clock;
   }
 
   // 打印机状态（D61 补充）：概览页先看能不能打，别等传完文件才报错。
@@ -1922,7 +1985,13 @@ html, body {
     if (dataState.status) params.set('status', dataState.status);
     if (dataState.sort) params.set('sort', dataState.sort);
 
+    // 快速切 tab / 切子类时，先发的请求可能后回来，把新结果盖掉。
+    // 只认最后一次请求的响应（实测：点「数据」立刻点「任务」，列表还是记忆）。
+    var seq = (dataState.seq || 0) + 1;
+    dataState.seq = seq;
+
     apiFetch(DATA_ENDPOINTS[kind] + '?' + params.toString()).then(function(d) {
+      if (seq !== dataState.seq) return;
       dataState.total = d.total || 0;
       if (dataState.offset > 0 && dataState.offset >= dataState.total) {
         dataState.offset = Math.max(0, dataState.offset - dataState.limit);
@@ -1953,15 +2022,21 @@ html, body {
     var rows = [];
     if (kind === 'memories') {
       (data.memories || []).forEach(function(m) {
+        // 摘要常常就是原文（差一两个字），重复念一遍只是把卡片撑高；
+        // 只有长度明显不同（蒸馏合并过）时才值得显示
+        var summary = m.summary || '';
+        var meta = esc(m.time);
+        if (summary && Math.abs(summary.length - String(m.text || '').length) > 2) {
+          meta += ' · ' + esc(summary);
+        }
         rows.push('<div class="list-row">' + esc(m.text) +
-          '<div class="meta">' + esc(m.time) +
-          (m.summary ? ' · ' + esc(m.summary) : '') +
+          '<div class="meta">' + meta +
           '</div><div class="row-actions">' + deleteButton('memories', m.id) + '</div></div>');
       });
     } else if (kind === 'items') {
       (data.items || []).forEach(function(item) {
         rows.push('<div class="list-row">' + esc(item.name) +
-          '<div class="meta">到期 ' + esc(item.expiry_date || '未知') +
+          '<div class="meta">到期 ' + esc(fmtDay(item.expiry_date)) +
           ' · ' + esc(STATUS_LABELS[item.status] || item.status) + '</div>' +
           '<div class="row-actions">' + deleteButton('items', item.id) + '</div></div>');
       });
@@ -1976,7 +2051,7 @@ html, body {
         actions += deleteButton('tasks', task.id);
         actions += '</div>';
         rows.push('<div class="list-row">#' + esc(task.id) + ' ' + esc(task.title) +
-          '<div class="meta">' + esc(task.due_at || '未定') +
+          '<div class="meta">' + esc(fmtDueAt(task.due_at)) +
           ' · ' + esc(STATUS_LABELS[task.status] || task.status) +
           (task.recur ? ' · ' + esc(recurLabel(task)) : '') + '</div>' + actions + '</div>');
       });
@@ -2044,20 +2119,23 @@ html, body {
     apiFetch('/api/config').then(function(d) {
       var llm = d.llm || {};
       var dbPaths = d.db_paths || {};
-      var dbLines = Object.keys(dbPaths).map(function(key) {
+      var dbKeys = Object.keys(dbPaths);
+      var dbLines = dbKeys.map(function(key) {
         var full = String(dbPaths[key]);
-        // 完整路径太长，只留最后两段（如 …\data\memory.db），完整值放 title
+        // 设置页只留文件名，完整路径放 title；平时没人看，排查时悬停或展开
         var parts = full.split(/[\\/]/).filter(Boolean);
-        var shown = parts.length > 2 ? '…\\' + parts.slice(-2).join('\\') : full;
-        return '<span title="' + esc(full) + '">' + esc(key) + '：' + esc(shown) + '</span>';
-      }).join('<br>');
+        var shown = parts.length ? parts[parts.length - 1] : full;
+        return '<div class="db-line" title="' + esc(full) + '">' +
+          esc(key) + '：' + esc(shown) + '</div>';
+      }).join('');
       settingsSummary.innerHTML =
         '模型：' + esc(llm.model || '未配置') +
         '（' + (llm.configured ? '已配置' : '未配置') + '）<br>' +
         'API Token：' + (d.api_token_enabled ? '已启用' : '未启用') + '<br>' +
         '推送通知：' + ((d.push && d.push.enabled) ? '已配置' : '未配置') +
         '（订阅 ' + ((d.push && d.push.subscriptions) || 0) + ' 台）' +
-        (dbLines ? '<br>数据库：<br>' + dbLines : '');
+        (dbKeys.length ? '<details class="db-files"><summary>数据库文件（' +
+          dbKeys.length + ' 个）</summary>' + dbLines + '</details>' : '');
       var values = d.values || {};
       settingsForm.innerHTML = CONFIG_FIELDS.map(function(field) {
         return '<div class="field"><label>' + esc(field[1]) + '（' + esc(field[0]) +
