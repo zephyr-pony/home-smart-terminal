@@ -112,6 +112,15 @@ CONFIRM_WRITE_ACTIONS = _get("CONFIRM_WRITE_ACTIONS", "0")
 TASKS_DB_PATH = _db_path("tasks.db", "TASKS_DB_PATH")
 FACTS_DB_PATH = _db_path("facts.db", "FACTS_DB_PATH")
 
+# ---- 对话记录与画像提炼（D84）----
+# 只留最近几天：给「昨天说到哪」和夜间画像提炼当原料，过期自动删。
+# 原文是用户说过的话，属于敏感数据——保留期要短，设置页能看、能清、能关。
+DIALOGUE_DB_PATH = _db_path("dialogue.db", "DIALOGUE_DB_PATH")
+DIALOGUE_ENABLED = _get_int("DIALOGUE_ENABLED", 1)
+DIALOGUE_KEEP_DAYS = _get_int("DIALOGUE_KEEP_DAYS", 7)
+# 夜间从昨天的对话里找稳定偏好，只写「候选」等用户点头（D59 的确认制不变）
+PROFILE_MINING_ENABLED = _get_int("PROFILE_MINING_ENABLED", 1)
+
 # ---- 音频录制 ----
 SAMPLE_RATE = _get_int("SAMPLE_RATE", 16000)
 CHUNK_SIZE = _get_int("CHUNK_SIZE", 1024)

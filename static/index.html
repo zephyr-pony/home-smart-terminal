@@ -732,6 +732,11 @@ html, body {
         <h2 class="view-title">概览</h2>
         <div id="stat-cards" class="cards"></div>
         <div id="stat-detail" class="muted stat-detail"></div>
+        <div id="profile-block" class="hidden">
+          <h3 class="section-title">待确认的习惯</h3>
+          <div class="muted stat-detail">夜里从白天的对话里看出来的，你没点头就不算数。</div>
+          <div id="profile-list" class="list"></div>
+        </div>
         <h3 class="section-title">到期提醒</h3>
         <div id="overview-due" class="list"></div>
         <h3 class="section-title">思考开关</h3>
@@ -822,6 +827,19 @@ html, body {
           <div class="muted">只保存在这台设备上，最多保留最近 120 条；语音回复的播放按钮不会保留。</div>
           <div class="row-actions">
             <button id="clear-history" class="small-btn danger" type="button">清空聊天记录</button>
+          </div>
+        </div>
+
+        <div class="section-title">对话记录</div>
+        <div class="card">
+          <div id="dialogue-status" class="muted">正在检查…</div>
+          <details class="db-files">
+            <summary>最近记下的几句</summary>
+            <div id="dialogue-recent"></div>
+          </details>
+          <div class="row-actions">
+            <button id="dialogue-refresh" class="small-btn" type="button">刷新</button>
+            <button id="dialogue-clear" class="small-btn danger" type="button">清空对话记录</button>
           </div>
         </div>
       </div>
@@ -941,6 +959,12 @@ html, body {
   var statCards  = document.getElementById('stat-cards');
   var statDetail = document.getElementById('stat-detail');
   var overviewDue = document.getElementById('overview-due');
+  var profileBlock = document.getElementById('profile-block');
+  var profileList = document.getElementById('profile-list');
+  var dialogueStatus = document.getElementById('dialogue-status');
+  var dialogueRecent = document.getElementById('dialogue-recent');
+  var dialogueClear = document.getElementById('dialogue-clear');
+  var dialogueRefresh = document.getElementById('dialogue-refresh');
   var thinkingSummary = document.getElementById('thinking-summary');
   var thinkingList = document.getElementById('thinking-list');
   var printsList = document.getElementById('prints-list');
@@ -1275,7 +1299,7 @@ html, body {
     if (name === 'board') loadBoard(false);
     if (name === 'overview') loadOverview();
     if (name === 'data') loadData(currentDataKind);
-    if (name === 'settings') { loadConfig(); applyAppearance(); }
+    if (name === 'settings') { loadConfig(); applyAppearance(); loadDialogue(); }
   }
 
   // ================= 看板（D82） =================
@@ -1724,6 +1748,50 @@ html, body {
     loadThinking();
     loadPrinterStatus();
     loadPrints();
+    loadProfileSuggestions();
+  }
+
+  // ---- 待确认的习惯（D84）：夜里提炼出来的候选，采纳才落库 ----
+  function loadProfileSuggestions() {
+    if (!profileBlock) return;
+    apiFetch('/api/profile/suggestions').then(function(d) {
+      var items = d.suggestions || [];
+      if (!items.length) {
+        profileBlock.classList.add('hidden');
+        profileList.innerHTML = '';
+        return;
+      }
+      profileBlock.classList.remove('hidden');
+      profileList.innerHTML = items.map(function(item) {
+        return '<div class="list-row">' +
+          '<b>' + esc(item.predicate) + '</b>：' + esc(item.value) +
+          (item.evidence ? '<div class="meta">原话：' + esc(item.evidence) + '</div>' : '') +
+          '<div class="row-actions">' +
+            '<button class="small-btn" data-profile="' + esc(item.id) +
+              '" data-profile-action="accept" type="button">是，记住</button>' +
+            '<button class="small-btn danger" data-profile="' + esc(item.id) +
+              '" data-profile-action="dismiss" type="button">不是</button>' +
+          '</div></div>';
+      }).join('');
+    }).catch(function() {
+      profileBlock.classList.add('hidden');
+    });
+  }
+
+  function decideProfile(btn) {
+    var id = btn.getAttribute('data-profile');
+    var action = btn.getAttribute('data-profile-action');
+    btn.disabled = true;
+    apiFetch('/api/profile/suggestions/' + encodeURIComponent(id), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action })
+    }).then(function() {
+      loadOverview();   // 采纳后会多一条事实，统计卡也要跟着变
+    }).catch(function(err) {
+      btn.disabled = false;
+      alert('没能保存：' + requestErrorText(err));
+    });
   }
 
   // 「模型自己决定要不要开思考」的观察（D63）：只看最近 20 轮，新的在上。
@@ -2102,6 +2170,39 @@ html, body {
     modal.classList.add('hidden');
   }
 
+  // ---- 对话记录（D84）：服务端存了什么，用户能看、能清 ----
+  // 和上面「聊天记录」不是一回事：那份在本机 localStorage，只用于显示；
+  // 这份在服务端，是「接着聊」和夜里提炼习惯的原料。
+  function loadDialogue() {
+    if (!dialogueStatus) return;
+    apiFetch('/api/dialogue?limit=8').then(function(d) {
+      if (d.enabled === false) {
+        dialogueStatus.textContent =
+          '已关闭（DIALOGUE_ENABLED=0）：小马不保存对话原文，夜里也不会提炼习惯。';
+        if (dialogueRecent) dialogueRecent.innerHTML = '';
+        return;
+      }
+      var keep = d.keep_days ? ('保留最近 ' + d.keep_days + ' 天') : '不保留';
+      dialogueStatus.textContent =
+        (d.count ? ('存了 ' + d.count + ' 句对话') : '还没记下对话') +
+        '（' + keep + '）。只用来接着聊和夜里整理习惯，不上传，过期自动删。';
+      var turns = d.turns || [];
+      if (!dialogueRecent) return;
+      if (!turns.length) {
+        dialogueRecent.innerHTML = '<div class="db-line">还没有记录。</div>';
+        return;
+      }
+      dialogueRecent.innerHTML = turns.map(function(turn) {
+        var text = String(turn.text || '');
+        if (text.length > 40) text = text.slice(0, 40) + '…';
+        return '<div class="db-line">' + esc(fmtDueAt(turn.at)) + ' · ' +
+          (turn.role === 'user' ? '你' : '小马') + '：' + esc(text) + '</div>';
+      }).join('');
+    }).catch(function(err) {
+      dialogueStatus.textContent = '读取失败：' + requestErrorText(err);
+    });
+  }
+
   var CONFIG_FIELDS = [
     ['TTS_VOICE', '语音角色', 'text'],
     ['REMINDER_DAYS', '提前提醒天数', 'number'],
@@ -2111,6 +2212,9 @@ html, body {
     ['SESSION_CONTEXT_MAX_CHARS', '单条历史最大字数', 'number'],
     ['PROPOSAL_DEDUPE_SECONDS', '写提案去重窗口（秒）', 'number'],
     ['PENDING_ACTION_TTL_SECONDS', '待澄清过期（秒）', 'number'],
+    ['DIALOGUE_ENABLED', '保存对话（1 开 / 0 关）', 'number'],
+    ['DIALOGUE_KEEP_DAYS', '对话保留天数', 'number'],
+    ['PROFILE_MINING_ENABLED', '夜间提炼习惯（1 开 / 0 关）', 'number'],
     ['WAKE_WORD', '唤醒词', 'text'],
     ['WAKE_ACK_TEXT', '唤醒应答', 'text']
   ];
@@ -2414,6 +2518,29 @@ html, body {
     msgBox.innerHTML = '';
     renderWelcome();
   });
+
+  if (dialogueClear) {
+    dialogueClear.addEventListener('click', function() {
+      if (!confirm('清空服务端保存的对话原文？画像和记忆是提炼后的结论，不受影响。')) return;
+      dialogueClear.disabled = true;
+      apiFetch('/api/dialogue', { method: 'DELETE' }).then(function() {
+        loadDialogue();
+      }).catch(function(err) {
+        alert('清空失败：' + requestErrorText(err));
+      }).then(function() {
+        dialogueClear.disabled = false;
+      });
+    });
+  }
+  if (dialogueRefresh) {
+    dialogueRefresh.addEventListener('click', loadDialogue);
+  }
+  if (profileList) {
+    profileList.addEventListener('click', function(e) {
+      var btn = e.target.closest ? e.target.closest('button[data-profile]') : null;
+      if (btn) decideProfile(btn);
+    });
+  }
 
   tabs.forEach(function(btn) {
     btn.addEventListener('click', function() {

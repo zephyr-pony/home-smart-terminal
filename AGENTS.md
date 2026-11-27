@@ -194,6 +194,12 @@ pytest tests -q
 - `profile_set` 是「模型推断的偏好」，**无条件**先确认再落库，不跟 `CONFIRM_WRITE_ACTIONS` 走；
   用户自己说出的事实仍走 `fact_store` 直接写。画像主体统一挂 `用户` / `用户/<名字>` 前缀
   （`domain/facts.py` 的 `profile_subject`），热点上下文靠它识别画像（D59）。
+- 画像候选只有两条来路（D84）：用户当面说的（`profile_set` 当场确认，D59 不变）和
+  **夜里提炼**的（`agent/profile_miner.py`）。提炼读最近 24 小时的对话，产物只是
+  `proposals`（`action_type=profile_set`、`status=proposed`）；网页「概览 → 待确认的习惯」
+  点「是，记住」才落 `用户/...`，点「不是」标 `cancelled` 并且不再提。**证据必须是用户原话的
+  子串**，对不上整条丢掉——模型编证据比编结论容易得多。一次性的请求、对助手的要求、
+  户号地址这类事实，都不算偏好。
 - 提案记录在 `proposals` 表，带 `idempotency_key`；`PROPOSAL_DEDUPE_SECONDS` 内相同内容自动去重。
 - 新增写工具也应走 `ProposalService`，为后续确认、审计和回滚留位置。
 - 同名物品在 `ProposalService.add_item` 里合并：带新日期就更新到期日（清 `reminded_at`、状态退回 `active`），不带日期就保留原值，避免清单出现两条同名物品、提醒两次。
@@ -201,6 +207,7 @@ pytest tests -q
 - `Facts.search` 的 `query` 会拆成二字组、逐词 AND 匹配「主体+属性+值」拼接文本（D46）：整串连续子串的要求太脆，「水费户号」跨 subject/predicate 就查不到。拆词不放松到「命中任一」，否则「自己家电费户号」会把水费那条也捞出来。
 - 同义说法在**检索侧**归一（`agent/synonyms.py`：户号/账号、燃气/煤气/天然气、宽带/网费……）：查询串和库里的文本都 `canonicalize` 之后再比，所以存「户号」、问「账号」也能命中，两个方向都通。只收真正可互换的词，不做单字替换，也不收「水费/水表」这类相关但不同的说法——放宽一个词不会放松同一查询里的其它词（「电费账号」不会捞出「水费户号」），宁可查不到也不查错。写入内容不受影响，用户原话照存。
 - 事实挂实体（D66）：`facts.entity_id` 由 `Assistant` 注入的 `AgentStore.find_any_entity` 在存的时候按主体最长匹配填；`Facts.search` 先把查询里命中的实体名下的事实并进来，再用去掉实体名之后剩的词筛。主体文字不改成规范名（用户原话照存），画像 `用户/...` 不挂实体。新增「东西的别名」只需加实体别名，不要往 `agent/synonyms.py` 里加（那是通用说法，不是家里的东西）。
+- 记忆也认实体（D83）：`Memory.set_entity_lookup` 同样由 `Assistant` 注入 `find_any_entity`，但**不建关联表、不在写入时挂实体**——查询里认出实体就把它的规范名和别名再捞一轮（存「净水器」、问「饮水机」也查得到），老记忆零迁移立刻受益。补召回排在原文命中**之后**（关键词是模型挑的，通常更准；硬置顶会让「家里」这类宽别名把无关记忆顶到前面），只加在 `search` / `search_details`；删除（`delete_by_keywords` / `find_matching`）**不展开别名**，「忘掉饮水机」不该顺手删掉写成「净水器」的那些。实体解析在记忆库的锁外做，别把两把锁套起来。
 - 删除类动作（`memory_delete` / `item_delete`）不直接执行，先经 `ConfirmationManager` 请求确认。
 - 写工具参数在 agent loop 里先过 `agent/guard.py`：日期一律以 `agent/dates.py` 从用户原话解析的结果为准，句子里没有日期线索就把日期留空；`task_add` 的标题在原话里找不到依据时整次调用不执行。
 - 所有「念给用户听」的写操作文案统一走 `agent/wording.py`：日期说成「11月25日（周三）」或「明天」，确认句引用用户原话，执行后只补模型没说到的日期。不要在工具或编排里自己拼句子——三处各写一遍，日期格式就会三处不一致，而语音里念成「二零二六 杠 十一 杠 二五」用户根本听不出对错。
@@ -363,6 +370,12 @@ pytest tests -q
   条（本机 8，默认 5）、单条截 `SESSION_CONTEXT_MAX_CHARS` 字；重启/重建容器就断，
   换浏览器/换设备是新对话。网页 `localStorage` 里的聊天记录只用于显示，**不发给模型**
   ——别以为它会自动接上。按 `client_id` 分的还有待澄清动作和热点快照，设备要传稳定 ID。
+- 对话记录（D84）另存一份到 `dialogue.db`（`domain/dialogue.py`，`space_paths["dialogue"]`）：
+  只记 user / assistant 两侧文本，保留 `DIALOGUE_KEEP_DAYS`（默认 7 天），启动时和每天夜里
+  各清一次。**只写在 `Assistant.process_text` 一处**——网页、CLI、`/v1`、MCP 都走这里，
+  各入口各写一遍必然漏掉小智那条。它**不进 system prompt**（上下文仍用最近几轮 + 热点快照），
+  也不转成 `memories`；`DIALOGUE_ENABLED=0` 时连库都不建。网页「设置 → 对话记录」能看到
+  存了什么、一键清空（`GET/DELETE /api/dialogue`），清空只删原文，画像和记忆是提炼后的结论。
 
 ### 运维与运行观察（D67）
 

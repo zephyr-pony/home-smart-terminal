@@ -17,3 +17,6 @@ def _no_home_gateway(monkeypatch):
     monkeypatch.setattr("server.MCP_TOKEN", "")
     # 思考记录只在真实运行时写，测试不落盘
     monkeypatch.setattr("agent.thinking.ENABLED", False)
+    # 对话记录（D84）同理：默认不建库、不记；要测记录行为的用例自己传
+    # DialogueStore(":memory:", enabled=True)
+    monkeypatch.setattr("domain.dialogue.DIALOGUE_ENABLED", 0)

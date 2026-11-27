@@ -1772,3 +1772,80 @@ def test_weather_endpoint_reports_unconfigured(monkeypatch):
 
     assert body["ok"] is False
     assert body["error"]
+
+# ---------- D84：对话记录与画像候选 ----------
+
+def test_dialogue_endpoints_show_and_clear(monkeypatch):
+    from domain.dialogue import DialogueStore
+
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    assistant = make_real_assistant()
+    assistant.dialogue = DialogueStore(":memory:", enabled=True)
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+
+    assert client.get("/api/dialogue").json()["count"] == 0
+    assistant.dialogue.add("web:1", "user", "我不吃辣")
+
+    body = client.get("/api/dialogue").json()
+    assert body["enabled"] is True
+    assert body["count"] == 1
+    assert body["turns"][0]["text"] == "我不吃辣"
+
+    assert client.delete("/api/dialogue").json()["deleted"] == 1
+    assert client.get("/api/dialogue").json()["count"] == 0
+
+
+def test_profile_suggestion_accept_writes_profile(monkeypatch):
+    """网页上点「采纳」就是 D59 要的那声点头：此时才落 用户/... 画像。"""
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    assistant = make_real_assistant()
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+    assistant.proposals.store.record_proposal(
+        "profile_set",
+        {"subject": "用户", "predicate": "口味", "value": "不吃辣",
+         "evidence": "我不吃辣"},
+        "proposed", "来自对话提炼",
+    )
+
+    items = client.get("/api/profile/suggestions").json()["suggestions"]
+    assert len(items) == 1
+    proposal_id = items[0]["id"]
+
+    accepted = client.post(
+        "/api/profile/suggestions/%d" % proposal_id, json={"action": "accept"}
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["fact"]["value"] == "不吃辣"
+
+    values = [row["value"] for row in assistant.facts.search(subject="用户")]
+    assert values == ["不吃辣"]
+    # 提议变成已采纳，不会重复出现；再点一次是 409
+    assert client.get("/api/profile/suggestions").json()["suggestions"] == []
+    again = client.post(
+        "/api/profile/suggestions/%d" % proposal_id, json={"action": "accept"}
+    )
+    assert again.status_code == 409
+
+
+def test_profile_suggestion_dismiss_keeps_facts(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    assistant = make_real_assistant()
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+    assistant.proposals.store.record_proposal(
+        "profile_set",
+        {"subject": "用户", "predicate": "口味", "value": "爱吃辣"},
+        "proposed", "来自对话提炼",
+    )
+    proposal_id = client.get("/api/profile/suggestions").json()["suggestions"][0]["id"]
+
+    dismissed = client.post(
+        "/api/profile/suggestions/%d" % proposal_id, json={"action": "dismiss"}
+    )
+
+    assert dismissed.status_code == 200
+    assert assistant.facts.search(subject="用户") == []
+    row = assistant.proposals.store.get_proposal(proposal_id)
+    assert row["status"] == "cancelled"

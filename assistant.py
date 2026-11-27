@@ -58,6 +58,7 @@ from adapters.home import build_home
 from adapters.printer import build_printer, kind_of, pdf_page_count
 from adapters import documents
 from adapters.weather import Weather
+from domain.dialogue import DialogueStore
 from domain.facts import Facts, PROFILE_PREFIX, profile_subject
 from domain.space import normalize_space_id, space_paths
 from domain.store import AgentStore
@@ -134,7 +135,8 @@ class Assistant:
 
     def __init__(self, memory=None, llm=None, items=None, clarifier=None,
                  tasks=None, facts=None, home=None, decision_llm=None,
-                 printer=None, print_store=None, space_id="default"):
+                 printer=None, print_store=None, space_id="default",
+                 dialogue=None):
         self.space_id = normalize_space_id(space_id)
         self.space = space_paths(self.space_id)
         self.memory = memory or Memory(self.space["memory"])
@@ -152,6 +154,11 @@ class Assistant:
         self.items = items or Items(self.space["items"])
         self.tasks = tasks or Tasks(self.space["tasks"])
         self.facts = facts or Facts(self.space["facts"])
+        # 对话记录（D84）：只留最近几天，给跨天上下文和夜间画像提炼当原料。
+        # 关掉时 store 里 conn 为 None，add 直接返回 False。
+        self.dialogue = dialogue if dialogue is not None else DialogueStore(
+            self.space["dialogue"]
+        )
         # 设备网关（Home Assistant）：没配 HOME_TOKEN 就是 None，工具不注册
         self.home = home if home is not None else build_home()
         # 歧义澄清（实体 + 待澄清动作），写操作前先过一遍
@@ -181,6 +188,8 @@ class Assistant:
         # 事实挂实体（D66）：存的「饮水机」和「净水器」是同一个东西；
         # 领域层不认识 agent，解析函数从这里注入。
         self.facts.set_entity_lookup(self.clarifier.store.find_any_entity)
+        # 记忆也一样（D83）：问「饮水机滤芯」要能捞到写着「净水器」的那条
+        self.memory.set_entity_lookup(self.clarifier.store.find_any_entity)
         # 天气：默认 Open-Meteo（零 key），配了和风 key 就用和风；配置不全时不注册
         self.weather = Weather(
             WEATHER_API_HOST, WEATHER_API_KEY, WEATHER_CITY,
@@ -267,7 +276,28 @@ class Assistant:
                 text, client_id, state.get("thinking"), state.get("why"),
                 state.get("tools"), time.time() - started, result,
             )
+        self._record_dialogue(text, client_id, result)
         return result
+
+    def _record_dialogue(self, text, client_id, result):
+        """记下这一轮的原话和回复（D84）。写失败不影响回答。
+
+        只在编排层记一次：网页、CLI、`/v1`、MCP 最后都走 process_text，
+        各入口各写一遍必然漏掉某个（小智那条链路最容易漏）。
+        """
+        store = getattr(self, "dialogue", None)
+        if store is None or not getattr(store, "enabled", False):
+            return
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            store.add(client_id or "cli", "user", text)
+            reply = (result or {}).get("reply") or ""
+            if reply:
+                store.add(client_id or "cli", "assistant", reply)
+        except Exception as exc:  # 记录是旁路，不能拖垮回答
+            print("⚠️ 对话记录写入失败：%s" % exc)
 
     def _process_text_inner(self, text, client_id=None, on_delta=None, device_camera=False,
                             task_id=None, attachment=None):
@@ -549,6 +579,10 @@ class Assistant:
         """
         with self._session_lock:
             self.hot_contexts.clear()
+
+    def invalidate_hot_context(self):
+        """外部写库之后调（网页采纳画像、脚本、后台任务），下一轮重建快照。"""
+        self._invalidate_hot_contexts()
 
     def _build_hot_context(self):
         """按 画像 > 常用事实 > 最近记忆 的优先级拼，超出预算就停。"""

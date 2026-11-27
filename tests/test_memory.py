@@ -85,3 +85,90 @@ def test_legacy_single_table_migration(tmp_path):
     assert memory.count() == 1
     assert [item["summary"] for item in memory.list_all()] == ["旧记忆"]
     assert any("旧记忆" in item for item in memory.search("旧记忆"))
+
+
+# ---------- D83：检索时按实体补召回（别名跨词） ----------
+
+def _memory_with_entities():
+    from domain.store import AgentStore
+
+    store = AgentStore(":memory:")
+    store.add_entity("product", "净水器", aliases=["饮水机", "净水机"])
+    memory = Memory(":memory:")
+    memory.set_entity_lookup(store.find_any_entity)
+    return memory, store
+
+
+def test_alias_query_finds_memory():
+    """库里写的是「净水器」，用户问「饮水机」也要捞得到。"""
+    memory, store = _memory_with_entities()
+    memory.store("净水器滤芯上个月刚换", "净水器滤芯刚换")
+
+    found = memory.search("饮水机")
+    assert len(found) == 1 and "净水器滤芯" in found[0]
+    assert memory.search_details("饮水机")[0]["text"] == "净水器滤芯上个月刚换"
+
+    # 没注入实体解析时行为不变：别名查不到（原来就是这个结果）
+    plain = Memory(":memory:")
+    plain.store("净水器滤芯上个月刚换", "净水器滤芯刚换")
+    assert plain.search("饮水机") == []
+
+
+def test_entity_expansion_does_not_widen_other_queries():
+    """补召回只跟着查询里认出的实体走，别把无关记忆一起捞出来。"""
+    memory, _store = _memory_with_entities()
+    memory.store("牛奶放在冰箱第二层", "牛奶位置")
+    memory.store("酸奶今天到期", "酸奶到期")
+
+    found = memory.search("牛奶")
+    assert found and all("酸奶" not in item for item in found)
+    # 库里没有的东西仍然返回空（空结果要能触发「没查到」的答复）
+    assert memory.search("面包") == []
+
+
+def test_entity_rows_fill_after_text_hits():
+    """原文命中的排在前面，实体补的跟在后面，不重复。"""
+    memory, _store = _memory_with_entities()
+    memory.store("净水器滤芯上个月刚换", "净水器滤芯刚换")
+    memory.store("净水器是去年双十一买的", "净水器购买时间")
+
+    found = memory.search("饮水机 滤芯")
+    assert len(found) == 2
+    assert "滤芯" in found[0]              # 关键词命中的那条在前
+    assert any("双十一" in item for item in found[1:])
+    assert len(set(found)) == 2
+
+
+def test_delete_by_alias_stays_literal():
+    """删除不走实体展开：说「忘掉饮水机」不该删掉写成「净水器」的记忆。"""
+    memory, _store = _memory_with_entities()
+    memory.store("净水器滤芯上个月刚换", "净水器滤芯刚换")
+
+    assert memory.delete_by_keywords("饮水机") == []
+    assert memory.count() == 1
+    assert memory.search("净水器")
+
+
+def test_assistant_wires_memory_entity_lookup():
+    """Assistant 要把实体解析注入记忆库，否则别名在记忆这条路上永远对不上。"""
+    from agent.clarify import Clarifier
+    from assistant import Assistant
+    from domain.store import AgentStore
+    from domain.tasks import Tasks
+    from items import Items
+
+    class DummyLLM:
+        def chat_with_tools(self, *args, **kwargs):
+            raise AssertionError("这轮不该调用模型")
+
+    store = AgentStore(":memory:")
+    items = Items(":memory:")
+    assistant = Assistant(
+        memory=Memory(":memory:"), llm=DummyLLM(), items=items,
+        clarifier=Clarifier(store=store, items=items),
+        tasks=Tasks(":memory:"),
+    )
+    assistant.entities.add_entity("product", "净水器", aliases=["饮水机"])
+    assistant.memory.store("净水器滤芯上个月刚换", "净水器滤芯刚换")
+
+    assert assistant.memory.search("饮水机")

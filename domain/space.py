@@ -18,6 +18,7 @@ import re
 from config import (
     AGENT_DB_PATH,
     DATA_DIR,
+    DIALOGUE_DB_PATH,
     FACTS_DB_PATH,
     ITEMS_DB_PATH,
     MEMORY_DB_PATH,
@@ -76,6 +77,7 @@ def space_paths(space_id=DEFAULT_SPACE_ID, data_dir=None):
             "agent": AGENT_DB_PATH,
             "prints": PRINTS_DB_PATH,
             "push": PUSH_DB_PATH,
+            "dialogue": DIALOGUE_DB_PATH,
             "print_files": PRINT_FILES_DIR,
         }
     return {
@@ -88,6 +90,7 @@ def space_paths(space_id=DEFAULT_SPACE_ID, data_dir=None):
         "agent": os.path.join(base, "agent.db"),
         "prints": os.path.join(base, "prints.db"),
         "push": os.path.join(base, "push.db"),
+        "dialogue": os.path.join(base, "dialogue.db"),
         "print_files": os.path.join(base, "print"),
     }
 

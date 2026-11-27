@@ -38,6 +38,8 @@ from pydantic import BaseModel, Field
 from config import (
     API_TOKEN,
     DATA_DIR,
+    DIALOGUE_ENABLED,
+    DIALOGUE_KEEP_DAYS,
     HOME_SCAN_SECONDS,
     MAX_AUDIO_SECONDS,
     MAX_CLIENT_ID_CHARS,
@@ -55,6 +57,7 @@ from config import (
     PRINTER_NAME,
     PRINTER_SERVER,
     PRINT_FILES_DIR,
+    PROFILE_MINING_ENABLED,
     PUSH_ENABLED,
     PUSH_MAX_FAILURES,
     PUSH_TTL_SECONDS,
@@ -74,6 +77,7 @@ from agent import wording
 from agent import thinking
 from agent.dates import parse_date_text
 from agent.distill import MemoryDistiller, distillation_due
+from agent.profile_miner import ProfileMiner
 from adapters.printer import (
     SUPPORTED_EXTENSIONS, PrintError, kind_of, office_available, pdf_page_count,
     validate_file,
@@ -167,6 +171,9 @@ push_sender: WebPushSender = None
 
 # 记忆蒸馏（D60）：lifespan 里建，后台循环按深夜/阈值触发
 distiller: MemoryDistiller = None
+
+# 夜间画像提炼（D84）：和蒸馏同一班车，产物只进 proposals 等用户点头
+profile_miner: ProfileMiner = None
 
 # 待打印文件（D61/D65）：元数据在 prints.db，文件在 PRINT_FILES_DIR（卷里）。
 # 重启后记录和文件都还在，「再打一份」不用重传；过期由 `_purge_print_files` 清。
@@ -300,6 +307,9 @@ CONFIG_FIELDS = {
     "SESSION_CONTEXT_MAX_CHARS": ("int", 0, 2000),
     "PROPOSAL_DEDUPE_SECONDS": ("int", 0, 86400),
     "PENDING_ACTION_TTL_SECONDS": ("int", 60, 86400),
+    "DIALOGUE_ENABLED": ("int", 0, 1),
+    "DIALOGUE_KEEP_DAYS": ("int", 0, 365),
+    "PROFILE_MINING_ENABLED": ("int", 0, 1),
     "WAKE_WORD": ("str", 1, 20),
     "WAKE_ACK_TEXT": ("str", 0, 50),
 }
@@ -386,6 +396,7 @@ def _safe_config():
             "agent": config.AGENT_DB_PATH,
             "tasks": config.TASKS_DB_PATH,
             "facts": config.FACTS_DB_PATH,
+            "dialogue": config.DIALOGUE_DB_PATH,
         },
     }
 
@@ -954,9 +965,10 @@ async def reminder_loop():
         await asyncio.sleep(REMINDER_INTERVAL_SECONDS)
 
 
-# ---------- 记忆蒸馏（D60） ----------
+# ---------- 记忆蒸馏（D60）与夜间画像提炼（D84） ----------
 
 _DISTILL_STATE = os.path.join(DATA_DIR, "distill_state.json")
+_MINE_STATE = os.path.join(DATA_DIR, "profile_mine_state.json")
 
 
 def _load_last_distill(path=None):
@@ -984,13 +996,17 @@ async def distill_loop():
 
     状态存 DATA_DIR 下的小 JSON：重启不该把当天已经跑过的再跑一遍；
     失败也别频繁重试——等下一个检查周期，别把模型额度打满。
+
+    清过期对话、提炼画像候选（D84）挂在这条班车上：都是每天一次、
+    都是半夜没人聊天时干、失败了也不该影响回答。
     """
     while True:
         try:
+            now = datetime.now()
             if distiller is not None:
                 count = await asyncio.to_thread(assistant.memory.count)
                 if distillation_due(
-                    datetime.now(), count, _load_last_distill(),
+                    now, count, _load_last_distill(),
                     hour=MEMORY_DISTILL_HOUR,
                     threshold=MEMORY_DISTILL_THRESHOLD,
                     interval_hours=MEMORY_DISTILL_INTERVAL_HOURS,
@@ -1000,9 +1016,42 @@ async def distill_loop():
                     print("🧠 记忆蒸馏：%d 组，更新 %d 条，跳过 %d 组" % (
                         result["groups"], result["updated"], result["skipped"],
                     ), flush=True)
+            await _nightly_maintenance(now)
         except Exception:
             traceback.print_exc()
         await asyncio.sleep(MEMORY_DISTILL_CHECK_SECONDS)
+
+
+async def _nightly_maintenance(now=None):
+    """清过期对话 + 提炼画像候选，一天一次（D84）。
+
+    单独记一份状态：蒸馏按「记忆条数」也会触发，不该把提炼跟着打乱；
+    `distillation_due` 传 count=0 时只剩「到点且当天没跑过」这一条。
+    """
+    now = now or datetime.now()
+    if assistant is None:
+        return
+    if not distillation_due(
+        now, 0, _load_last_distill(_MINE_STATE),
+        hour=MEMORY_DISTILL_HOUR, threshold=10 ** 9, interval_hours=24,
+    ):
+        return
+    try:
+        purged = await asyncio.to_thread(assistant.dialogue.purge)
+        if purged:
+            print("🧹 对话记录清理：%d 条超过保留期" % purged, flush=True)
+    except Exception:
+        traceback.print_exc()
+    if profile_miner is None:
+        return
+    try:
+        result = await asyncio.to_thread(profile_miner.run, now)
+        _save_last_distill(now, _MINE_STATE)
+        print("🧭 画像提炼：%d 句对话，%d 条候选，跳过 %d 条" % (
+            result["turns"], result["candidates"], result["skipped"],
+        ), flush=True)
+    except Exception:
+        traceback.print_exc()
 
 
 @asynccontextmanager
@@ -1010,6 +1059,7 @@ async def lifespan(app: FastAPI):
     global stt, tts, assistant, _tmp_dir, push_store, push_sender, distiller, print_store
     global _shared_llm, _shared_decision_llm
     global started_at, PRINT_FILES_DIR
+    global profile_miner
     _check_exposure()
     started_at = time.time()
     print("🔧 正在初始化系统（首次会加载 STT 模型，约需几十秒）...")
@@ -1036,6 +1086,12 @@ async def lifespan(app: FastAPI):
             max_groups=MEMORY_DISTILL_MAX_GROUPS,
             summary_max_chars=MEMORY_DISTILL_SUMMARY_CHARS,
         )
+    # 夜间画像提炼（D84）：读昨天留下的对话，产物只进 proposals 等用户点头
+    profile_miner = None
+    if PROFILE_MINING_ENABLED and DIALOGUE_ENABLED:
+        profile_miner = ProfileMiner(
+            assistant.dialogue, assistant.proposals, assistant.llm,
+        )
     if STT_ENABLED:
         stt = STT()  # 预热 FunASR
     else:
@@ -1057,7 +1113,7 @@ async def lifespan(app: FastAPI):
     # 启动到期提醒后台任务
     reminder_task = asyncio.create_task(reminder_loop())
     distill_task = None
-    if distiller is not None:
+    if distiller is not None or profile_miner is not None:
         distill_task = asyncio.create_task(distill_loop())
     home_task = None
     ws_task = None
@@ -1071,6 +1127,11 @@ async def lifespan(app: FastAPI):
             )
             print(f"📡 事件订阅已启用（{len(watcher.event_ids)} 路，秒级推送）", flush=True)
     print(f"✅ 系统就绪。记忆库 {assistant.memory.count()} 条 | 物品 {assistant.items.count()} 件 | 网页: http://{SERVER_HOST}:{SERVER_PORT}")
+    if DIALOGUE_ENABLED:
+        print("🗣️ 对话记录：保留 %d 天（设置页可看、可清空）" % DIALOGUE_KEEP_DAYS,
+              flush=True)
+    else:
+        print("🙈 对话记录已关闭（DIALOGUE_ENABLED=0）", flush=True)
     try:
         yield
     finally:
@@ -1506,8 +1567,9 @@ def _runtime_sync(data_dir=None, print_dir=None):
     print_dir = PRINT_FILES_DIR if print_dir is None else print_dir
     core_bytes = 0
     for name in ("memory.db", "items.db", "tasks.db", "facts.db",
-                 "agent.db", "push.db", "prints.db", "thinking.jsonl",
-                 "distill_state.json"):
+                 "agent.db", "push.db", "prints.db", "dialogue.db",
+                 "thinking.jsonl", "distill_state.json",
+                 "profile_mine_state.json"):
         path = os.path.join(data_dir, name)
         try:
             core_bytes += os.path.getsize(path)
@@ -1667,6 +1729,105 @@ async def api_printer(refresh: int = 0, _auth=Depends(require_api_token)):
     payload = {"ok": True}
     payload.update(detail)
     return payload
+
+
+@app.get("/api/dialogue")
+async def api_dialogue(limit: int = 20, space: Space = Depends(current_space),
+                       _auth=Depends(require_api_token)):
+    """对话记录（D84）：设置页「存了什么」用；关掉时如实返回 enabled=false。"""
+    store = getattr(space.assistant, "dialogue", None)
+    if store is None or not getattr(store, "enabled", False):
+        return {"ok": True, "enabled": False, "keep_days": 0,
+                "count": 0, "turns": []}
+    limit = max(1, min(int(limit), 100))
+    turns = await asyncio.to_thread(store.recent, limit)
+    count = await asyncio.to_thread(store.count)
+    return {
+        "ok": True, "enabled": True, "keep_days": store.keep_days,
+        "count": count, "turns": turns,
+    }
+
+
+@app.delete("/api/dialogue")
+async def api_dialogue_clear(space: Space = Depends(current_space),
+                             _auth=Depends(require_api_token)):
+    """一键清空对话原文。画像和记忆是提炼后的结论，不受影响。"""
+    store = getattr(space.assistant, "dialogue", None)
+    if store is None or not getattr(store, "enabled", False):
+        return {"ok": True, "deleted": 0}
+    deleted = await asyncio.to_thread(store.clear)
+    return {"ok": True, "deleted": deleted}
+
+
+class ProfileDecision(BaseModel):
+    action: str = Field(default="", max_length=20)
+
+
+@app.get("/api/profile/suggestions")
+async def api_profile_suggestions(limit: int = 20,
+                                  space: Space = Depends(current_space),
+                                  _auth=Depends(require_api_token)):
+    """等用户点头的画像提议（D84）：夜里提炼出来的候选，采纳才落库。"""
+    rows = await asyncio.to_thread(
+        space.assistant.proposals.store.list_proposals,
+        50, "proposed", "profile_set",
+    )
+    items = []
+    for row in rows:
+        payload = row.get("payload") or {}
+        value = str(payload.get("value") or "").strip()
+        predicate = str(payload.get("predicate") or "").strip()
+        if not value or not predicate:
+            continue
+        items.append({
+            "id": row.get("id"),
+            "subject": str(payload.get("subject") or "用户"),
+            "predicate": predicate,
+            "value": value,
+            "evidence": str(payload.get("evidence") or ""),
+            "created_at": row.get("created_at"),
+        })
+        if len(items) >= max(1, min(int(limit), 50)):
+            break
+    return {"ok": True, "suggestions": items}
+
+
+@app.post("/api/profile/suggestions/{proposal_id}")
+async def api_profile_decide(proposal_id: int, req: ProfileDecision,
+                             space: Space = Depends(current_space),
+                             _auth=Depends(require_api_token)):
+    """采纳或忽略一条画像提议。采纳 = 这次点击就是 D59 要的那声「点头」。"""
+    action = (req.action or "").strip().lower()
+    if action not in ("accept", "dismiss"):
+        raise HTTPException(status_code=400, detail="action 只能是 accept / dismiss")
+    store = space.assistant.proposals.store
+    row = await asyncio.to_thread(store.get_proposal, proposal_id)
+    if row is None or row.get("action_type") != "profile_set":
+        raise HTTPException(status_code=404, detail="没有这条画像提议")
+    if row.get("status") != "proposed":
+        raise HTTPException(status_code=409, detail="这条提议已经处理过了")
+    if action == "dismiss":
+        await asyncio.to_thread(store.update_proposal, proposal_id, "cancelled", "用户忽略")
+        return {"ok": True, "action": "dismiss"}
+
+    payload = row.get("payload") or {}
+    subject = str(payload.get("subject") or "用户").strip() or "用户"
+    predicate = str(payload.get("predicate") or "").strip()
+    value = str(payload.get("value") or "").strip()
+    if not predicate or not value:
+        raise HTTPException(status_code=400, detail="这条提议缺属性或结论")
+    evidence = str(payload.get("evidence") or "").strip()
+    source = "对话提炼" + ("：%s" % evidence[:60] if evidence else "")
+    try:
+        fact = await asyncio.to_thread(
+            space.assistant.facts.store, subject, predicate, value, source
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="无法保存画像：%s" % exc)
+    await asyncio.to_thread(store.update_proposal, proposal_id, "committed", "用户采纳")
+    # 热点快照里可能有旧的画像行，写完必须作废（D58）
+    space.assistant.invalidate_hot_context()
+    return {"ok": True, "action": "accept", "fact": fact}
 
 
 @app.get("/api/memories")

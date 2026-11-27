@@ -311,6 +311,25 @@ class AgentStore:
             "created_at": row[5],
         }
 
+    def get_proposal(self, proposal_id):
+        """按 id 取一条提案（网页采纳/忽略画像提议时用）。"""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id, action_type, payload, status, result, created_at "
+                "FROM proposals WHERE id=?",
+                (int(proposal_id),),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "action_type": row[1],
+            "payload": json.loads(row[2] or "{}"),
+            "status": row[3],
+            "result": row[4],
+            "created_at": row[5],
+        }
+
     def record_proposal(self, action_type, payload, status, result,
                         idempotency_key=None):
         with self._lock:
@@ -330,13 +349,26 @@ class AgentStore:
             self.conn.commit()
             return cur.lastrowid
 
-    def list_proposals(self, limit=20):
+    def list_proposals(self, limit=20, status=None, action_type=None):
+        """列提案（可按状态/动作筛）。网页「待确认的画像」用 status=proposed。"""
+        sql = (
+            "SELECT id, action_type, payload, status, result, created_at "
+            "FROM proposals"
+        )
+        clauses = []
+        params = []
+        if status:
+            clauses.append("status=?")
+            params.append(str(status))
+        if action_type:
+            clauses.append("action_type=?")
+            params.append(str(action_type))
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
         with self._lock:
-            rows = self.conn.execute(
-                "SELECT id, action_type, payload, status, result, created_at "
-                "FROM proposals ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            rows = self.conn.execute(sql, params).fetchall()
         return [
             {
                 "id": row[0],
@@ -348,6 +380,16 @@ class AgentStore:
             }
             for row in rows
         ]
+
+    def update_proposal(self, proposal_id, status, result=""):
+        """改提案状态（采纳/忽略）。返回是否命中。"""
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE proposals SET status=?, result=? WHERE id=?",
+                (str(status), str(result or ""), int(proposal_id)),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
 
     # ---------- 设备提醒去重 ----------
 

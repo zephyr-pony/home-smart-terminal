@@ -42,9 +42,22 @@ class Memory:
             os.makedirs(db_dir, exist_ok=True)
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        # 实体解析由调用方注入（Assistant 用 AgentStore 的 find_any_entity）：
+        # 记忆库不 import agent，也不去打开另一个库——和 Facts 同一套做法。
+        self._entity_lookup = None
         self._migrate_legacy()
         self._create_schema()
         self.conn.commit()
+
+    def set_entity_lookup(self, lookup):
+        """lookup(text) -> {"id", "canonical_name", "aliases"...} 或 None。
+
+        记忆不建实体关联表：查询里认出实体时，把它的规范名和别名再捞一轮
+        （「饮水机」→「净水器」），老记忆立刻受益，也不用回填。
+        只加在检索上，删除路径不走这里——「忘掉饮水机」不该顺手删掉
+        所有净水器相关的话。
+        """
+        self._entity_lookup = lookup
 
     def _create_schema(self):
         """FTS5 索引表 + 原文表（原文用于展示，不参与分词）。"""
@@ -163,6 +176,53 @@ class Memory:
             params,
         ).fetchall()
 
+    def _resolve_entity(self, query):
+        """查询里认出的实体；实体库坏了不该拖垮检索，按没有实体处理。"""
+        if self._entity_lookup is None or not query:
+            return None
+        try:
+            return self._entity_lookup(str(query))
+        except Exception:
+            return None
+
+    def _entity_rows(self, entity, n_results, seen):
+        """按实体的规范名和别名再捞一轮（去掉已命中的）。
+
+        为什么是补在后面而不是置顶：原文命中的词是模型挑出来的，通常比
+        「这条记忆提过净水器」更准；实体这一轮解决的是「问饮水机、库里写的是
+        净水器」这种一个词都对不上的情况。硬置顶会让「家里」这类宽别名
+        把无关记忆顶到前面。
+        """
+        if not entity:
+            return []
+        names = [entity.get("canonical_name") or ""] + list(entity.get("aliases") or [])
+        names = [name for name in names if name]
+        if not names:
+            return []
+        clauses = []
+        params = []
+        for name in names:
+            pattern = "%" + _escape_like(name) + "%"
+            clauses.append(
+                "(COALESCE(summary, '') LIKE ? ESCAPE '\\' "
+                "OR COALESCE(text, '') LIKE ? ESCAPE '\\')"
+            )
+            params.extend([pattern, pattern])
+        params.append(max(n_results, 1))
+        rows = self.conn.execute(
+            "SELECT id, summary, text, timestamp FROM memories_raw "
+            "WHERE " + " OR ".join(clauses) +
+            " ORDER BY timestamp DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [row for row in rows if row[0] not in seen]
+
+    def _with_entity_rows(self, rows, entity, n_results):
+        """原文命中在前，实体补召回在后，按 id 去重，总共不超过 n_results。"""
+        seen = {row[0] for row in rows}
+        merged = list(rows) + self._entity_rows(entity, n_results, seen)
+        return merged[:n_results]
+
     @staticmethod
     def _format_time(ts):
         try:
@@ -181,8 +241,11 @@ class Memory:
         Returns:
             list[str]: 记忆列表，格式 "[时间] 原文"
         """
+        # 实体在锁外解析：AgentStore 有自己的锁，别和记忆库的锁套在一起
+        entity = self._resolve_entity(query)
         with self._lock:
             rows = self._search_rows(query, n_results)
+            rows = self._with_entity_rows(rows, entity, n_results)
         return [
             f"[{self._format_time(ts)}] {text}"
             for _rid, _summary, text, ts in rows
@@ -247,8 +310,10 @@ class Memory:
 
     def search_details(self, query, n_results=50):
         """全文检索并返回结构化结果（供 Web 列表使用）。"""
+        entity = self._resolve_entity(query)
         with self._lock:
             rows = self._search_rows(query, n_results)
+            rows = self._with_entity_rows(rows, entity, n_results)
         return [
             {
                 "id": rid,
