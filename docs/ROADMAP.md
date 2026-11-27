@@ -1261,7 +1261,13 @@ HOME_DEVICES=light.xxx=客厅灯, sensor.yyy=RO滤芯
 | D36 | 高风险设备清单与白名单默认值 | 默认空 = 全部只读（已实现）；实测按 7 台低风险设备配了白名单，门锁/燃气/热水器等高风险清单仍待列 |
 | D37 | 设备状态是否允许过小米云 | **需要拍板**：官方集成默认云控，状态与控制都经小米云；要本地必须上中枢网关（仅国行） |
 
-## 22. 部署形态：家庭服务器（2026-11-22 记录，暂不动手）
+## 22. 部署形态：家庭服务器（2026-11-22 记录；**2026-11-27 目标机改定 Gen10 Plus**）
+
+> **这条计划已停用（2026-11-27）**：X13 有虚焊问题，不再拿来当服务器。
+> 目标机改为 **HPE MicroServer Gen10 Plus**，执行清单在本机 `docs/server-migration.local.md`
+> （不入库），系统用 Ubuntu Server 26.04 LTS。
+> 下面的容量/功耗估算保留作参照，但有三条**不适用**：Gen10 没有电池（停电就是硬关机，
+> 要靠 UPS）、没有合盖休眠、没有无线网卡；「重装前先做」整节只对 X13 有效。
 
 目标机器：**ThinkPad X13 Gen1** / Ryzen 5 PRO 4650U（6C12T Zen2）/ 16 GB / 477 GB SSD，
 计划装 Linux 后作为家庭服务器。
@@ -1301,12 +1307,16 @@ HOME_DEVICES=light.xxx=客厅灯, sensor.yyy=RO滤芯
 1. `data/` 整个目录 + `.env`（VAPID 私钥、API_TOKEN 丢了找不回）
 2. 推送订阅全部失效（订阅和 localStorage 都绑在「源」上），每台设备重新开启通知
 3. ESP32 固件里的服务端地址改成新 IP
-4. compose 改回 `network_mode: host`（Windows 上的桥接只是为了绕开 Docker Desktop）
-5. `start.bat` → systemd unit，`Restart=always`
+4. 网络模式**不用改**：桥接 + 端口映射在 Linux 上一样能用（现在就是为了绕开 Docker
+   Desktop 才这么写的，但 Linux 上也不吃亏）；`network_mode: host` 是可选项，只是少一层 NAT
+5. `start.bat` → systemd unit，`Restart=always`（实际做法见 `infra/ubuntu/`：容器靠
+   `restart` 策略 + 一个 oneshot 把 compose 拉起来）
 
 ### 建议形态
 
-Ubuntu Server 24.04 LTS + Docker + compose，HA 用容器（和现在一致，备份就是拷目录）。
+Ubuntu Server 26.04 LTS + Docker + compose，HA 用容器（和现在一致，备份就是拷目录）。
+（2026-11-27 定：新装用当前 LTS；目标机已改为 Gen10 Plus，机器相关的步骤看本机
+`docs/server-migration.local.md`，本节只描述应用层要改什么。）
 开发继续留在现在这台，服务器只做部署。
 
 ### 重装前先做（都会随系统一起没）

@@ -1,0 +1,32 @@
+# 开机把 compose 项目拉起来（迁移到 Ubuntu Server 后装，Windows 上不需要）
+#
+# 为什么还要这一层：容器自己的 `restart: unless-stopped` 只能保证「docker.service
+# 起来后容器跟着回来」。如果有人 `docker compose down` 过、或者容器被删了重建，
+# 开机后就没有东西去把它们拉起来。这个 oneshot 只做 `docker compose up -d`，
+# 不负责构建也不改配置——镜像和端口仍然只有 compose 一份真源。
+#
+# 装法：
+#   sudo cp infra/ubuntu/xiaoma-compose.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable xiaoma-compose.service
+#
+# 路径跟着仓库走：仓库不在 /opt/opencode-my 就改 WorkingDirectory 和 ExecStart。
+
+[Unit]
+Description=小马：开机把 compose 项目拉起来
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/opencode-my
+# 首次拉镜像/加载模型可能慢，别让 systemd 在 90 秒时判失败
+TimeoutStartSec=0
+ExecStart=/usr/bin/docker compose up -d
+# 关机时只停容器，不删卷；下一次开机再 up
+ExecStop=/usr/bin/docker compose stop
+
+[Install]
+WantedBy=multi-user.target

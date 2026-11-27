@@ -1,0 +1,27 @@
+# 小马数据卷的加密备份（单向：只备份，不清理、不上传）
+#
+# 为什么用 systemd 而不是 cron：日志进 journal，失败看得见；`Persistent=true` 让
+# 关机错过的这次在开机后补跑。备份脚本本身不做网络请求——里面有密钥，自动上传
+# 等于把暴露面放大，异地那一份仍然手动拷。
+#
+# 装法（口令文件与完整步骤见 infra/ubuntu/README.md §5）：
+#   sudo install -m 600 /dev/null /etc/xiaoma/backup.env
+#   # 写入 BACKUP_PASSPHRASE=...
+#   sudo cp infra/ubuntu/xiaoma-backup.service infra/ubuntu/xiaoma-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now xiaoma-backup.timer
+
+[Unit]
+Description=小马数据卷备份（加密）
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/opencode-my
+EnvironmentFile=/etc/xiaoma/backup.env
+# 宿主机上的 python3 需要 python3-cryptography（加密）与 sqlite3（模块自带）
+ExecStart=/usr/bin/python3 /opt/opencode-my/scripts/backup_docker.py --encrypt --keep 14
+# 备份不该跟服务抢 CPU/IO；失败就失败，下一次会再来，不重试不拖住开机
+Nice=10
+IOSchedulingClass=idle

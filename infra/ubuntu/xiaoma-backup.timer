@@ -1,0 +1,17 @@
+# 每天凌晨备份一次小马的数据卷
+#
+# Persistent=true：那天机器关着，开机后补跑一次，不会因为"刚好不在家"漏掉。
+# RandomizedDelaySec：给邻居机器留点分散空间，也避免整点所有定时任务一起抢盘。
+
+[Unit]
+Description=每天 03:30 备份小马数据
+After=xiaoma-compose.service
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=xiaoma-backup.service
+
+[Install]
+WantedBy=timers.target

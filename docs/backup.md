@@ -120,42 +120,20 @@ python scripts/backup_docker.py --restore backups/xiaoma-….zip.enc --volume �
 Windows 这台继续按需手动跑（上面那节）。上了家庭服务器就交给 systemd timer，
 别用 cron 拼长命令——日志进 journal，失败也看得见。
 
+两个单元文件在仓库里，**直接拷，别手抄**（`infra/ubuntu/`，与开机自启的
+`xiaoma-compose.service` 放在一起）：
+
+- `infra/ubuntu/xiaoma-backup.service` —— 跑 `scripts/backup_docker.py --encrypt --keep 14`
+- `infra/ubuntu/xiaoma-backup.timer` —— 每天 03:30，`Persistent=true` 补跑错过的
+
 `/etc/xiaoma/backup.env`（`chmod 600`，只 root 可读）：
 
 ```ini
 BACKUP_PASSPHRASE=一串足够长的口令
 ```
 
-`/etc/systemd/system/xiaoma-backup.service`：
-
-```ini
-[Unit]
-Description=小马数据卷备份（加密）
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-WorkingDirectory=/opt/xiaoma
-EnvironmentFile=/etc/xiaoma/backup.env
-ExecStart=/usr/bin/python3 /opt/xiaoma/scripts/backup_docker.py --encrypt --keep 14
-```
-
-`/etc/systemd/system/xiaoma-backup.timer`：
-
-```ini
-[Unit]
-Description=每天 03:30 备份小马数据
-
-[Timer]
-OnCalendar=*-*-* 03:30:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
 ```bash
+sudo cp infra/ubuntu/xiaoma-backup.service infra/ubuntu/xiaoma-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now xiaoma-backup.timer
 systemctl list-timers xiaoma-backup.timer      # 看下次触发

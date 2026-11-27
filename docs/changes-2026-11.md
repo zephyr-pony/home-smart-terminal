@@ -1726,6 +1726,8 @@ compose 注释和 doctor 的提示里都写明了怎么开。
 - 按 Gen10 Plus 重写：Debian 12 + Compose、4 个网口的分工、iLO 可选、
   12TB 单盘挂 `/srv`（UUID + noatime，不用 S100i 软 RAID）、CUPS 客户端验收、
   Tailscale 换源后重新订阅推送、加密备份 + systemd timer、断电/回滚。
+- **后补（2026-11-27）**：系统改定 **Ubuntu Server 26.04 LTS**——Debian 12 当时已进
+  oldstable（常规支持 2026-07 结束），新装没有理由再用它。上面那条保留原样，代表当时的写法。
 
 ### 验收
 

@@ -31,6 +31,7 @@
 | `adapters/web.py` | 上网查：DuckDuckGo 搜索 + 抓页面正文，不抓内网（D62） |
 | `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
 | `infra/device-firmware/` | ESP32 固件补丁（待机保连接、开机自连、断线重连，D78） |
+| `infra/ubuntu/` | 迁移到 Ubuntu Server 的部署件：开机拉起 compose、加密备份的 systemd 单元 |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
