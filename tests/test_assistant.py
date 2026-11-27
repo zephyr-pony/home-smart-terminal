@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 
 from agent import wording
 from agent.clarify import Clarifier
@@ -834,3 +835,92 @@ def test_reminder_sentence_falls_back_on_llm_error():
     )
 
     assert text == "提醒：交电费 今天到期"
+
+
+def test_reminder_sentence_soft_mode_switches_prompt():
+    """软提醒的晚间兜底用另一套语气：像忽然想起来，不是到点播报。"""
+    llm = ChatLLM("对了，取快递别忘了。")
+    assistant = make_assistant(llm)
+
+    text = assistant.reminder_sentence(
+        "事项：取快递\n今天到期", "提醒：取快递 今天到期",
+        must_include="取快递", soft=True,
+    )
+
+    assert text == "对了，取快递别忘了。"
+    assert llm.messages[0][0]["content"] == assistant.SOFT_REMINDER_PROMPT
+
+
+def test_soft_reminder_note_lists_today_with_id_and_date():
+    assistant = make_assistant()
+    task = assistant.tasks.add("取快递", date.today().isoformat(), mode="soft")
+
+    note = assistant._soft_reminder_note()
+
+    assert "任务 #%d" % task["id"] in note
+    assert "取快递" in note
+    assert "今天到期" in note
+    assert "别硬提" in note
+    # 日期型 due_at 在库里也带 T00:00:00，不能念成「凌晨0点」
+    assert "凌晨" not in note
+
+
+def test_soft_reminder_note_overdue_task_uses_chinese_date():
+    assistant = make_assistant()
+    yesterday = date.today() - timedelta(days=1)
+    assistant.tasks.add("交电费", yesterday.isoformat(), type="bill", mode="soft")
+
+    note = assistant._soft_reminder_note()
+
+    assert "%d月%d日" % (yesterday.month, yesterday.day) in note
+    assert "逾期 1 天" in note
+
+
+def test_soft_reminder_note_skips_timely_tasks():
+    assistant = make_assistant()
+    assistant.tasks.add("吃药", date.today().isoformat() + "T08:00")
+
+    assert assistant._soft_reminder_note() == ""
+
+
+def test_soft_reminder_note_includes_expiring_items():
+    assistant = make_assistant()
+    assistant.items.add("牛奶", date.today().isoformat())
+
+    assert "牛奶" in assistant._soft_reminder_note()
+
+
+def test_soft_reminder_note_skips_long_expired_items():
+    """过期太久的旧账不该每轮在耳边念。"""
+    assistant = make_assistant()
+    assistant.items.add("老酸奶", (date.today() - timedelta(days=30)).isoformat())
+
+    assert assistant._soft_reminder_note() == ""
+
+
+def test_soft_reminder_note_is_injected_after_history_before_user_text():
+    llm = FakeLLM("好")
+    assistant = make_assistant(llm)
+    assistant.tasks.add("取快递", date.today().isoformat(), mode="soft")
+
+    assistant.process_text("今天天气怎么样", client_id="c1")
+
+    messages = llm.calls[0]
+    assert messages[-1]["role"] == "user"
+    index = [
+        i for i, m in enumerate(messages)
+        if m["role"] == "system" and "取快递" in str(m.get("content"))
+    ][0]
+    assert index == len(messages) - 2
+
+
+def test_soft_reminder_note_not_in_other_clients_history():
+    """注入只在这一轮上下文，不写进会话历史（下一轮重新算）。"""
+    llm = FakeLLM("好")
+    assistant = make_assistant(llm)
+    assistant.tasks.add("取快递", date.today().isoformat(), mode="soft")
+
+    assistant.process_text("你好", client_id="c1")
+    turns = assistant.sessions["c1"]["turns"]
+
+    assert all("软提醒" not in str(turn) for turn in turns)

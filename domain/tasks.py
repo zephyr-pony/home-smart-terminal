@@ -15,11 +15,16 @@ from config import TASKS_DB_PATH
 TASK_TYPES = ("bill", "schedule", "custom")
 # 周期提醒：留空 = 一次性。只支持这三种，够家庭场景用，不做完整 RRULE。
 RECUR_TYPES = ("", "daily", "weekly", "monthly")
+# 提醒方式（D81）：timely = 到点就响（吃药、出门）；soft = 聊天时顺口带一句
+# （牛奶过期、取快递），到晚上还没说才落到准点提醒。软硬由模型按工具描述判，
+# 这里只负责存和筛；老数据迁移后默认 timely，行为不变。
+TASK_MODES = ("timely", "soft")
+DEFAULT_MODE = "timely"
 ACTIVE_STATUSES = ("pending", "reminded")
 
 _COLUMNS = (
     "id, type, title, due_at, status, entity_id, payload, "
-    "created_at, reminded_at, completed_at, recur"
+    "created_at, reminded_at, completed_at, recur, mode"
 )
 
 
@@ -73,20 +78,26 @@ class Tasks:
                 created_at TEXT,
                 reminded_at TEXT,
                 completed_at TEXT,
-                recur TEXT DEFAULT ''
+                recur TEXT DEFAULT '',
+                mode TEXT DEFAULT 'timely'
             )
         """)
         # 老库补列：2026-11-23 之前建的 tasks 只有一次性任务
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(tasks)")}
         if "recur" not in columns:
             self.conn.execute("ALTER TABLE tasks ADD COLUMN recur TEXT DEFAULT ''")
+        # 软提醒（D81）：老数据一律 timely，升级后提醒时间不变
+        if "mode" not in columns:
+            self.conn.execute(
+                "ALTER TABLE tasks ADD COLUMN mode TEXT DEFAULT '%s'" % DEFAULT_MODE
+            )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_due "
             "ON tasks(status, due_at)"
         )
 
     def add(self, title, due_at=None, type="custom", entity_id=None, payload=None,
-            recur=""):
+            recur="", mode=DEFAULT_MODE):
         title = str(title or "").strip()
         if not title:
             raise ValueError("任务标题不能为空")
@@ -98,6 +109,9 @@ class Tasks:
             raise ValueError("周期只能是 daily/weekly/monthly 或留空")
         if recur and not _parse_due(due_at):
             raise ValueError("周期任务要有下一次的时间")
+        mode = str(mode or DEFAULT_MODE).strip()
+        if mode not in TASK_MODES:
+            raise ValueError("提醒方式只能是 timely/soft 或留空")
 
         due = _parse_due(due_at)
         ts = datetime.now().isoformat()
@@ -106,8 +120,8 @@ class Tasks:
         with self._lock:
             cur = self.conn.execute(
                 "INSERT INTO tasks "
-                "(type, title, due_at, status, entity_id, payload, created_at, recur) "
-                "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)",
+                "(type, title, due_at, status, entity_id, payload, created_at, recur, mode) "
+                "VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
                 (
                     task_type,
                     title,
@@ -116,6 +130,7 @@ class Tasks:
                     payload_json,
                     ts,
                     recur,
+                    mode,
                 ),
             )
             self.conn.commit()
@@ -128,6 +143,7 @@ class Tasks:
             "due_at": due.isoformat() if due else None,
             "status": "pending",
             "recur": recur,
+            "mode": mode,
         }
 
     def list_all(self, status=None):
@@ -159,6 +175,7 @@ class Tasks:
             "reminded_at": row[8],
             "completed_at": row[9],
             "recur": row[10] or "",
+            "mode": row[11] or DEFAULT_MODE,
         }
 
     def get(self, task_id):
@@ -291,7 +308,7 @@ class Tasks:
             ).fetchone()
         return self._row_to_dict(updated)
 
-    def update(self, task_id, title=None, due_at=None, type=None):
+    def update(self, task_id, title=None, due_at=None, type=None, mode=None):
         """更新任务字段；due_at 传空字符串表示清空时间。"""
         fields = []
         params = []
@@ -309,6 +326,13 @@ class Tasks:
                 raise ValueError(f"任务类型必须是 {'/'.join(TASK_TYPES)}")
             fields.append("type=?")
             params.append(task_type)
+
+        if mode is not None:
+            mode = str(mode).strip()
+            if mode not in TASK_MODES:
+                raise ValueError("提醒方式只能是 timely/soft")
+            fields.append("mode=?")
+            params.append(mode)
 
         with self._lock:
             if due_at is not None:
@@ -385,7 +409,44 @@ class Tasks:
         result.sort(key=lambda task: (task["days_left"], task["due_at"], task["id"]))
         return result
 
-    def claim_due_reminders(self, days=3, cooldown_hours=24, now=None):
+    def get_soft_due(self, limit=5, now=None):
+        """今天到期或已经过期的软提醒（注入对话用，D81）。
+
+        只给「今天该提」的：未来的排进上下文没有意义（模型会提前念叨），
+        周期任务也不进来——「每天八点吃药」是准点提醒，不该变成聊天里的话题。
+        排序按逾期程度，最该处理的排前面。
+        """
+        now = now or datetime.now()
+        today = now.date()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT " + _COLUMNS + " FROM tasks "
+                "WHERE due_at IS NOT NULL AND status IN (?, ?) "
+                "AND mode=? AND (recur IS NULL OR recur='')",
+                ACTIVE_STATUSES + ("soft",),
+            ).fetchall()
+
+        result = []
+        for row in rows:
+            task = self._row_to_dict(row)
+            try:
+                due = datetime.fromisoformat(task["due_at"])
+            except (TypeError, ValueError):
+                continue
+            days_left = (due.date() - today).days
+            if days_left > 0:
+                continue
+            task["days_left"] = days_left
+            result.append(task)
+        result.sort(key=lambda task: (task["days_left"], task["due_at"], task["id"]))
+        return result[:limit] if limit and limit > 0 else result
+
+    def claim_due_reminders(self, days=3, cooldown_hours=24, now=None, mode=None):
+        """领取需要提醒的任务。
+
+        mode 为 None 时不筛（老行为）；服务端按两段调用：timely 一直跑，
+        soft 要等 SOFT_REMINDER_LAST_CALL 之后才领（D81 的晚间兜底）。
+        """
         now = now or datetime.now()
         today = now.date()
 
@@ -396,6 +457,10 @@ class Tasks:
         else:
             where = "reminded_at IS NULL"
             params = ()
+
+        if mode:
+            where += " AND mode=?"
+            params = params + (mode,)
 
         with self._lock:
             rows = self.conn.execute(

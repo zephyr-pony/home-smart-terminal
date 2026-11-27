@@ -99,7 +99,7 @@ class ProposalService:
         )
         return message
 
-    def add_task(self, title, due_at=None, type="custom", recur=""):
+    def add_task(self, title, due_at=None, type="custom", recur="", mode="timely"):
         if self.tasks is None:
             return "任务模块未启用"
         title = str(title or "").strip()
@@ -109,6 +109,7 @@ class ProposalService:
         payload = {
             "title": title, "due_at": due_at or None, "type": type,
             "recur": str(recur or "").strip(),
+            "mode": str(mode or "").strip() or "timely",
         }
         key = self._key("task_add", payload)
         duplicate = self._recent_duplicate(key)
@@ -117,7 +118,9 @@ class ProposalService:
             return "已存在相同任务，未重复创建"
 
         try:
-            task = self.tasks.add(title, due_at, type, recur=payload["recur"])
+            task = self.tasks.add(
+                title, due_at, type, recur=payload["recur"], mode=payload["mode"],
+            )
         except ValueError as exc:
             self._record("task_add", payload, "rejected", str(exc), key)
             return f"无法创建任务：{exc}"

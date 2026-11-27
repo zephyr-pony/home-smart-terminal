@@ -122,7 +122,7 @@ reminders:
 | 小智 INFO 日志会打印设备握手的 `authorization` 头（含 token） | 日志只在本机、别外发；迁移时可调低日志级别或做脱敏 |
 | 小智会把配置里的 `/mcp/` 改写成 `/call/` | 小马两条路径都接了：`/mcp_endpoint/mcp/` 与 `/mcp_endpoint/call/` |
 
-## 软提醒：顺口说，而不是到点播（D81 草案，2026-11-27）
+## 软提醒：顺口说，而不是到点播（D81，2026-11-27 实现）
 
 现在的提醒是「到点 → 一句话 → 念一遍」，只是**那句话由模型组织**（拿事实说人话，
 失败或没说对名字才回落模板，2026-11-27 起），不管人在说什么。用户要的是另一种：
@@ -178,16 +178,32 @@ reminders:
   所以有晚间兜底。
 - **别用关键词触发**（提到「牛奶」才注入）：那是路由表，D56 明确不要。
 
-### 实施顺序（都很小）
+### 实施清单（2026-11-27 已完成）
 
 1. `domain/tasks.py`：`mode` 列（沿用 `ALTER TABLE ... ADD COLUMN` 的老套路）、
    `get_soft_due()`
 2. `tools.py`：`task_add` / `task_update` 增加 `mode`，描述写软硬分界
-3. `assistant.py`：`_reminder_note()` + 注入点（仿 `_task_context_note`）
+3. `assistant.py`：`_soft_reminder_note()` + 注入点（仿 `_task_context_note`）
 4. `server.py`：`claim_due_reminders` 拆两段（timely 一直跑；soft 到点后才跑）；
-   soft 的文案走 `assistant.soft_reminder_line(task)`——无工具的小调用，失败回落 `wording`
+   soft 的文案复用 `reminder_sentence(..., soft=True)`——无工具的小调用，失败回落 `wording`
 5. `config.py` / `.env.example` / README 配置表：`SOFT_REMINDER_LAST_CALL`
 6. 测试：mode 过滤、注入内容与预算、晚间门控、没聊到仍会兜底
+
+### 实现时定下的细节（2026-11-27）
+
+- **物品到期也算 soft**：`items` 没有 mode 列，也不该有——物品只有一个日期，没有
+  「到点」可言。`_scan_once` 里物品和 soft 任务同一道门：`SOFT_REMINDER_LAST_CALL` 之前
+  一律不领取。代价是物品提醒从「当天任意时刻」挪到 20:30 之后，但牛奶、酸奶这种事
+  本来就不该在上午十点突然播报。
+- **注入上限 4 条、物品过期超过 7 天不再提**：`SOFT_NOTE_LIMIT` /
+  `SOFT_NOTE_ITEM_OVERDUE_DAYS`。留下来的旧账（没人删的过期牛奶）每轮都在耳边念，
+  比不提更烦；任务不设这个上限——欠了十天的账单还要提。
+- **注入位置**在会话历史之后、用户这句话之前（`_agent_loop`），并且不进会话历史、
+  不进 `_hot_context`：每轮会变，塞进 system prompt 开头会让前缀缓存全部失效（D58）。
+- **兜底语气单独一套**：`Assistant.SOFT_REMINDER_PROMPT`（「像忽然想起来顺口提一句」），
+  和准点提醒的 prompt 分开；失败、超长、没说对名字仍回落 `wording` 模板。
+- **改口走 `task_update` 的 mode**：用户说「这个不用准点提醒」，模型改一行即可；
+  `wording.summary` 对 soft 的回显会补「聊天时顺口提」，免得用户以为会响铃。
 
 ## 以后要不要走 B
 

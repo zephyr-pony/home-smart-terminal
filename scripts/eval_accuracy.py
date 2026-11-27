@@ -115,6 +115,17 @@ def _task_status(expected):
     return check
 
 
+def _task_mode(expected):
+    """软提醒的软硬由模型判（D81）：这里只验它有没有判对。"""
+    def check(assistant, _result):
+        rows = assistant.tasks.list_all() or []
+        if not rows:
+            return False, "任务表是空的"
+        mode = str(rows[0].get("mode") or "")
+        return mode == expected, "mode=%s（应为 %s）" % (mode, expected)
+    return check
+
+
 def seed_memory(assistant):
     assistant.memory.store("牛奶快喝完了", "牛奶快喝完了")
 
@@ -194,6 +205,10 @@ case("提醒：明天下午三点", "明天下午三点提醒我取快递",
      tools=("task_add",), type="record",
      check=_task_due(TOMORROW.isoformat() + "T15:00:00"),
      has=("下午3点",))
+case("提醒：软提醒（聊天里提）", "下周三取快递，不用准点提醒，聊天里提一下",
+     tools=("task_add",), check=_task_mode("soft"))
+case("提醒：准点吃药", "每天早上八点提醒我吃药",
+     tools=("task_add",), check=_task_mode("timely"))
 case("提醒：清单", "我有哪些提醒", setup=seed_task,
      any_tools=("task_list", "family_search"), has=("交电费",))
 case("提醒：说完成", "电费交了", setup=seed_task,

@@ -284,6 +284,7 @@ python scripts/mcp_probe.py --token <MCP_TOKEN> \
 ## 到期提醒
 
 - 服务端后台任务按 `REMINDER_INTERVAL_SECONDS`（默认 60s）扫描物品和任务，未来 `REMINDER_DAYS`（默认 3）天内到期或已过期的会**主动推送**：有网页在线时走 SSE，弹出提醒并语音播报；没有网页在线时走 Web Push，发系统通知。
+- **软提醒**（D81）：`mode=soft` 的任务（牛奶过期、取快递这类当天提一句就行的事，软硬由模型判断）和物品到期，白天不在固定时间播报，只在聊天里顺口带一句，由你当场定「办了 / 往后放」；到 `SOFT_REMINDER_LAST_CALL`（默认 20:30）还没机会说，才按准点提醒发一次。吃药、出门、开会这类错过就没用的仍走准点提醒（`mode=timely`，默认）。
 - 同一物品在 `REMINDER_COOLDOWN_HOURS`（默认 24h）内不重复提醒；设为 `0` 表示只提醒一次。
 - 提醒状态落库（`reminded_at`），重启服务也不会重复打扰。
 - 点开任务提醒（网页卡片或系统通知）后，输入框上方会出现「正在处理：…」：接下来一句
@@ -357,6 +358,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `REMINDER_DAYS` | `3` | 未来几天内算"即将到期" |
 | `REMINDER_INTERVAL_SECONDS` | `60` | 后台到期扫描间隔（秒） |
 | `REMINDER_COOLDOWN_HOURS` | `24` | 同一物品再次提醒的冷却（小时，0 = 只提醒一次） |
+| `SOFT_REMINDER_LAST_CALL` | `20:30` | 软提醒兜底时刻（HH:MM）：到点还没在聊天里提过就准点提醒一次 |
 | `PUSH_ENABLED` | `0` | 是否启用 Web Push 系统通知（页面关闭时也能收到） |
 | `PUSH_DB_PATH` | `<DATA_DIR>/push.db` | 推送订阅库位置 |
 | `VAPID_PUBLIC_KEY` | 空 | 推送公钥（`scripts/gen_vapid.py` 生成） |

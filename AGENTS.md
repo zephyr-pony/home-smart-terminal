@@ -126,7 +126,7 @@ pytest tests -q
 - 测试不需要 `.env`：`LLM` 的配置在实例化时校验，测试里用 `FakeLLM` / monkeypatch 注入。
 - 不要把时区写死（比如 `+08:00`）：CI 在 UTC 跑，涉及时刻的断言用「本机时区」倒推（见 `test_home_watch`）。
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
-- 正确率基线在 `scripts/eval_accuracy.py`：41 条固定输入（含摄像头决策 2 条、周期提醒 4 条、同义检索 2 条、提醒绑定 3 条）、真模型、每个用例独立内存库，
+- 正确率基线在 `scripts/eval_accuracy.py`：43 条固定输入（含摄像头决策 2 条、周期提醒 4 条、软硬提醒 2 条、同义检索 2 条、提醒绑定 3 条）、真模型、每个用例独立内存库，
   卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
   已知问题的用例标 `known=True`，不计入失败。**单次结果有 LLM 抖动**（2026-11-27 连跑四次：
   40/41、40/41、40/41、41/41，每次挂的是不同用例）；判断回归看同一类用例是否连续下滑，
@@ -367,6 +367,13 @@ pytest tests -q
 ### 提醒与 SSE
 
 - 提醒循环同时扫描 `items`（物品到期）和 `tasks`（账单/日程/自定义）。
+- **软提醒**（D81）：`tasks.mode` 分 `timely`（准点，默认）/ `soft`（等话口），软硬由模型在
+  `task_add` / `task_update` 里判，不写死类型表；物品到期一律算 soft（它只有日期）。
+  白天 soft 不进 `claim_due_reminders`，而是由 `Assistant._soft_reminder_note()` 把今天到期/
+  已过期的几条（最多 4 条）注入这一轮上下文，聊到相关话题时模型顺口提一句；
+  到 `SOFT_REMINDER_LAST_CALL`（默认 20:30）还没机会说，才按原通道投递一次（晚间兜底）。
+  soft 的兜底文案用 `SOFT_REMINDER_PROMPT`（像忽然想起来），失败或没说对名字仍回落模板。
+  注入只在这一轮、不进会话历史；物品过期超过 7 天不再提（`SOFT_NOTE_ITEM_OVERDUE_DAYS`）。
 - **提醒文案由模型组织**（2026-11-27）：`Assistant.reminder_sentence(facts, fallback, must_include)`
   拿事实说一句人话；失败、超长、**没说对名字**就回落 `wording` 的模板。事实由 `_item_reminder_facts`
   / `_task_reminder_facts` 拼（只给名字、到期、逾期天数、周期、现在几点）。模板是兜底不是主路径。

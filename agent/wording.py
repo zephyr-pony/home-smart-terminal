@@ -136,8 +136,15 @@ def summary(tool_name, args, today=None):
         due = str(args.get("due_at") or "").strip()
         label = recur_label(args.get("recur"), due)
         if label:
-            return "%s，%s%s" % (title, label, speak_clock_from_iso(due))
-        return "%s，%s" % (title, speak_datetime(due, today)) if due else "%s，没定时间" % title
+            text = "%s，%s%s" % (title, label, speak_clock_from_iso(due))
+        elif due:
+            text = "%s，%s" % (title, speak_datetime(due, today))
+        else:
+            text = "%s，没定时间" % title
+        # 软提醒要说清楚「不响铃」：用户以为是准点提醒、结果一天没动静，才是问题
+        if str(args.get("mode") or "") == "soft":
+            text += "，聊天时顺口提"
+        return text
     if tool_name in ("task_update", "task_postpone"):
         title = str(args.get("title") or "").strip() or "这个提醒"
         due = str(args.get("due_at") or "").strip()

@@ -63,6 +63,8 @@ from config import (
     REMINDER_INTERVAL_SECONDS,
     SERVER_HOST,
     SERVER_PORT,
+    SOFT_REMINDER_LAST_HOUR,
+    SOFT_REMINDER_LAST_MINUTE,
     STT_ENABLED,
     VAPID_PRIVATE_KEY,
     VAPID_PUBLIC_KEY,
@@ -486,7 +488,7 @@ def _task_reminder_text(task):
     return f"提醒：{title} 还有 {left} 天到期"
 
 
-def _item_reminder_facts(item):
+def _item_reminder_facts(item, soft=False):
     """给模型的提醒事实（只给事实，话由它组织）：物品名、到期日、还剩几天、现在几点。"""
     lines = ["这是物品快到期提醒。", "物品：%s" % (item.get("name") or "物品")]
     expiry = str(item.get("expiry_date") or "")
@@ -501,11 +503,13 @@ def _item_reminder_facts(item):
         lines.append("今天就到期")
     else:
         lines.append("还有 %d 天到期" % left)
+    if soft:
+        lines.append("这是白天没机会说的软提醒，现在补一句。")
     lines.append("现在：%s" % datetime.now().strftime("%Y年%m月%d日 %H:%M"))
     return "\n".join(lines)
 
 
-def _task_reminder_facts(task):
+def _task_reminder_facts(task, soft=False):
     """任务版的事实：标题、到期时间、逾期/剩余天数、周期、现在几点。"""
     lines = ["这是到点提醒。" if not task.get("recur") else "这是周期提醒。"]
     lines.append("事项：%s" % (task.get("title") or "任务"))
@@ -525,6 +529,8 @@ def _task_reminder_facts(task):
             lines.append("今天到期")
         else:
             lines.append("还有 %d 天到期" % left)
+    if soft:
+        lines.append("这是白天没机会说的软提醒，现在补一句。")
     lines.append("现在：%s" % datetime.now().strftime("%Y年%m月%d日 %H:%M"))
     return "\n".join(lines)
 
@@ -632,12 +638,30 @@ async def _notify(text, event):
     await _send_push(text, event)
 
 
-async def _scan_once():
+def _soft_window_open(now=None):
+    """软提醒的晚间兜底到点了吗（SOFT_REMINDER_LAST_CALL）。
+
+    白天 soft 的只走「聊天里顺口提」，到这个点还没机会说，才按准点提醒发一次，
+    免得事情悄悄过期。物品到期也算 soft：它只有一个日期，没有「到点」可言。
+    """
+    now = now or datetime.now()
+    cutoff = now.replace(
+        hour=SOFT_REMINDER_LAST_HOUR,
+        minute=SOFT_REMINDER_LAST_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    return now >= cutoff
+
+
+async def _scan_once(now=None):
     """跑一轮到期扫描：刷新缓存，必要时领取并投递。
 
     单独抽出来是为了可测试——提醒循环只负责节奏和异常兜底。
     """
     global due_items, due_tasks
+    now = now or datetime.now()
+    soft_open = _soft_window_open(now)
     due_items = await asyncio.to_thread(assistant.items.get_due, days=REMINDER_DAYS)
     due_tasks = await asyncio.to_thread(assistant.tasks.get_due, days=REMINDER_DAYS)
     push_count = 0
@@ -646,16 +670,32 @@ async def _scan_once():
     if not (_device_subscribers or _subscribers or push_count):
         return 0
 
-    fresh_items = await asyncio.to_thread(
-        assistant.items.claim_due_reminders,
-        REMINDER_DAYS,
-        REMINDER_COOLDOWN_HOURS,
-    )
+    # 软提醒等晚间兜底：白天不领取，就不会在饭桌上突然播报，
+    # 也不会把 reminded_at 提前写掉（否则晚上反而提不了）。
+    fresh_items = []
+    if soft_open:
+        fresh_items = await asyncio.to_thread(
+            assistant.items.claim_due_reminders,
+            REMINDER_DAYS,
+            REMINDER_COOLDOWN_HOURS,
+            now,
+        )
     fresh_tasks = await asyncio.to_thread(
         assistant.tasks.claim_due_reminders,
         REMINDER_DAYS,
         REMINDER_COOLDOWN_HOURS,
+        now,
+        "timely",
     )
+    if soft_open:
+        fresh_soft = await asyncio.to_thread(
+            assistant.tasks.claim_due_reminders,
+            REMINDER_DAYS,
+            REMINDER_COOLDOWN_HOURS,
+            now,
+            "soft",
+        )
+        fresh_tasks = list(fresh_tasks) + list(fresh_soft)
     delivered = 0
     compose = getattr(assistant, "reminder_sentence", None)
     for item in fresh_items:
@@ -663,7 +703,8 @@ async def _scan_once():
         text = fallback
         if compose is not None:
             text = await asyncio.to_thread(
-                compose, _item_reminder_facts(item), fallback, item.get("name")
+                compose, _item_reminder_facts(item, soft=True), fallback,
+                item.get("name"), soft=True,
             )
         await _notify(text, {
             "type": "reminder",
@@ -672,11 +713,13 @@ async def _scan_once():
         })
         delivered += 1
     for task in fresh_tasks:
+        soft = task.get("mode") == "soft"
         fallback = _task_reminder_text(task)
         text = fallback
         if compose is not None:
             text = await asyncio.to_thread(
-                compose, _task_reminder_facts(task), fallback, task.get("title")
+                compose, _task_reminder_facts(task, soft=soft), fallback,
+                task.get("title"), soft=soft,
             )
         await _notify(text, {
             "type": "reminder",

@@ -36,6 +36,19 @@ def _get_bool(key, default):
     return val in ("1", "true", "yes", "on")
 
 
+def _get_clock(key, default):
+    """HH:MM → (时, 分)。写错就退回默认值：一个配置项不该拦住启动。"""
+    raw = str(_get(key, "") or "").strip()
+    try:
+        hour, _, minute = raw.partition(":")
+        hour, minute = int(hour), int(minute)
+        if 0 <= hour < 24 and 0 <= minute < 60:
+            return hour, minute
+    except ValueError:
+        pass
+    return default
+
+
 # ---- LLM（远端 OpenAI 兼容网关）----
 LLM_BASE_URL = _get("LLM_BASE_URL", "")
 LLM_API_KEY = _get("LLM_API_KEY", "")
@@ -206,6 +219,12 @@ PRINT_REUSE_HOURS = _get_int("PRINT_REUSE_HOURS", 24)
 REMINDER_DAYS = _get_int("REMINDER_DAYS", 3)                    # 未来几天内算"即将到期"
 REMINDER_INTERVAL_SECONDS = _get_int("REMINDER_INTERVAL_SECONDS", 60)  # 后台扫描间隔
 REMINDER_COOLDOWN_HOURS = _get_int("REMINDER_COOLDOWN_HOURS", 24)      # 同一物品再次提醒的间隔（0=只提醒一次）
+# 软提醒的兜底时刻（D81）：mode=soft 的任务和物品到期，白天只在聊天里顺口提；
+# 到这个点还没机会说，才按准点提醒走一次（设备 → 网页 → push）。
+SOFT_REMINDER_LAST_CALL = _get("SOFT_REMINDER_LAST_CALL", "20:30")
+SOFT_REMINDER_LAST_HOUR, SOFT_REMINDER_LAST_MINUTE = _get_clock(
+    "SOFT_REMINDER_LAST_CALL", (20, 30)
+)
 
 # ---- Web Push（页面关闭时的到期提醒）----
 # 私钥用 base64(PEM) 单行存放，.env 里不能有多行值；用 scripts/gen_vapid.py 生成。

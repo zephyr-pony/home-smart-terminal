@@ -3,6 +3,7 @@ import json
 import logging
 import time
 import wave
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -633,16 +634,23 @@ def test_push_failure_counting(monkeypatch, tmp_path):
 
 
 class FakeDueStore:
-    """到期来源：记录 claim 是否被调用。"""
+    """到期来源：记录 claim 是否被调用（mode 用来区分 timely / soft 两段扫描）。"""
 
-    def __init__(self, fresh=None):
+    def __init__(self, fresh=None, mode=None):
         self.fresh = fresh or []
+        self.mode = mode
         self.claimed = 0
+        self.modes = []
 
     def get_due(self, days=0):
         return list(self.fresh)
 
-    def claim_due_reminders(self, days=0, cooldown=0):
+    def claim_due_reminders(self, days=0, cooldown=0, now=None, mode=None):
+        self.modes.append(mode)
+        if mode == "soft" and self.mode != "soft":
+            return []
+        if mode == "timely" and self.mode == "soft":
+            return []
         self.claimed += 1
         return list(self.fresh)
 
@@ -651,6 +659,11 @@ class FakeDueAssistant:
     def __init__(self, items=None, tasks=None):
         self.items = items or FakeDueStore()
         self.tasks = tasks or FakeDueStore()
+
+
+# 软提醒的门控要可判定：不写死「现在几点」，测试自己给时刻
+MORNING = datetime(2026, 11, 27, 9, 0)
+EVENING = datetime(2026, 11, 27, 21, 0)
 
 
 def test_scan_skips_claim_without_any_channel(monkeypatch, tmp_path):
@@ -680,10 +693,71 @@ def test_scan_pushes_when_only_push_subscribers(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_subscribers", set())
     monkeypatch.setattr(server, "_device_subscribers", set())
 
-    delivered = asyncio.run(server._scan_once())
+    delivered = asyncio.run(server._scan_once(now=EVENING))
     assert delivered == 1
     assert assistant.items.claimed == 1
     assert sender.sent[0][1]["body"].startswith("提醒：牛奶")
+
+
+def test_scan_holds_items_until_evening(monkeypatch, tmp_path):
+    """物品到期属于软提醒：白天不播报，等晚上兜底才发（D81）。"""
+    import asyncio
+
+    item = {"id": 1, "name": "牛奶", "days_left": 0}
+    assistant = FakeDueAssistant(items=FakeDueStore([item]))
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    monkeypatch.setattr(server, "assistant", assistant)
+    monkeypatch.setattr(server, "_subscribers", set())
+    monkeypatch.setattr(server, "_device_subscribers", set())
+
+    delivered = asyncio.run(server._scan_once(now=MORNING))
+    assert delivered == 0
+    assert assistant.items.claimed == 0
+    assert sender.sent == []
+
+
+def test_scan_claims_soft_task_only_in_the_evening(monkeypatch, tmp_path):
+    """soft 任务白天不进领取（留给聊天），晚上才走兜底投递。"""
+    import asyncio
+
+    task = {"id": 3, "title": "取快递", "days_left": 0, "mode": "soft"}
+    assistant = FakeDueAssistant(tasks=FakeDueStore([task], mode="soft"))
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    monkeypatch.setattr(server, "assistant", assistant)
+    monkeypatch.setattr(server, "_subscribers", set())
+    monkeypatch.setattr(server, "_device_subscribers", set())
+
+    assert asyncio.run(server._scan_once(now=MORNING)) == 0
+    assert assistant.tasks.claimed == 0
+
+    delivered = asyncio.run(server._scan_once(now=EVENING))
+    assert delivered == 1
+    assert sender.sent[0][1]["body"].startswith("提醒：取快递")
+
+
+def test_soft_window_opens_at_configured_time(monkeypatch):
+    monkeypatch.setattr(server, "SOFT_REMINDER_LAST_HOUR", 20)
+    monkeypatch.setattr(server, "SOFT_REMINDER_LAST_MINUTE", 30)
+
+    assert server._soft_window_open(datetime(2026, 11, 27, 20, 29)) is False
+    assert server._soft_window_open(datetime(2026, 11, 27, 20, 30)) is True
+    assert server._soft_window_open(datetime(2026, 11, 27, 23, 59)) is True
+
+
+def test_soft_reminder_facts_say_its_a_make_up_line():
+    facts = server._task_reminder_facts(
+        {"title": "取快递", "due_at": "2026-11-27T15:00:00", "days_left": 0},
+        soft=True,
+    )
+
+    assert "软提醒" in facts
+    assert server._task_reminder_facts(
+        {"title": "取快递", "days_left": 0}, soft=False
+    ).count("软提醒") == 0
 
 
 def test_scan_prefers_sse_over_push(monkeypatch, tmp_path):
@@ -734,7 +808,7 @@ def test_scan_prefers_device_over_page_and_push(monkeypatch, tmp_path):
         page_queue = asyncio.Queue(maxsize=5)
         monkeypatch.setattr(server, "_device_subscribers", {device_queue})
         monkeypatch.setattr(server, "_subscribers", {page_queue})
-        delivered = await server._scan_once()
+        delivered = await server._scan_once(now=EVENING)
         return delivered, device_queue, page_queue
 
     delivered, device_queue, page_queue = asyncio.run(run_once())

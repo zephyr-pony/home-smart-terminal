@@ -233,3 +233,68 @@ def test_recurring_requires_due_time():
     tasks = Tasks(":memory:")
     with pytest.raises(ValueError):
         tasks.add("吃药", None, recur="daily")
+
+
+def test_mode_defaults_to_timely_and_can_be_soft():
+    tasks = Tasks(":memory:")
+
+    timely = tasks.add("吃药", "2026-11-05T08:00")
+    soft = tasks.add("取快递", "2026-11-05", mode="soft")
+
+    assert timely["mode"] == "timely"
+    assert tasks.get(timely["id"])["mode"] == "timely"
+    assert tasks.get(soft["id"])["mode"] == "soft"
+
+
+def test_mode_can_be_changed_after_the_fact():
+    """用户说「这个不用准点提醒」：改一行，别重建任务。"""
+    tasks = Tasks(":memory:")
+    task = tasks.add("取快递", "2026-11-05")
+
+    assert tasks.update(task["id"], mode="soft") is True
+    assert tasks.get(task["id"])["mode"] == "soft"
+
+    with pytest.raises(ValueError):
+        tasks.update(task["id"], mode="有时提")
+
+
+def test_claim_respects_mode():
+    tasks = Tasks(":memory:")
+    tasks.add("吃药", "2026-11-05T08:00")
+    tasks.add("取快递", "2026-11-05", mode="soft")
+    now = datetime(2026, 11, 5, 12, 0, 0)
+
+    timely = tasks.claim_due_reminders(days=3, cooldown_hours=24, now=now, mode="timely")
+    assert [task["title"] for task in timely] == ["吃药"]
+    soft = tasks.claim_due_reminders(days=3, cooldown_hours=24, now=now, mode="soft")
+    assert [task["title"] for task in soft] == ["取快递"]
+
+
+def test_get_soft_due_is_today_and_overdue_only():
+    tasks = Tasks(":memory:")
+    tasks.add("后天取快递", "2026-11-07", mode="soft")
+    tasks.add("今天取快递", "2026-11-05", mode="soft")
+    tasks.add("逾期取快递", "2026-11-03", mode="soft")
+    tasks.add("吃药", "2026-11-05T08:00")
+    # 周期任务不进聊天上下文：「每天八点吃药」本来就该准点响
+    tasks.add("每天浇花", "2026-11-05T20:00", recur="daily", mode="soft")
+    now = datetime(2026, 11, 5, 12, 0, 0)
+
+    due = tasks.get_soft_due(now=now)
+
+    assert [task["title"] for task in due] == ["逾期取快递", "今天取快递"]
+    assert [task["days_left"] for task in due] == [-2, 0]
+
+
+def test_get_soft_due_skips_done_and_respects_limit():
+    tasks = Tasks(":memory:")
+    ids = [
+        tasks.add("事%d" % n, "2026-11-05", mode="soft")["id"]
+        for n in range(5)
+    ]
+    tasks.complete(ids[0])
+
+    due = tasks.get_soft_due(limit=2, now=datetime(2026, 11, 5, 12, 0, 0))
+
+    assert len(due) == 2
+    assert all(task["id"] != ids[0] for task in due)

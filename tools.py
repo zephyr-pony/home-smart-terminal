@@ -522,11 +522,11 @@ def _fmt_facts(facts):
 
 def get_task_tools(tasks, proposals=None):
     """任务与提醒工具：账单/日程/自定义提醒（支持每天/每周/每月）。"""
-    def add_task(title, due_at=None, type="custom", recur=""):
+    def add_task(title, due_at=None, type="custom", recur="", mode="timely"):
         if proposals is not None:
-            return proposals.add_task(title, due_at, type, recur=recur)
+            return proposals.add_task(title, due_at, type, recur=recur, mode=mode)
         try:
-            task = tasks.add(title, due_at, type, recur=recur)
+            task = tasks.add(title, due_at, type, recur=recur, mode=mode)
         except ValueError as exc:
             return f"无法创建任务：{exc}"
         label = _recur_label(task)
@@ -549,14 +549,16 @@ def get_task_tools(tasks, proposals=None):
             return f"任务 #{task_id} 已完成"
         return f"没有找到未完成的任务 #{task_id}"
 
-    def update_task(task_id, title=None, due_at=None, type=None):
+    def update_task(task_id, title=None, due_at=None, type=None, mode=None):
         task_id = _clamp_int(task_id, 0, 0, 10 ** 9)
         if not task_id:
             return "任务 ID 无效"
-        if title is None and due_at is None and type is None:
+        if title is None and due_at is None and type is None and mode is None:
             return "没有要修改的内容"
         try:
-            changed = tasks.update(task_id, title=title, due_at=due_at, type=type)
+            changed = tasks.update(
+                task_id, title=title, due_at=due_at, type=type, mode=mode,
+            )
         except ValueError as exc:
             return f"无法修改任务：{exc}"
         if not changed:
@@ -568,6 +570,8 @@ def get_task_tools(tasks, proposals=None):
             parts.append(f"时间 {due_at or '清空'}")
         if type is not None:
             parts.append(f"类型 {type}")
+        if mode is not None:
+            parts.append("聊天时提" if mode == "soft" else "准点提醒")
         return f"任务 #{task_id} 已更新：{'，'.join(parts)}"
 
     def cancel_task(task_id):
@@ -602,6 +606,10 @@ def get_task_tools(tasks, proposals=None):
                 "'提醒我周五取快递'时调用。due_at 转成 YYYY-MM-DD 或 "
                 "YYYY-MM-DDTHH:MM。周期提醒（'每天八点吃药''每周三下午三点开会'"
                 "'每月1号交房租'）把 recur 设为 daily/weekly/monthly。"
+                "mode 决定什么时候提：吃药、出门、开会这种错过就没用的用 timely"
+                "（准点提醒，默认）；牛奶过期、取快递、交水电费这种当天提一句就行的用 "
+                "soft（聊天时顺口带一句，到晚上还没机会说才准点提醒一次）。"
+                "用户说'不用准点提醒''到时候聊天里提一下'就传 soft。"
             ),
             properties={
                 "type": {
@@ -618,6 +626,14 @@ def get_task_tools(tasks, proposals=None):
                     "type": "string",
                     "enum": ["daily", "weekly", "monthly"],
                     "description": "周期：每天/每周/每月；一次性任务不要传",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["timely", "soft"],
+                    "description": (
+                        "timely 准点提醒（默认，适合吃药/出门/开会）；"
+                        "soft 聊天时顺口带一句（适合过期、取快递这类当天提就行的事）"
+                    ),
                 },
             },
             required=["title"],
@@ -653,7 +669,7 @@ def get_task_tools(tasks, proposals=None):
             name="task_update",
             description=(
                 "修改已存在的任务。用户说'取快递改到明天''那个提醒换个名字'"
-                "'把电费改成账单'时调用。先用 task_list 拿到 task_id。"
+                "'把电费改成账单''这个不用准点提醒'时调用。先用 task_list 拿到 task_id。"
                 "due_at 转成 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM。"
             ),
             properties={
@@ -667,6 +683,13 @@ def get_task_tools(tasks, proposals=None):
                     "type": "string",
                     "enum": ["bill", "schedule", "custom"],
                     "description": "新类型，不改则省略",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["timely", "soft"],
+                    "description": (
+                        "改成准点提醒用 timely，改成聊天时顺口提用 soft；不改则省略"
+                    ),
                 },
             },
             required=["task_id"],

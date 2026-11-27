@@ -464,18 +464,31 @@ class Assistant:
         "**原样说出事实里的那个名字**（标题或物品名），不要改写它；"
         "不要编造事实里没有的日期、数字和后果，不要加称呼和客套。"
     )
+    # 软提醒的晚间兜底（D81）：白天没机会说，这会儿补一句，别说得像准点播报
+    SOFT_REMINDER_PROMPT = (
+        "你在给家里人补一句白天没机会说的提醒。只根据给出的事实说一句话，口语、简短"
+        "（不超过 30 字），像忽然想起来顺口提一句，不要说得像整点播报。"
+        "**原样说出事实里的那个名字**（标题或物品名），不要改写它；"
+        "不要编造事实里没有的日期、数字和后果，不要加称呼和客套。"
+    )
 
-    def reminder_sentence(self, facts, fallback, must_include=None):
+    def reminder_sentence(self, facts, fallback, must_include=None, soft=False):
         """把提醒事实交给模型说一句人话；失败、超长或没说对名字就退回模板。
 
         为什么留模板兜底：提醒的第一要求是「送得到、说得对」，措辞是第二位。
         模型超时、断网或者开始瞎编时，宁可念一句生硬的模板，也不能让这条提醒没声音。
+
+        soft=True 是软提醒的晚间兜底：同一件事，语气要像「忽然想起来」，
+        不是到点播报（D81）。
         """
         facts = (facts or "").strip()
         if not facts:
             return fallback
         messages = [
-            {"role": "system", "content": self.REMINDER_PROMPT},
+            {
+                "role": "system",
+                "content": self.SOFT_REMINDER_PROMPT if soft else self.REMINDER_PROMPT,
+            },
             {"role": "user", "content": facts},
         ]
         try:
@@ -629,6 +642,108 @@ class Assistant:
             lines.append("这条已经完成了：他说完成时如实说明，不要当成新任务。")
         elif status == "cancelled":
             lines.append("这条已经取消了：他说完成或延期时如实说明，不要恢复它。")
+        return "\n".join(lines)
+
+    # ---------- 软提醒注入（D81） ----------
+
+    # 每轮最多塞几条：多了就变成汇报清单，聊天里没人这么说话
+    SOFT_NOTE_LIMIT = 4
+    # 物品过期超过这些天就不再主动提：留下来的旧账不该每轮都在耳边念
+    SOFT_NOTE_ITEM_OVERDUE_DAYS = 7
+
+    @staticmethod
+    def _soft_when(due):
+        """(日期说法, 有没有具体时刻)。
+
+        数据库里的日期型 due_at 也带 T00:00:00（`Tasks.add` 统一存 datetime），
+        所以「零点」只能当成没有时刻——不然会说成「昨天凌晨0点」。
+        """
+        text = str(due or "").strip()
+        if not text:
+            return "", False
+        try:
+            moment = datetime.fromisoformat(text)
+        except ValueError:
+            return text, False
+        if moment.hour or moment.minute:
+            return wording.speak_datetime(text), True
+        return "%d月%d日（%s）" % (
+            moment.date().month, moment.date().day, wording.weekday_cn(moment.date()),
+        ), False
+
+    def _soft_line(self, kind, name, due, left, overdue_word):
+        """一条软提醒：`任务 #14：交电费，11月26日（周四）到期，逾期 1 天`。"""
+        when, has_clock = self._soft_when(due)
+        if has_clock:
+            return "%s：%s，%s" % (kind, name, when)
+        if left == 0:
+            return "%s：%s，今天到期" % (kind, name)
+        return "%s：%s，%s到期，%s %d 天" % (kind, name, when, overdue_word, -left)
+
+    def _soft_reminder_note(self):
+        """今天挂着的软提醒，作为这一轮的一条 system 提示（D81）。
+
+        为什么塞上下文而不是加工具：语音链路每多一轮 LLM 就多约 2 秒，而这类事
+        本来就不需要「查」——模型这一轮看不看得到，才决定它顺不顺口提一句。
+        只给事实和编号，怎么说不写死：聊到相关话题时提，没聊到就不提；白天没
+        机会说还有晚间兜底（SOFT_REMINDER_LAST_CALL），不会静默消失。
+        """
+        entries = []
+        get_soft = getattr(self.tasks, "get_soft_due", None)
+        if callable(get_soft):
+            try:
+                tasks = get_soft(limit=self.SOFT_NOTE_LIMIT)
+            except Exception as exc:
+                print("⚠️ 软提醒任务读取失败：%s" % exc)
+                tasks = []
+            for task in tasks:
+                left = task.get("days_left")
+                left = 0 if left is None else int(left)
+                entries.append({
+                    "sort": (left, 0),
+                    "line": self._soft_line(
+                        "任务 #%s" % task.get("id"),
+                        task.get("title") or "提醒",
+                        task.get("due_at") or "",
+                        left,
+                        "逾期",
+                    ),
+                })
+
+        get_items = getattr(self.items, "get_due", None)
+        if callable(get_items):
+            try:
+                items = get_items(days=0)
+            except Exception as exc:
+                print("⚠️ 软提醒物品读取失败：%s" % exc)
+                items = []
+            for item in items:
+                left = item.get("days_left")
+                left = 0 if left is None else int(left)
+                if left < -self.SOFT_NOTE_ITEM_OVERDUE_DAYS:
+                    continue
+                entries.append({
+                    "sort": (left, 1),
+                    "line": self._soft_line(
+                        "物品",
+                        item.get("name") or "东西",
+                        item.get("expiry_date") or "",
+                        left,
+                        "已经过期",
+                    ),
+                })
+
+        if not entries:
+            return ""
+        entries.sort(key=lambda entry: entry["sort"])
+        lines = [
+            "【今天挂着的软提醒】下面是今天到期或已经过期的几件事。"
+            "聊到相关话题时顺口提一句，问一句要不要办掉或者往后放；"
+            "没聊到就别硬提，也不要一次全报一遍。",
+            "用户对这些事说办了 / 明天再说 / 不用了，就用上面的编号直接调 "
+            "task_complete / task_postpone / task_cancel（物品用 item_delete 删掉）。",
+        ]
+        lines.extend(entry["line"] for entry in entries[:self.SOFT_NOTE_LIMIT])
         return "\n".join(lines)
 
     @staticmethod
@@ -847,6 +962,8 @@ class Assistant:
         task_id 是用户点开的到期任务：只在这一轮注入一条 system 提示，
         让「完成了 / 延期」指向那一条，不写进会话历史。
         attachment 是网页上传的待打印文件：只在有文件时把 printer_print 给模型看。
+        另外每轮会注入「今天挂着的软提醒」（D81）：到期的几件事，聊到相关话题时
+        顺口提一句，晚上还没说由提醒循环兜底。
 
         Returns:
             (type, answer, extras): type 为 record/query/chat，extras 为附加字段（如 memories/summary）；
@@ -877,6 +994,12 @@ class Assistant:
         task_note = self._task_context_note(task_id)
         if task_note:
             messages.append({"role": "system", "content": task_note})
+        # 软提醒（D81）：今天到期的几件事，聊到相关话题时顺口带一句。
+        # 放在历史之后、用户这句话之前——每轮会变，塞进 system prompt 开头会
+        # 让前缀缓存全部失效（D58 踩过）。
+        soft_note = self._soft_reminder_note()
+        if soft_note:
+            messages.append({"role": "system", "content": soft_note})
         # 网页上传了待打印文件：只在这一轮告诉模型「有文件可打」，
         # 文件名/页数够了；正文不给模型看，避免把文件内容带进上下文。
         attachment_note = self._attachment_note(attachment)
@@ -1192,7 +1315,7 @@ class Assistant:
         # （模型已经说到正确日期就不重复念）。
         answer, replaced = verify_reply(
             answer, executed_writes, user_text,
-            evidence=[sys_prompt, user_text]
+            evidence=[sys_prompt, soft_note, user_text]
             + [str(m.get("content") or "") for m in history]
             + executed_results,
         )

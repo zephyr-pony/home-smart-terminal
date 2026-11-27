@@ -70,6 +70,28 @@ def test_task_update_without_fields():
     assert tool["execute"](task_id=task["id"]) == "没有要修改的内容"
 
 
+def test_task_add_accepts_mode():
+    tasks = Tasks(":memory:")
+    add = _task_tool(tasks, "task_add")
+
+    add["execute"](title="取快递", due_at="2026-11-24", mode="soft")
+    add["execute"](title="吃药", due_at="2026-11-24T08:00")
+
+    modes = {task["title"]: task["mode"] for task in tasks.list_all()}
+    assert modes == {"取快递": "soft", "吃药": "timely"}
+
+
+def test_task_update_can_switch_mode():
+    tasks = Tasks(":memory:")
+    task = tasks.add("取快递", "2026-11-24")
+    tool = _task_tool(tasks, "task_update")
+
+    output = tool["execute"](task_id=task["id"], mode="soft")
+
+    assert tasks.get(task["id"])["mode"] == "soft"
+    assert "聊天时提" in output
+
+
 def test_task_update_missing_task():
     tasks = Tasks(":memory:")
     tool = _task_tool(tasks, "task_update")
