@@ -486,6 +486,49 @@ def _task_reminder_text(task):
     return f"提醒：{title} 还有 {left} 天到期"
 
 
+def _item_reminder_facts(item):
+    """给模型的提醒事实（只给事实，话由它组织）：物品名、到期日、还剩几天、现在几点。"""
+    lines = ["这是物品快到期提醒。", "物品：%s" % (item.get("name") or "物品")]
+    expiry = str(item.get("expiry_date") or "")
+    if expiry:
+        lines.append("到期日：%s" % expiry)
+    left = item.get("days_left")
+    if left is None:
+        pass
+    elif left < 0:
+        lines.append("已经过期 %d 天" % -left)
+    elif left == 0:
+        lines.append("今天就到期")
+    else:
+        lines.append("还有 %d 天到期" % left)
+    lines.append("现在：%s" % datetime.now().strftime("%Y年%m月%d日 %H:%M"))
+    return "\n".join(lines)
+
+
+def _task_reminder_facts(task):
+    """任务版的事实：标题、到期时间、逾期/剩余天数、周期、现在几点。"""
+    lines = ["这是到点提醒。" if not task.get("recur") else "这是周期提醒。"]
+    lines.append("事项：%s" % (task.get("title") or "任务"))
+    due = str(task.get("due_at") or "")
+    if due:
+        lines.append("到期：%s" % due)
+    recur = task.get("recur") or ""
+    if recur:
+        label = wording.recur_label(recur, due)
+        if label:
+            lines.append("周期：%s" % label)
+    left = task.get("days_left")
+    if left is not None:
+        if left < 0:
+            lines.append("已经过期 %d 天" % -left)
+        elif left == 0:
+            lines.append("今天到期")
+        else:
+            lines.append("还有 %d 天到期" % left)
+    lines.append("现在：%s" % datetime.now().strftime("%Y年%m月%d日 %H:%M"))
+    return "\n".join(lines)
+
+
 async def _broadcast(event, subscribers=None):
     """把事件推给所有 SSE 订阅者；队列满时丢最旧的，保证最新提醒送达。
 
@@ -614,15 +657,28 @@ async def _scan_once():
         REMINDER_COOLDOWN_HOURS,
     )
     delivered = 0
+    compose = getattr(assistant, "reminder_sentence", None)
     for item in fresh_items:
-        await _notify(_reminder_text(item), {
+        fallback = _reminder_text(item)
+        text = fallback
+        if compose is not None:
+            text = await asyncio.to_thread(
+                compose, _item_reminder_facts(item), fallback, item.get("name")
+            )
+        await _notify(text, {
             "type": "reminder",
             "item": item,
             "tag": "item-%s" % item.get("id", ""),
         })
         delivered += 1
     for task in fresh_tasks:
-        await _notify(_task_reminder_text(task), {
+        fallback = _task_reminder_text(task)
+        text = fallback
+        if compose is not None:
+            text = await asyncio.to_thread(
+                compose, _task_reminder_facts(task), fallback, task.get("title")
+            )
+        await _notify(text, {
             "type": "reminder",
             "task": task,
             "tag": "task-%s" % task.get("id", ""),

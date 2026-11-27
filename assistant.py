@@ -58,7 +58,7 @@ from adapters.home import build_home
 from adapters.printer import build_printer, kind_of, pdf_page_count
 from adapters import documents
 from adapters.weather import Weather
-from domain.facts import Facts, profile_subject
+from domain.facts import Facts, PROFILE_PREFIX, profile_subject
 from domain.space import normalize_space_id, space_paths
 from domain.store import AgentStore
 from domain.tasks import Tasks
@@ -456,6 +456,42 @@ class Assistant:
                 return None
             return item["text"]
 
+    # ---------- 提醒措辞 ----------
+
+    REMINDER_PROMPT = (
+        "你在给家里人发一条到点提醒。只根据给出的事实说一句话，口语、简短（不超过 30 字），"
+        "像家里人顺口提醒一句；可以带一句「要不要现在办 / 晚点再说」。"
+        "**原样说出事实里的那个名字**（标题或物品名），不要改写它；"
+        "不要编造事实里没有的日期、数字和后果，不要加称呼和客套。"
+    )
+
+    def reminder_sentence(self, facts, fallback, must_include=None):
+        """把提醒事实交给模型说一句人话；失败、超长或没说对名字就退回模板。
+
+        为什么留模板兜底：提醒的第一要求是「送得到、说得对」，措辞是第二位。
+        模型超时、断网或者开始瞎编时，宁可念一句生硬的模板，也不能让这条提醒没声音。
+        """
+        facts = (facts or "").strip()
+        if not facts:
+            return fallback
+        messages = [
+            {"role": "system", "content": self.REMINDER_PROMPT},
+            {"role": "user", "content": facts},
+        ]
+        try:
+            data = self.llm.chat(messages, temperature=0.4, max_tokens=60)
+            text = (data["choices"][0]["message"].get("content") or "").strip()
+        except Exception as exc:
+            print("⚠️ 提醒措辞生成失败：%s" % exc)
+            return fallback
+        if not text or len(text) > 60:
+            return fallback
+        # 名字必须原样出现：模型把「交电费」改写成「交费」还能忍，但换成
+        # 「交水费」就是另一件事了——这种宁可念模板。
+        if must_include and must_include not in text:
+            return fallback
+        return text
+
     # ---------- 热点上下文（D58） ----------
 
     def _hot_context(self, client_id):
@@ -506,7 +542,7 @@ class Assistant:
             line = "- %s %s：%s" % (subject, predicate, value) if predicate else (
                 "- %s：%s" % (subject, value)
             )
-            if subject.startswith("用户") or "偏好" in predicate:
+            if subject == PROFILE_PREFIX or subject.startswith(PROFILE_PREFIX + "/") or "偏好" in predicate:
                 profile_lines.append(line)
             elif len(fact_lines) < self.hot_context_facts:
                 fact_lines.append(line)
@@ -822,7 +858,8 @@ class Assistant:
         if hot:
             sys_prompt += "\n\n" + hot
         messages = [{"role": "system", "content": sys_prompt}]
-        messages.extend(self._context_messages(client_id))
+        history = self._context_messages(client_id)
+        messages.extend(history)
         # 刚拍过照：把画面描述带进这一轮，追问「那是什么牌子」不用再拍一张。
         # 只保留 VISION_CONTEXT_SECONDS 秒，过期和重启都没了（不进记忆库）。
         observation = self._recent_observation(client_id)
@@ -865,6 +902,9 @@ class Assistant:
         used_tools = []
         used_tool_names = set()
         executed_writes = []
+        # 这一轮工具吐回来的原文（含参数）：回复里的长数字要能在这里找到出处，
+        # 否则就是模型自己编的（户号、电话这种念错最要命）。
+        executed_results = []
         # 用户原始上传的文件：run_python 每次都以它为输入，产物只影响「接下来打印哪个」，
         # 否则一次「探测环境」的产物会把输入顶掉，后面再也读不到原表
         origin_attachment = attachment
@@ -1100,6 +1140,7 @@ class Assistant:
                             result = "%s\n%s" % (result, note)
                         if wording.looks_written(name, result):
                             executed_writes.append((name, dict(args)))
+                        executed_results.append(str(result))
                         if name in wording.QUERY_TOOLS:
                             query_total += 1
                             if wording.is_empty_query(name, result):
@@ -1149,7 +1190,12 @@ class Assistant:
         # 模型嘴上说的日期可能是旧值（实测 4B 会）。先过一遍事实校验：日期、星期、
         # 名字和工具参数对不上就整句换成参数拼的模板句；对得上时再补一句回显
         # （模型已经说到正确日期就不重复念）。
-        answer, replaced = verify_reply(answer, executed_writes, user_text)
+        answer, replaced = verify_reply(
+            answer, executed_writes, user_text,
+            evidence=[sys_prompt, user_text]
+            + [str(m.get("content") or "") for m in history]
+            + executed_results,
+        )
         if not replaced:
             prefix = wording.echo_prefix(executed_writes, answer)
             if prefix and answer:

@@ -276,3 +276,55 @@ def test_looks_written_accepts_postpone_and_update_results():
     assert wording.looks_written("task_postpone", "任务 #1 已改到 2026-11-24")
     assert wording.looks_written("task_update", "任务 #1 已更新：时间 2026-11-24")
     assert not wording.looks_written("task_postpone", "没有找到可延期的任务 #1")
+
+
+def test_long_number_without_source_is_replaced():
+    """模型嘴里冒出一个工具没给过的户号：宁可不念，也不能念错。"""
+    text, replaced = verify_reply(
+        "你家水费户号是 12345678。",
+        [],
+        user_text="我家水费户号是多少",
+        today=TODAY,
+        evidence=["- 自己家 · 水费户号：11112222"],
+    )
+
+    assert replaced is True
+    assert "12345678" not in text
+    assert text == wording.UNVERIFIED_NUMBER_REPLY
+
+
+def test_long_number_with_source_is_kept():
+    text, replaced = verify_reply(
+        "你家水费户号是 11112222。",
+        [],
+        user_text="我家水费户号是多少",
+        today=TODAY,
+        evidence=["- 自己家 · 水费户号：11112222"],
+    )
+
+    assert replaced is False
+    assert "11112222" in text
+
+
+def test_long_number_from_hot_context_counts_as_source():
+    """没调工具、从热点上下文里答出来的，也算有出处。"""
+    hot = "【已知信息】\n常用事实：\n- 自己家 水费户号：11112222"
+    text, replaced = verify_reply(
+        "水费户号 11112222。", [], user_text="水费户号多少",
+        today=TODAY, evidence=[hot, "水费户号多少"],
+    )
+
+    assert replaced is False
+
+
+def test_short_numbers_are_not_checked():
+    """年份、页码、时刻都不到 6 位，别拿它们当号码拦。"""
+    text, replaced = verify_reply(
+        "2026 年 12 月 2 日到期，第 3 页，下午 3 点提醒你。",
+        [("item_add", {"name": "牛奶", "expiry_date": "2026-12-02"})],
+        user_text="牛奶下周三过期",
+        today=TODAY,
+        evidence=["已添加物品：牛奶，到期日 2026-12-02"],
+    )
+
+    assert replaced is False

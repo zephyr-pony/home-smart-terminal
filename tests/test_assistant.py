@@ -786,3 +786,51 @@ def test_system_prompt_without_home_has_no_device_lines():
 
     assert "home_query" not in prompt
     assert "home_control" not in prompt
+
+
+class ChatLLM:
+    """只实现 chat()：提醒措辞不走工具。"""
+
+    def __init__(self, reply="", error=None):
+        self.reply = reply
+        self.error = error
+        self.messages = []
+
+    def chat(self, messages, **kwargs):
+        self.messages.append(list(messages))
+        if self.error:
+            raise self.error
+        return _stop_reply(self.reply)
+
+
+def test_reminder_sentence_uses_model_wording():
+    llm = ChatLLM("交电费的时间到了，现在交还是晚点再说？")
+    assistant = make_assistant(llm)
+
+    text = assistant.reminder_sentence(
+        "事项：交电费\n今天到期", "提醒：交电费 今天到期", must_include="交电费",
+    )
+
+    assert text == "交电费的时间到了，现在交还是晚点再说？"
+
+
+def test_reminder_sentence_falls_back_when_title_missing():
+    """模型把「交电费」换成别的事，宁可念模板。"""
+    llm = ChatLLM("水费该交了啊。")
+    assistant = make_assistant(llm)
+
+    text = assistant.reminder_sentence(
+        "事项：交电费\n今天到期", "提醒：交电费 今天到期", must_include="交电费",
+    )
+
+    assert text == "提醒：交电费 今天到期"
+
+
+def test_reminder_sentence_falls_back_on_llm_error():
+    assistant = make_assistant(ChatLLM(error=RuntimeError("boom")))
+
+    text = assistant.reminder_sentence(
+        "事项：交电费\n今天到期", "提醒：交电费 今天到期", must_include="交电费",
+    )
+
+    assert text == "提醒：交电费 今天到期"

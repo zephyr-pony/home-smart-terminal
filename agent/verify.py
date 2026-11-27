@@ -39,6 +39,9 @@ _TIME_RE = re.compile(
 _ISO_CLOCK_RE = re.compile(r"[T ]\s*(\d{1,2}):(\d{2})")
 # 钟点前的时段词：有它才把「一点」当时间
 _PERIOD_RE = re.compile(r"上午|下午|晚上|傍晚|中午|凌晨|早上|夜里")
+# 回复里的长数字（户号 8 位、手机 11 位、卡号 16 位）。门槛定在 6 位：
+# 年份 2026、日期、页码、金额都不到，误伤面最小；代价是拆开念的号码查不到。
+_LONG_NUM_RE = re.compile(r"\d{6,}")
 
 
 def _as_date(value):
@@ -108,8 +111,11 @@ def _names_ok(text, executed, user_text):
     return True
 
 
-def verify_reply(reply, executed, user_text=None, today=None):
-    """核对回复里的日期、星期、时刻、名字。
+def verify_reply(reply, executed, user_text=None, today=None, evidence=None):
+    """核对回复里的日期、星期、时刻、名字，以及长数字有没有出处。
+
+    evidence 是这一轮的「可引用材料」：system prompt（含热点上下文）、用户原话、
+    工具返回。给了才查长数字——模型从上下文里答出来的号码也算有出处。
 
     Returns:
         (text, replaced)：不一致时返回参数拼的模板句，且 replaced 为 True。
@@ -117,11 +123,22 @@ def verify_reply(reply, executed, user_text=None, today=None):
     text = str(reply or "").strip()
     days = written_days(executed)
     times = written_times(executed)
+    today = today or date.today()
+
+    # 长数字先单独查：没有写日期/时刻时也要查，否则「户号念错」永远拦不住。
+    number_bad = False
+    if evidence is not None:
+        pool = [str(item) for item in evidence]
+        for number in _LONG_NUM_RE.findall(text):
+            if not any(number in chunk for chunk in pool):
+                number_bad = True
+
     if not text or not (days or times):
+        if number_bad:
+            return wording.UNVERIFIED_NUMBER_REPLY, True
         return reply, False
 
-    today = today or date.today()
-    bad = False
+    bad = number_bad
 
     if days:
         # 今天也放行：模型常补一句「今天是 11 月 23 日」，那是真的
@@ -165,6 +182,8 @@ def verify_reply(reply, executed, user_text=None, today=None):
     if not bad:
         return reply, False
     template = wording.written_sentence(executed, today)
-    if not template:
-        return reply, False
-    return template, True
+    if template:
+        return template, True
+    if number_bad:
+        return wording.UNVERIFIED_NUMBER_REPLY, True
+    return reply, False
