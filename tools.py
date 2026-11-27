@@ -366,7 +366,8 @@ def get_items_tools(items, proposals=None):
             description=(
                 "添加一个会过期的物品（食品/药品等）到物品清单。"
                 "用户说'酸奶8月5号过期''鸡蛋下周三到期'这类话时调用。"
-                "expiry_date 必须转成 YYYY-MM-DD 格式（如 2026-08-05）。"
+                "没说到期日就留空 expiry_date，不要编日期，也不用先查清单有没有记过。"
+                "expiry_date 有的话必须转成 YYYY-MM-DD 格式（如 2026-08-05）。"
             ),
             properties={
                 "name": {"type": "string", "description": "物品名称，如 '酸奶'"},

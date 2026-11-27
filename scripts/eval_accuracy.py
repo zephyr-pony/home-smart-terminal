@@ -155,6 +155,11 @@ case("闲聊：打招呼", "你好小马", type="chat", lacks=("已记好", "已
 case("闲聊：报时间", "现在几点了", type="chat", lacks=("已记好",))
 
 # ---------- 记忆 ----------
+# 「冰箱里还有三个鸡蛋」和「冰箱里放了一盒酸奶」都在说冰箱里有什么，只看句子分不出
+# 该进记忆还是物品库；真正的判据是「记一下」这类语用线索，模型会抖（2026-11-27 连跑
+# 四次挂过一次）。这类中性问题的答案本来就该由用户画像决定（AGENTS「让助手像个人」），
+# 评测只能挑一种，不代表唯一正确答案。期望值保持「记忆」不变，但别再为它反复调
+# item_add 的描述——两边会互相拉扯。
 case("记忆：写入并落库", "记一下，冰箱里还有三个鸡蛋",
      tools=("memory_store",), type="record", check=_count("memory"))
 case("记忆：查询命中", "我记了哪些东西",
@@ -223,7 +228,8 @@ case("事实：改品牌说清旧值", "牛奶现在是伊利的",
      check=lambda a, r: (r.get("type") == "record", "type=%s" % r.get("type")))
 case("事实：查品牌", "牛奶是什么牌子的",
      setup=lambda a: a.facts.store("牛奶", "品牌", "蒙牛"),
-     any_tools=("fact_search", "fact_list"), has=("蒙牛",))
+     any_tools=("fact_search", "fact_list"), has=("蒙牛",),
+     context_ok=True)
 # 两家都有水费户号：查询带家庭名时只能返回那一家，不能把另一家的户号念出来。
 case("事实：查户号不串家", "爸妈家的水费户号是多少",
      setup=seed_fact_bare_subject,

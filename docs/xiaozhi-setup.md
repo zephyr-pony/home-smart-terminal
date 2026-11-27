@@ -42,6 +42,17 @@ ports:
 
 ## 配置（data/.config.yaml）
 
+> **改这个文件前先校验，再重启**：它不校验、直接崩在启动阶段。缩进错一格，容器就会
+> 反复重启、设备连不上（2026-11-26 21:42 踩过一次，约 45 秒起不来）。
+>
+> ```bash
+> docker exec -i xiaozhi-esp32-server python -c "import yaml;yaml.safe_load(open('/opt/xiaozhi-esp32-server/data/.config.yaml'))" && echo OK
+> docker restart xiaozhi-esp32-server
+> ```
+>
+> 别用 `docker compose restart` 之后不看日志；`docker logs --since 2m` 里要有
+> `server listening on 0.0.0.0:8000` 才算起来。
+
 ```yaml
 # 保持连接（D78）：设备待机时不挂断，提醒才能随时推到设备。
 # 沉默多久让设备回待机（麦克风关、WebSocket 留）——由小马补丁下发 session idle。
