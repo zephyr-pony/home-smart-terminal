@@ -2745,3 +2745,10 @@ Docker 卷快照解在临时目录里时，`print/` 这类子目录会被写成
   建表要等「能真正登录」，否则 `Access denied`。
 - MCP 的测试替身 `FakeAssistant.process_text` 没接 `**kwargs`，服务端一传 `speaker`
   就 `TypeError`。替身要跟着真实签名走。
+
+### 不再依赖开发机
+
+三个 compose 项目各装了一份 oneshot（`infra/ubuntu/{xiaoma,xiaozhi,homeassistant}-compose.service`），
+小智的 `XIAOMA_BASE_URL` 从写死的 `.155` 改成 `host.docker.internal:8208`（容器里那串
+IP 换了机器就废）。整机重启验证过：五个容器全回来、`.40` 上 8208/8123/8403 都是 200、
+声纹库还在、提醒桥自己重连。启动 3 分 15 秒，其中 1 分 6 秒是 HPE 固件自检。

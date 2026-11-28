@@ -1,0 +1,30 @@
+# 开机把小智的 compose 项目拉起来（Ubuntu Server 侧）
+#
+# 和小马那份 `xiaoma-compose.service` 同一个理由：容器的 `restart: always` 只管
+# 「docker.service 起来后跟着回来」，挡不住有人 `docker compose down` 过、
+# 或者容器被删掉重建。这个 oneshot 开机跑一次 `up -d`，配置和端口仍然只有 compose 一份。
+#
+# 装法：
+#   sudo cp infra/ubuntu/xiaozhi-compose.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable xiaozhi-compose.service
+#
+# 路径跟着部署走：小智服务端不在 /opt/xiaozhi-server 就改两处路径。
+
+[Unit]
+Description=小智服务端：开机把 compose 项目拉起来
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/xiaozhi-server
+# 首次要加载 SenseVoice / VAD 模型，别让 systemd 在 90 秒时判失败
+TimeoutStartSec=0
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose stop
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,13 @@
-# 用法：把本目录与 D:\xiaozhi-server 的 data/、models/ 放在一起（或直接拷过去），
-# 用这个 compose 替换原来的。镜像不再用现成的，而是 Dockerfile 构建出来的带补丁版本。
+# 小智服务端（带提醒桥补丁）
+#
+# 用法：
+#   1. 把本目录的 Dockerfile / apply_patch.py / reminder_bridge.py 拷到 xiaozhi-server 源码根目录
+#      （和上游的 app.py、core/、data/、models/ 同级）
+#   2. cp docker-compose.example.yml docker-compose.yml
+#   3. echo "XIAOMA_API_TOKEN=<小马的 API_TOKEN>" > .env
+#   4. docker compose up -d --build
+#
+# 这套只依赖「本机跑着小马（8208 端口）」和上游镜像源，不依赖任何一台开发机。
 services:
   xiaozhi-esp32-server:
     build: .
@@ -9,14 +17,15 @@ services:
       - seccomp:unconfined
     environment:
       - TZ=UTC
-      # 小马地址：Windows 上用 host.docker.internal；Linux 上直接写 127.0.0.1（host 网络时）
-      - XIAOMA_BASE_URL=http://host.docker.internal:8200
+      # 小马地址：容器里的 127.0.0.1 是容器自己，走 host-gateway 回到宿主机。
+      # 小马不在本机时改成它的局域网地址。
+      - XIAOMA_BASE_URL=http://host.docker.internal:8208
       # 和小马 .env 里的 API_TOKEN 一致；放在同目录的 .env 里，别写进这个文件
       - XIAOMA_API_TOKEN=${XIAOMA_API_TOKEN}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      # ws 服务端（Windows 保留端口段会随重启变化，先看 docs/xiaozhi-setup.md 再定端口）
+      # ws 服务端（设备从 OTA 响应里拿到这个地址）
       - "8400:8000"
       # http：OTA / 视觉分析
       - "8403:8003"

@@ -17,34 +17,40 @@ infra/xiaozhi-server/
 这里只做**锚点替换**：位置长得一样就改，长得不一样就让构建失败——升级后要么两分钟修好，
 要么立刻知道，不会静默少一块功能。
 
-## 装法（Windows，现在的联调机）
+## 装法（Ubuntu Server）
 
-1. 把本目录全部复制进 `D:\xiaozhi-server\`（和 `data/`、`models/` 同级）
-2. 在 `D:\xiaozhi-server\.env` 里写（**不要入库**）：
+服务端源码本身不在本仓库（上游是 `xinnan-tech/xiaozhi-esp32-server`），这里只放
+**要覆盖进去的三件文件**。新机器上：
 
-```
-XIAOMA_API_TOKEN=<小马的 API_TOKEN>
-```
-
-3. 用示例 compose 覆盖原来的：
-
-```powershell
-cd D:\xiaozhi-server
-copy docker-compose.example.yml docker-compose.yml
+```bash
+git clone <上游仓库> /opt/xiaozhi-server     # 或者解压上游的 zip
+cd /opt/xiaozhi-server
+cp <本仓库>/infra/xiaozhi-server/{Dockerfile,apply_patch.py,reminder_bridge.py} .
+cp <本仓库>/infra/xiaozhi-server/docker-compose.example.yml docker-compose.yml
+mkdir -p data models/SenseVoiceSmall
+# SenseVoice 模型（约 900MB）放 models/SenseVoiceSmall/model.pt；上游安装脚本会下
+echo "XIAOMA_API_TOKEN=<小马的 API_TOKEN>" > .env    # 不要入库
 docker compose up -d --build
+docker logs -f xiaozhi-esp32-server
 ```
 
-4. 看日志：
+开机自启：`sudo cp infra/ubuntu/xiaozhi-compose.service /etc/systemd/system/`、
+`systemctl enable --now xiaozhi-compose.service`（同 `infra/ubuntu/README.md` §4）。
 
-```powershell
-docker logs -f xiaozhi-esp32-server
+`data/.config.yaml` 里要改三处地址（都用服务器自己的局域网 IP）：
+
+```yaml
+server:
+  websocket: ws://192.168.2.155:8400/xiaozhi/v1/       # 设备从 OTA 响应里拿这个
+  vision_explain: http://192.168.2.155:8403/mcp/vision/explain
+mcp_endpoint: ws://192.168.2.155:8208/mcp_endpoint/mcp/?token=<MCP_TOKEN>
 ```
 
 设备连上后，应该看到：
 
 ```
-🔔 小马提醒桥启动：http://host.docker.internal:8200
-🔔 提醒桥已连接：http://host.docker.internal:8200
+🔔 小马提醒桥启动：http://host.docker.internal:8208
+🔔 提醒桥已连接：http://host.docker.internal:8208
 ```
 
 ## 验收

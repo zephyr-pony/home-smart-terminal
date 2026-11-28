@@ -126,9 +126,22 @@ sudo systemctl enable xiaoma-compose.service
 
 内容见同目录文件。它只做 `docker compose up -d`，镜像和端口都在 compose 里。
 
-注意它**只管 `opencode-my` 这一个 compose 项目**：HA（`infra/homeassistant`）和小智
-（原 `D:\xiaozhi-server`）是另外两个项目，靠各自的 `restart` 策略跟着 `docker.service`
-起来。只有在你也会手动 `docker compose down` 它们时，才需要照抄一份 unit。
+注意这是**三个 compose 项目，各有一份 unit**（都在同目录，装法一样）：
+
+```bash
+sudo cp infra/ubuntu/{xiaoma,xiaozhi,homeassistant}-compose.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable xiaoma-compose.service xiaozhi-compose.service homeassistant-compose.service
+```
+
+| unit | 项目 | 工作目录 |
+|---|---|---|
+| `xiaoma-compose.service` | 小马 | `/opt/opencode-my` |
+| `xiaozhi-compose.service` | 小智服务端（`infra/xiaozhi-server/`） | `/opt/xiaozhi-server` |
+| `homeassistant-compose.service` | HA（`infra/homeassistant/`） | `/opt/opencode-my/infra/homeassistant` |
+
+只靠容器的 `restart` 策略也能跟着 `docker.service` 回来，但有人 `docker compose down`
+过一次就永远不回来了——这三个 oneshot 就是补这个洞。
 
 **验收方式**（迁移阶段 6 的重启演练）：
 

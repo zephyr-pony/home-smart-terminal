@@ -1,0 +1,29 @@
+# 开机把 Home Assistant 的 compose 项目拉起来（Ubuntu Server 侧）
+#
+# HA 的 compose 在仓库里（`infra/homeassistant/`），配置目录是仓库的
+# `data/homeassistant`，所以 WorkingDirectory 指到仓库里那一层。
+#
+# 装法：
+#   sudo cp infra/ubuntu/homeassistant-compose.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable homeassistant-compose.service
+#
+# 仓库不在 /opt/opencode-my 就改两处路径。
+
+[Unit]
+Description=Home Assistant：开机把 compose 项目拉起来
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/opencode-my/infra/homeassistant
+# HA 启动会拉依赖、迁移数据库，别让 systemd 在 90 秒时判失败
+TimeoutStartSec=0
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose stop
+
+[Install]
+WantedBy=multi-user.target
