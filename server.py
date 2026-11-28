@@ -1203,14 +1203,14 @@ app = FastAPI(
 def _mcp_ask(text, speaker):
     """MCP 接入点唯一入口：设备上所有对话都走这里。
 
-    声纹只用来分开会话上下文，不作凭据：认不出来就用设备默认会话，
-    写操作照样走提案/确认，身份不能绕过护栏。
+    声纹用来分会话上下文、并在这一轮给模型一个称呼线索（D88），**不作凭据**：
+    认不出来就用设备默认会话，写操作照样走提案/确认，身份不能绕过护栏。
     """
     if assistant is None:
         return "小马还没准备好，稍后再试。"
     speaker_id = (speaker or {}).get("speaker_id") or ""
     client_id = "mcp:%s" % speaker_id if speaker_id else "mcp:device"
-    result = assistant.process_text(text, client_id)
+    result = assistant.process_text(text, client_id, speaker=speaker)
     return result.get("reply") or ""
 
 

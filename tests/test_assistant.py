@@ -1038,3 +1038,32 @@ def test_soft_reminder_note_not_in_other_clients_history():
     turns = assistant.sessions["c1"]["turns"]
 
     assert all("软提醒" not in str(turn) for turn in turns)
+
+
+def test_speaker_note_is_a_hint_only_for_this_turn():
+    """声纹认出来的人给一句称呼线索（D88），但**不写进会话历史**。"""
+    llm = FakeLLM("好")
+    assistant = make_assistant(llm)
+
+    assistant.process_text("今天几号", client_id="mcp:spk-feng",
+                           speaker={"speaker_id": "spk-feng", "name": "峰哥"})
+    systems = [m["content"] for m in llm.calls[0] if m["role"] == "system"]
+    assert any("峰哥" in text for text in systems), systems
+
+    assert all("峰哥" not in str(turn)
+               for turn in assistant.sessions["mcp:spk-feng"]["turns"])
+
+    llm.calls.clear()
+    assistant.process_text("明天呢", client_id="mcp:spk-feng")
+    assert not any("峰哥" in (m.get("content") or "") for m in llm.calls[0])
+
+
+def test_speaker_note_needs_a_name_and_never_authorizes():
+    assistant = make_assistant()
+    assert assistant._speaker_note(None) == ""
+    assert assistant._speaker_note({"speaker_id": "spk-1"}) == ""
+    assert assistant._speaker_note({"name": "  "}) == ""
+
+    note = assistant._speaker_note({"speaker_id": "spk-1", "name": "峰哥"})
+    assert "峰哥" in note
+    assert "确认" in note and "身份" in note

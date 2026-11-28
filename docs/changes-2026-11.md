@@ -2706,3 +2706,42 @@ Docker 卷快照解在临时目录里时，`print/` 这类子目录会被写成
   得先给 Docker 配镜像加速器。
 
 设备（小智 / ESP32）**没有切到新机**：旧机继续跑，切不切、什么时候切等用户定。
+
+## 五十九、2026-11-28（当天晚些）：全部切到新机 + 声纹上线
+
+### 切完了
+
+三个服务都搬到 `192.168.2.155`：小马（8208）、HA（8123）、小智（8400/8403）。
+本地那台 Windows 的三个容器全部 `Exited`，旧数据卷留着当回滚。
+
+- **设备地址没改**：固件里的 OTA 写死在 NVS，按住按钮没进配网（按住 3 秒是开关机，
+  进配网是「启动时按住 BOOT」）。最后让**新机接管 `192.168.2.40`**——netplan 加一个
+  静态别名，设备、仪表盘、小智配置全都不用动。代价是路由器要把 `.40` 从 DHCP 池里
+  排除（或把它绑到新机 MAC），否则别的设备拿到会撞。
+- 小智和 HA 的镜像都是本机 `docker save` 搬过去的（服务器拉不到 Docker Hub）；HA 的
+  配置目录（20MB，bind mount 在仓库 `data/homeassistant`）直接打包过去。
+- 小马的 `HOME_BASE_URL` 指向新机的 HA，`LLM_PROXY` 清空；备份在新机上跑通，并装了
+  每天 03:30 的加密备份 timer（口令在 `/etc/xiaoma/backup.env`）。
+
+### 声纹（D88）
+
+- 独立服务：`voiceprint-api`（3D-Speaker 的 `campplus` 模型）+ MySQL，部署件写进
+  `infra/xiaozhi-server/voiceprint/`（compose + 建表 SQL + 步骤）。
+- 小智配置加 `voiceprint.url` + `speakers`（`speaker_id,名称,描述`），阈值 0.45；
+  设备连上来时日志出现「声纹识别功能已在连接时动态启用」，之后每次 `tools/call` 的
+  `_meta` 里就有 `speakerId/speakerName`。
+- 录样本：手机 3–10 秒，ffmpeg 转 16k 单声道，`POST /voiceprint/register`。
+- **小马这边补了一层**：`process_text(..., speaker=)` → `_speaker_note()`，只在**这一轮**
+  注入一句「这一轮是「峰哥」在说话（可能认错）」，用来称呼和参考 `用户/<名字>` 画像；
+  不进历史、不参与鉴权。探针验证：`我是谁？` → 「你是峰哥呀，声纹认出来的。」
+  提醒播完之后用户回的那句也走 MCP，所以「谁在回答这条提醒」同样有名字。
+- **说清楚边界**：声纹拦不住唤醒。唤醒词跑在 ESP32 上，听到「小马」就亮屏开麦，那时
+  服务端还没拿到音频。要连亮屏都没有，只能调高固件唤醒阈值或改「长按说话」；服务端
+  能做的是「认出来不是家里人就不答话」。
+
+### 又踩了两个坑
+
+- `mysqladmin ping` 在初始化阶段的**临时服务器**上也会成功，那时 root 还没设密码——
+  建表要等「能真正登录」，否则 `Access denied`。
+- MCP 的测试替身 `FakeAssistant.process_text` 没接 `**kwargs`，服务端一传 `speaker`
+  就 `TypeError`。替身要跟着真实签名走。

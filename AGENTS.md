@@ -40,6 +40,7 @@
 | `infra/device-firmware/` | ESP32 固件补丁（待机保连接、开机自连、断线重连，D78） |
 | `infra/ubuntu/` | 迁移到 Ubuntu Server 的部署件：开机拉起 compose、加密备份的 systemd 单元 |
 | `infra/installer/` | 一键安装盘：官方 Ubuntu Server ISO → 带 autoinstall 的镜像；iLO（Redfish）挂载、一次性启动、装完找新机 |
+| `infra/xiaozhi-server/voiceprint/` | 声纹识别服务（voiceprint-api + MySQL）：小智认「谁在说话」，结果经 MCP `_meta` 透传给小马 |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
@@ -188,6 +189,11 @@ pytest tests -q
   **只注入上下文，不代执行**——写操作仍走工具、护栏和确认；提示不进会话历史。
   `/api/chat` 的 `task_id`、`/api/voice` 的表单字段、Web Push 的 `task_id`/`task_title`/`kind`
   都走这条链；MCP（`ask_xiaoma`）目前没有任务上下文。
+- `process_text(..., speaker=)`：小智声纹认出来的人（`{"speaker_id", "name"}`，来自 MCP
+  `_meta`，D88）。只在**这一轮**注入一句 system 提示（`_speaker_note`），用来称呼和参考
+  `用户/<名字>` 的画像；**不进会话历史、不参与鉴权**，也不许拿它当户号/地址这类事实的依据。
+  认不出来就不注入，行为跟以前一样。提醒播完之后用户回的那句也走这里，所以「谁在回答这条
+  提醒」同样带上名字。
 
 ### 澄清
 

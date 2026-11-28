@@ -268,18 +268,21 @@ class Assistant:
     # ---------- 对外接口 ----------
 
     def process_text(self, text, client_id=None, on_delta=None, device_camera=False,
-                     task_id=None, attachment=None, extra_tools=None):
+                     task_id=None, attachment=None, extra_tools=None, speaker=None):
         """处理用户文本，并记一条「这轮有没有开思考」（D63）。
 
         记录只是一次本地追加，不联网、不调模型；写失败也不影响回答。
         extra_tools 是调用方（`/v1`）转来的外部工具 schema，模型一调用就原样交回
         调用方执行——小智服务端自己的插件（如 `handle_exit_intent`）走这条。
+        speaker 是小智声纹认出来的人（`{"speaker_id", "name"}`），只用来说话时称呼，
+        不参与鉴权、也不改任何写操作流程（D88）。
         """
         started = time.time()
         try:
             result = self._process_text_inner(
                 text, client_id, on_delta=on_delta, device_camera=device_camera,
                 task_id=task_id, attachment=attachment, extra_tools=extra_tools,
+                speaker=speaker,
             )
         finally:
             state = getattr(self._turn, "state", None)
@@ -313,7 +316,7 @@ class Assistant:
             print("⚠️ 对话记录写入失败：%s" % exc)
 
     def _process_text_inner(self, text, client_id=None, on_delta=None, device_camera=False,
-                            task_id=None, attachment=None, extra_tools=None):
+                            task_id=None, attachment=None, extra_tools=None, speaker=None):
         """处理用户文本输入，返回结构化结果 dict。
 
         Args:
@@ -322,6 +325,8 @@ class Assistant:
             attachment: 这一轮网页上传的文件（打印用），只在内存里；不回写会话历史。
             task_id: 用户点开的到期任务（通知/任务卡带过来的）。只作为这一轮的工具
                 上下文，让「完成了 / 延期」指向那一条；不落库、不进历史。
+            speaker: 声纹认出来的人（`{"speaker_id", "name"}`）。只在这一轮作为
+                称呼线索，不进历史、不参与鉴权。
 
         Returns:
             dict: {"type": ..., "reply": str, ...}
@@ -409,6 +414,7 @@ class Assistant:
             rtype, answer, extras = self._agent_loop(
                 text, client_id, on_delta, device_camera=device_camera,
                 task_id=task_id, attachment=attachment, extra_tools=extra_tools,
+                speaker=speaker,
             )
         except ConfirmationRequired as exc:
             self._record_turn(client_id, text, exc.reply)
@@ -684,6 +690,25 @@ class Assistant:
                     predicate in ("所在城市", "所在的城市", "城市", "城市名"):
                 return value
         return ""
+
+    def _speaker_note(self, speaker):
+        """把声纹认出来的人说成一条 system 提示；没认出来就返回空串。
+
+        为什么值得单开一条：声纹只到「谁在说话」，但回复里要不要称呼、按谁的
+        习惯来，得让模型知道。放在这一轮、不进历史——认错一次不该污染整段对话。
+        身份是**不可信输入**：只用于称呼和个性化，不能省掉确认、也不能据此
+        编户号地址这类事实。
+        """
+        if not isinstance(speaker, dict):
+            return ""
+        name = str(speaker.get("name") or "").strip()
+        if not name:
+            return ""
+        return (
+            "这一轮是「%s」在说话（声纹识别，可能认错）。称呼他时可以用这个名字，"
+            "画像在「用户/%s」下。身份只用来称呼和个性化：写操作照旧走确认，"
+            "也不要把身份当成户号、地址这类事实的依据。" % (name, name)
+        )
 
     def _task_context_note(self, task_id):
         """把「点开的那条提醒」说成一条 system 提示；没有有效 id 就返回空串。
@@ -1040,7 +1065,7 @@ class Assistant:
         return prompt
 
     def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False,
-                    task_id=None, attachment=None, extra_tools=None):
+                    task_id=None, attachment=None, extra_tools=None, speaker=None):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
 
         client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
@@ -1089,6 +1114,11 @@ class Assistant:
         task_note = self._task_context_note(task_id)
         if task_note:
             messages.append({"role": "system", "content": task_note})
+        # 声纹认出来的人：只用来称呼和个性化，这一轮有效、不进历史。
+        # 提醒播完之后用户回的那句也走这里，所以「谁在回答这条提醒」同样有名字。
+        speaker_note = self._speaker_note(speaker)
+        if speaker_note:
+            messages.append({"role": "system", "content": speaker_note})
         # 软提醒（D81）：今天到期的几件事，聊到相关话题时顺口带一句。
         # 放在历史之后、用户这句话之前——每轮会变，塞进 system prompt 开头会
         # 让前缀缓存全部失效（D58 踩过）。

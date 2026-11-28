@@ -47,3 +47,6 @@ Thumbs.db
 
 # ---- 本机备份（里面有 .env，绝不入库）----
 backups/
+
+# ---- 声纹服务的 MySQL 数据目录（几个 G 的 InnoDB 文件）----
+infra/xiaozhi-server/voiceprint/mysql/

@@ -135,9 +135,11 @@ def test_handler_exception_becomes_tool_error():
 class FakeAssistant:
     def __init__(self):
         self.calls = []
+        self.speakers = []
 
-    def process_text(self, text, client_id=None):
+    def process_text(self, text, client_id=None, **kwargs):
         self.calls.append((text, client_id))
+        self.speakers.append(kwargs.get("speaker"))
         return {"type": "chat", "reply": "我在"}
 
 
@@ -170,8 +172,9 @@ def test_websocket_flow_carries_meta(monkeypatch):
         }))
         assert ws.receive_json()["result"]["content"][0]["text"] == "我在"
 
-    # 声纹只用来分会话：同一个 speakerId 落到同一个 client_id
+    # 声纹用来分会话，同时把身份透给 process_text（D88：称呼/个性化线索）
     assert fake.calls == [("我是谁", "mcp:spk-mom")]
+    assert fake.speakers == [{"speaker_id": "spk-mom", "name": "妈妈"}]
 
 
 def test_websocket_without_meta_uses_device_session(monkeypatch):
