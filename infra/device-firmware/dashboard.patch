@@ -1,0 +1,790 @@
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 8577324..5cb0dd2 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -40,6 +40,7 @@ set(SOURCES "audio/audio_codec.cc"
+             "settings.cc"
+             "device_state_machine.cc"
+             "assets.cc"
++            "xiaoma_dashboard.cc"
+             "main.cc"
+             )
+ 
+@@ -1231,6 +1232,7 @@ idf_component_register(SRCS ${SOURCES}
+                         bt
+                         fatfs
+                         xiaozhi-fonts
++                        esp_http_client
+                         ${MAIN_PRIV_REQUIRES_EXTRA}
+                     )
+ 
+diff --git a/main/Kconfig.projbuild b/main/Kconfig.projbuild
+index ae0d435..37e4f78 100644
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -1249,3 +1249,18 @@ menu "TAIJIPAI_S3_CONFIG"
+ endmenu
+ 
+ endmenu
++
++menu "Xiaoma Dashboard (D85)"
++    config XIAOMA_DASHBOARD_URL
++        string "待机屏数据地址（留空不启用）"
++        default ""
++        help
++            小马服务端的只读接口，例如 http://192.168.2.40:8208/api/display
++            设备每 5 分钟拉一次，用于待机屏显示天气和今天最急的一件事。
++
++    config XIAOMA_DASHBOARD_TOKEN
++        string "待机屏令牌（DISPLAY_TOKEN）"
++        default ""
++        help
++            与小马服务端 .env 里的 DISPLAY_TOKEN 一致；不要填 API_TOKEN。
++endmenu
+diff --git a/main/application.cc b/main/application.cc
+index 2ed4129..d42431b 100644
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -11,6 +11,7 @@
+ #include "system_info.h"
+ #include "text_glyph_payload.h"
+ #include "websocket_protocol.h"
++#include "xiaoma_dashboard.h"
+ 
+ #include <driver/gpio.h>
+ #include <esp_log.h>
+@@ -130,6 +131,10 @@ void Application::Initialize() {
+     // Start the clock timer to update the status bar
+     esp_timer_start_periodic(clock_timer_handle_, 1000000);
+ 
++    // 小马待机看板（D85）：后台每 5 分钟拉一次天气和今天最急的事。
++    // URL 没配就什么都不做（上游行为）。
++    XmDashboardStart();
++
+     // Add MCP common tools (only once during initialization)
+     auto& mcp_server = McpServer::GetInstance();
+     mcp_server.AddCommonTools();
+@@ -834,6 +839,7 @@ void Application::Alert(const char* status, const char* message, const char* emo
+                         const std::string_view& sound) {
+     ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
+     auto display = Board::GetInstance().GetDisplay();
++    display->SetStandbyDashboard(false);  // 别让看板盖住错误信息
+     display->SetStatus(status);
+     display->SetEmotion(emotion);
+     display->SetChatMessage("system", message);
+@@ -849,6 +855,10 @@ void Application::DismissAlert() {
+         display->SetStatus(Lang::Strings::STANDBY);
+         display->SetEmotion("neutral");
+         display->SetChatMessage("system", "");
++        if (XmDashboardEnabled()) {
++            display->SetStandbyDashboard(true);
++            XmDashboardRequestRefresh();
++        }
+     }
+ }
+ 
+@@ -1147,6 +1157,16 @@ void Application::HandleStateChangedEvent() {
+             // Do nothing
+             break;
+     }
++
++    // 小马待机看板（D85）：只在「启用、待机且没有错误」时覆盖表情；出错时让错误信息照常显示。
++    const bool standby = XmDashboardEnabled() &&
++                         (new_state == kDeviceStateIdle || new_state == kDeviceStateUnknown) &&
++                         last_error_message_.empty();
++    display->SetStandbyDashboard(standby);
++    if (standby) {
++        // 刚聊完可能改了任务，回待机时顺手刷新一次
++        XmDashboardRequestRefresh();
++    }
+ }
+ 
+ void Application::ShowStartupWakeWordHint() {
+diff --git a/main/display/display.h b/main/display/display.h
+index c5b0c42..cbd0f9d 100644
+--- a/main/display/display.h
++++ b/main/display/display.h
+@@ -23,6 +23,20 @@
+ class LvglFont;
+ class LvglImage;
+ 
++// 待机看板的数据（D85）。屏幕只放得下两条待办，多的靠 count 交代。
++struct StandbyItem {
++    std::string title;
++    std::string when;  // 「逾期 3 天」「今天 09:00」，没有就空
++};
++
++struct StandbyInfo {
++    std::string lunar;         // 「农历十月十四 · 立冬」，算不出来就空（不显示这一行）
++    std::string weather;       // 「多云 6℃ · 体感 4°」，拿不到就空
++    std::string weather_note;  // 「东南风 3级 · 6° / 1°」，拿不到就空
++    std::vector<StandbyItem> items;
++    std::string count;         // 「还有 2 件」，没有就空
++};
++
+ class Theme {
+ public:
+     Theme(const std::string& name) : name_(name) {}
+@@ -81,6 +95,10 @@ public:
+     }
+     virtual void LoadAssets() {}
+     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image);
++    // 小马待机看板（D85）：待机时显示时间/日期/农历/天气/今天最急的几件事。
++    // 不支持 GUI 的屏默认什么也不做，语音链路不受影响。
++    virtual void SetStandbyDashboard(bool visible) { (void)visible; }
++    virtual void SetStandbyInfo(const StandbyInfo& info) { (void)info; }
+     virtual bool SetTextFont(std::shared_ptr<LvglFont> text_font) {
+         (void)text_font;
+         return false;
+diff --git a/main/display/lcd_display.cc b/main/display/lcd_display.cc
+index 7be9bad..477d4e7 100644
+--- a/main/display/lcd_display.cc
++++ b/main/display/lcd_display.cc
+@@ -13,7 +13,9 @@
+ #include <noto_emoji.h>
+ #include <src/misc/cache/lv_cache.h>
+ #include <algorithm>
++#include <cstdio>
+ #include <cstring>
++#include <ctime>
+ #include <vector>
+ 
+ #include "board.h"
+@@ -25,6 +27,22 @@ LV_FONT_DECLARE(BUILTIN_ICON_FONT);
+ LV_FONT_DECLARE(font_material_symbols_30_4);
+ LV_FONT_DECLARE(font_noto_emoji_30_4);
+ 
++#if LV_FONT_MONTSERRAT_46
++LV_FONT_DECLARE(lv_font_montserrat_46);
++#endif
++
++// 待机看板（D85）用网页控制台那套「暖米」配色，和设备默认的黑白主题分开：
++// 只有待机这一屏是暖色纸底，聊天、提醒仍用上游主题，改主题时不用动两边。
++namespace {
++constexpr uint32_t kStandbyBg = 0xE7D2AB;    // 暖米纸底（这块屏很亮，浅米会被看成纯白）
++constexpr uint32_t kStandbyInk = 0x332A24;   // --text-primary
++constexpr uint32_t kStandbyBody = 0x4A3E35;  // 天气正文
++constexpr uint32_t kStandbyMuted = 0x8A7A6C; // --text-secondary
++constexpr uint32_t kStandbyFaint = 0xA8988A; // 更淡的辅助字
++constexpr uint32_t kStandbyWarn = 0xB4472F;  // 逾期用 --warn
++constexpr uint32_t kStandbyRule = 0xECDFD0;  // --border
++}  // namespace
++
+ void LcdDisplay::InitializeLcdThemes() {
+     auto text_font = std::make_shared<LvglBuiltInFont>(&BUILTIN_TEXT_FONT);
+     auto icon_font = std::make_shared<LvglBuiltInFont>(&BUILTIN_ICON_FONT);
+@@ -970,6 +988,7 @@ void LcdDisplay::SetupUI() {
+                           LV_FLEX_ALIGN_CENTER);
+     lv_obj_set_scrollbar_mode(top_bar_, LV_SCROLLBAR_MODE_OFF);
+     lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
++    top_bar_index_ = lv_obj_get_index(top_bar_);
+ 
+     // Left icon
+     network_label_ = lv_label_create(top_bar_);
+@@ -1084,6 +1103,95 @@ void LcdDisplay::SetupUI() {
+     lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);  // Hide until there is content
+ #endif
+ 
++    // ---- 小马待机看板（D85）：暖米底色 + 时间 / 日期 / 农历 / 天气 / 两条待办 ----
++    // 只在待机时覆盖表情；对话、提醒、配网都照旧走原来的界面。
++    // 位置全部用绝对对齐写死：320×240 上差两像素就会挤在一起，flex 反而更难对齐。
++    // 顶上那条 30px 单独盖一块：状态栏（「待命」/时钟）在它下面，藏标志有时不重绘，
++    // 直接把这块不透明矩形压上去最稳。
++    standby_top_ = lv_obj_create(screen);
++    lv_obj_set_size(standby_top_, LV_HOR_RES, 30);
++    lv_obj_set_style_radius(standby_top_, 0, 0);
++    lv_obj_set_style_border_width(standby_top_, 0, 0);
++    lv_obj_set_style_pad_all(standby_top_, 0, 0);
++    lv_obj_set_style_bg_color(standby_top_, lv_color_hex(kStandbyBg), 0);
++    lv_obj_set_style_bg_opa(standby_top_, LV_OPA_COVER, 0);
++    lv_obj_set_scrollbar_mode(standby_top_, LV_SCROLLBAR_MODE_OFF);
++    lv_obj_align(standby_top_, LV_ALIGN_TOP_MID, 0, 0);
++    lv_obj_add_flag(standby_top_, LV_OBJ_FLAG_HIDDEN);
++
++    standby_box_ = lv_obj_create(screen);
++    lv_obj_set_size(standby_box_, LV_HOR_RES, LV_VER_RES - 28);
++    lv_obj_set_style_radius(standby_box_, 0, 0);
++    lv_obj_set_style_border_width(standby_box_, 0, 0);
++    lv_obj_set_style_bg_color(standby_box_, lv_color_hex(kStandbyBg), 0);
++    lv_obj_set_style_bg_opa(standby_box_, LV_OPA_COVER, 0);
++    lv_obj_set_style_pad_all(standby_box_, 0, 0);
++    lv_obj_set_scrollbar_mode(standby_box_, LV_SCROLLBAR_MODE_OFF);
++    lv_obj_set_style_layout(standby_box_, LV_LAYOUT_NONE, 0);
++    // 让出顶部那一条状态图标（Wi-Fi / 电量），不盖住它们
++    lv_obj_align(standby_box_, LV_ALIGN_TOP_MID, 0, 28);
++    lv_obj_add_flag(standby_box_, LV_OBJ_FLAG_HIDDEN);
++
++    auto standby_label = [&](uint32_t color) {
++        lv_obj_t* label = lv_label_create(standby_box_);
++        // 不设字体：跟随屏幕主题字体。资产字体替换时 SetTextFont 会把屏幕字体重绑到新
++        // 字体，而 LVGL 样式里存的是裸指针——写死旧字体会在替换后变成悬空指针。
++        lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
++        return label;
++    };
++
++    standby_time_ = standby_label(kStandbyInk);
++#if LV_FONT_MONTSERRAT_46
++    lv_obj_set_style_text_font(standby_time_, &lv_font_montserrat_46, 0);
++#endif
++    lv_label_set_text(standby_time_, "--:--");
++    lv_obj_align(standby_time_, LV_ALIGN_TOP_LEFT, 18, 0);
++
++    standby_date_ = standby_label(kStandbyInk);
++    lv_label_set_text(standby_date_, "");
++    lv_obj_align(standby_date_, LV_ALIGN_TOP_RIGHT, -18, 6);
++
++    standby_lunar_ = standby_label(kStandbyMuted);
++    lv_label_set_text(standby_lunar_, "");
++    lv_obj_align(standby_lunar_, LV_ALIGN_TOP_RIGHT, -18, 32);
++
++    // 「还有 N 件」跟在日期块下面，别挤到待办行里（两条待办已经占到底边）
++    standby_count_ = standby_label(kStandbyFaint);
++    lv_label_set_text(standby_count_, "");
++    lv_obj_align(standby_count_, LV_ALIGN_TOP_RIGHT, -18, 50);
++    lv_obj_add_flag(standby_count_, LV_OBJ_FLAG_HIDDEN);
++
++    standby_rule_ = lv_obj_create(standby_box_);
++    lv_obj_set_size(standby_rule_, LV_HOR_RES - 36, 1);
++    lv_obj_set_style_bg_color(standby_rule_, lv_color_hex(kStandbyRule), 0);
++    lv_obj_set_style_bg_opa(standby_rule_, LV_OPA_COVER, 0);
++    lv_obj_set_style_border_width(standby_rule_, 0, 0);
++    lv_obj_set_style_radius(standby_rule_, 0, 0);
++    lv_obj_set_style_pad_all(standby_rule_, 0, 0);
++    lv_obj_align(standby_rule_, LV_ALIGN_TOP_LEFT, 18, 80);
++
++    standby_weather_ = standby_label(kStandbyBody);
++    lv_label_set_text(standby_weather_, "");
++    lv_obj_align(standby_weather_, LV_ALIGN_TOP_MID, 0, 88);
++    lv_obj_add_flag(standby_weather_, LV_OBJ_FLAG_HIDDEN);
++
++    standby_weather_note_ = standby_label(kStandbyMuted);
++    lv_label_set_text(standby_weather_note_, "");
++    lv_obj_align(standby_weather_note_, LV_ALIGN_TOP_MID, 0, 114);
++    lv_obj_add_flag(standby_weather_note_, LV_OBJ_FLAG_HIDDEN);
++
++    for (int i = 0; i < 2; ++i) {
++        int y = 144 + i * 28;
++        standby_task_[i] = standby_label(kStandbyInk);
++        lv_obj_set_width(standby_task_[i], 180);
++        lv_label_set_long_mode(standby_task_[i], LV_LABEL_LONG_DOT);
++        lv_obj_align(standby_task_[i], LV_ALIGN_TOP_LEFT, 18, y);
++        standby_when_[i] = standby_label(i == 0 ? kStandbyWarn : kStandbyMuted);
++        lv_obj_align(standby_when_[i], LV_ALIGN_TOP_RIGHT, -18, y);
++        lv_obj_add_flag(standby_task_[i], LV_OBJ_FLAG_HIDDEN);
++        lv_obj_add_flag(standby_when_[i], LV_OBJ_FLAG_HIDDEN);
++    }
++
+     low_battery_popup_ = lv_obj_create(screen);
+     lv_obj_set_scrollbar_mode(low_battery_popup_, LV_SCROLLBAR_MODE_OFF);
+     lv_obj_set_size(low_battery_popup_, LV_HOR_RES * 0.9, text_font->line_height * 2);
+@@ -1297,6 +1405,21 @@ void LcdDisplay::SetTheme(Theme* theme) {
+     DisplayLockGuard lock(this);
+ 
+     auto lvgl_theme = static_cast<LvglTheme*>(theme);
++    if (lvgl_theme == nullptr) {
++        return;
++    }
++
++    // 小马：整机换成网页控制台那套暖米（D85）。上游主题是黑白，如果只给待机看板
++    // 上色，说话/聆听时一切回黑白，屏幕会跳色；这里在 SetTheme 里统一改，
++    // 资产刷新会再次调用 SetTheme，所以每次都要覆盖（只写在构造函数里会被盖回去）。
++    lvgl_theme->set_background_color(lv_color_hex(kStandbyBg));
++    lvgl_theme->set_text_color(lv_color_hex(kStandbyInk));
++    lvgl_theme->set_border_color(lv_color_hex(kStandbyRule));
++    lvgl_theme->set_chat_background_color(lv_color_hex(0xFDF3E4));
++    lvgl_theme->set_system_bubble_color(lv_color_hex(0xFDF3E4));
++    lvgl_theme->set_system_text_color(lv_color_hex(kStandbyInk));
++    lvgl_theme->set_assistant_bubble_color(lv_color_hex(0xF5E9D9));
++    lvgl_theme->set_user_bubble_color(lv_color_hex(0xC4643F));
+ 
+     // Get the active screen
+     lv_obj_t* screen = lv_screen_active();
+@@ -1319,6 +1442,9 @@ void LcdDisplay::SetTheme(Theme* theme) {
+     // Set parent text color
+     lv_obj_set_style_text_font(screen, text_font, 0);
+     lv_obj_set_style_text_color(screen, lvgl_theme->text_color(), 0);
++    // 屏幕自己也要上底色：容器万一没铺满/透明，露出来的就是这块
++    lv_obj_set_style_bg_color(screen, lvgl_theme->background_color(), 0);
++    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+ 
+     // Set background image
+     if (lvgl_theme->background_image() != nullptr) {
+@@ -1326,6 +1452,7 @@ void LcdDisplay::SetTheme(Theme* theme) {
+     } else {
+         lv_obj_set_style_bg_image_src(container_, nullptr, 0);
+         lv_obj_set_style_bg_color(container_, lvgl_theme->background_color(), 0);
++        lv_obj_set_style_bg_opa(container_, LV_OPA_COVER, 0);
+     }
+ 
+     // Update top bar background color with 50% opacity
+@@ -1455,3 +1582,179 @@ void LcdDisplay::SetHideSubtitle(bool hide) {
+         }
+     }
+ }
++
++// ---- 小马待机看板（D85） ----
++
++void LcdDisplay::SetStatus(const char* status) {
++    if (standby_visible_.load()) {
++        // 看板自己显示时间；状态栏再写一句「09:58」，屏幕上就有两个时间。
++        // 文字先存着，退出看板时补到状态栏（见 SetStandbyDashboard）。
++        standby_pending_status_ = (status != nullptr) ? status : "";
++        return;
++    }
++    ESP_LOGI(TAG, "SetStatus(%s) standby=0", status != nullptr ? status : "");
++    LvglDisplay::SetStatus(status);
++}
++
++void LcdDisplay::SetStandbyDashboard(bool visible) {
++    if (!setup_ui_called_ || standby_box_ == nullptr) {
++        ESP_LOGW(TAG, "standby dashboard skipped: setup=%d box=%p",
++                 static_cast<int>(setup_ui_called_), static_cast<void*>(standby_box_));
++        return;
++    }
++    {
++        DisplayLockGuard lock(this);
++        standby_visible_.store(visible);
++        auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
++        if (visible) {
++            // 顶部那条图标区也要变暖，不然看板下面米色、上面白，看着像没画完
++            if (lvgl_theme != nullptr) {
++                lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(kStandbyBg), 0);
++                if (container_ != nullptr) {
++                    lv_obj_set_style_bg_color(container_, lv_color_hex(kStandbyBg), 0);
++                }
++            }
++            // 状态栏整条藏掉（只藏 label 在真机上会留残影），再用米色条盖住那块，
++            // 最后把图标条提到最上层，Wi-Fi/电量照常可见
++            if (status_bar_ != nullptr) {
++                lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
++            }
++            if (status_label_ != nullptr) {
++                lv_obj_add_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
++            }
++            if (standby_top_ != nullptr) {
++                lv_obj_remove_flag(standby_top_, LV_OBJ_FLAG_HIDDEN);
++            }
++            if (top_bar_ != nullptr) {
++                lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
++                lv_obj_move_foreground(top_bar_);
++            }
++            lv_obj_remove_flag(standby_box_, LV_OBJ_FLAG_HIDDEN);
++            if (emoji_box_ != nullptr && preview_image_cached_ == nullptr) {
++                lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
++            }
++            if (bottom_bar_ != nullptr) {
++                lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
++            }
++        } else {
++            lv_obj_add_flag(standby_box_, LV_OBJ_FLAG_HIDDEN);
++            if (standby_top_ != nullptr) {
++                lv_obj_add_flag(standby_top_, LV_OBJ_FLAG_HIDDEN);
++            }
++            if (top_bar_ != nullptr) {
++                lv_obj_set_style_bg_opa(top_bar_, LV_OPA_50, 0);
++                lv_obj_move_to_index(top_bar_, top_bar_index_);
++            }
++            if (status_bar_ != nullptr) {
++                lv_obj_remove_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
++            }
++            if (lvgl_theme != nullptr) {
++                lv_obj_set_style_bg_color(lv_screen_active(), lvgl_theme->background_color(), 0);
++                if (container_ != nullptr) {
++                    lv_obj_set_style_bg_color(container_, lvgl_theme->background_color(), 0);
++                }
++            }
++            if (emoji_box_ != nullptr && preview_image_cached_ == nullptr) {
++                lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
++            }
++            if (status_label_ != nullptr && standby_pending_status_.empty()) {
++                lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
++            }
++        }
++        // 时间回到页面时立刻刷新，不等下一次整分钟
++        standby_clock_min_ = -1;
++        // 显隐切换后强制整屏重绘：只在隐藏标志上改，面板上会留着上一帧的字
++        // （真机见过「待命」两个字留在看板顶上）
++        lv_obj_invalidate(lv_screen_active());
++        lv_color_t box_bg = lv_obj_get_style_bg_color(standby_box_, LV_PART_MAIN);
++        lv_color_t ctr_bg = (container_ != nullptr)
++                                ? lv_obj_get_style_bg_color(container_, LV_PART_MAIN)
++                                : lv_color_black();
++        ESP_LOGI(TAG,
++                 "standby=%d box_hidden=%d status_hidden=%d box_bg=%02x%02x%02x/%d"
++                 " container_bg=%02x%02x%02x",
++                 static_cast<int>(visible),
++                 static_cast<int>(lv_obj_has_flag(standby_box_, LV_OBJ_FLAG_HIDDEN)),
++                 static_cast<int>(status_label_ != nullptr &&
++                                  lv_obj_has_flag(status_label_, LV_OBJ_FLAG_HIDDEN)),
++                 box_bg.red, box_bg.green, box_bg.blue,
++                 static_cast<int>(lv_obj_get_style_bg_opa(standby_box_, LV_PART_MAIN)),
++                 ctr_bg.red, ctr_bg.green, ctr_bg.blue);
++    }
++    if (visible) {
++        UpdateStandbyClock();
++    } else if (!standby_pending_status_.empty()) {
++        std::string pending = standby_pending_status_;
++        standby_pending_status_.clear();
++        LvglDisplay::SetStatus(pending.c_str());
++    }
++}
++
++void LcdDisplay::SetStandbyInfo(const StandbyInfo& info) {
++    if (!setup_ui_called_ || standby_box_ == nullptr) {
++        return;
++    }
++    auto apply = [](lv_obj_t* label, const std::string& text) {
++        if (label == nullptr) {
++            return;
++        }
++        if (text.empty()) {
++            // 这一行没有数据就不显示，别留空行、也别编一个值
++            lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
++            return;
++        }
++        lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
++        lv_label_set_text(label, text.c_str());
++    };
++    DisplayLockGuard lock(this);
++    apply(standby_lunar_, info.lunar);
++    apply(standby_weather_, info.weather);
++    apply(standby_weather_note_, info.weather_note);
++    apply(standby_count_, info.count);
++    for (int i = 0; i < 2; ++i) {
++        const bool has = static_cast<size_t>(i) < info.items.size();
++        apply(standby_task_[i], has ? info.items[i].title : std::string());
++        apply(standby_when_[i], has ? info.items[i].when : std::string());
++    }
++}
++
++void LcdDisplay::UpdateStandbyClock() {
++    if (!standby_visible_.load() || standby_time_ == nullptr) {
++        return;
++    }
++    time_t now = time(nullptr);
++    struct tm tm_now;
++    localtime_r(&now, &tm_now);
++    if (tm_now.tm_year + 1900 < 2025) {
++        // OTA 还没给时间：显示占位符，别把 1970 当成真的
++        DisplayLockGuard lock(this);
++        lv_label_set_text(standby_time_, "--:--");
++        if (standby_date_ != nullptr) {
++            lv_label_set_text(standby_date_, "");
++        }
++        return;
++    }
++    int minute = tm_now.tm_hour * 60 + tm_now.tm_min;
++    if (minute == standby_clock_min_) {
++        return;
++    }
++    standby_clock_min_ = minute;
++
++    char time_str[8];
++    char date_str[32];
++    strftime(time_str, sizeof(time_str), "%H:%M", &tm_now);
++    static const char* weekdays[] = {"周日", "周一", "周二", "周三",
++                                     "周四", "周五", "周六"};
++    snprintf(date_str, sizeof(date_str), "%d月%d日 %s", tm_now.tm_mon + 1, tm_now.tm_mday,
++             weekdays[tm_now.tm_wday]);
++    DisplayLockGuard lock(this);
++    lv_label_set_text(standby_time_, time_str);
++    if (standby_date_ != nullptr) {
++        lv_label_set_text(standby_date_, date_str);
++    }
++}
++
++void LcdDisplay::UpdateStatusBar(bool update_all) {
++    LvglDisplay::UpdateStatusBar(update_all);
++    UpdateStandbyClock();
++}
+diff --git a/main/display/lcd_display.h b/main/display/lcd_display.h
+index a10988e..354b569 100644
+--- a/main/display/lcd_display.h
++++ b/main/display/lcd_display.h
+@@ -30,12 +30,29 @@ protected:
+     bool emotion_uses_image_ = false;
+     lv_obj_t* emoji_box_ = nullptr;
+     lv_obj_t* chat_message_label_ = nullptr;
++    lv_obj_t* standby_box_ = nullptr;
++    lv_obj_t* standby_top_ = nullptr;
++    lv_obj_t* standby_time_ = nullptr;
++    lv_obj_t* standby_date_ = nullptr;
++    lv_obj_t* standby_lunar_ = nullptr;
++    lv_obj_t* standby_rule_ = nullptr;
++    lv_obj_t* standby_weather_ = nullptr;
++    lv_obj_t* standby_weather_note_ = nullptr;
++    lv_obj_t* standby_task_[2] = {nullptr, nullptr};
++    lv_obj_t* standby_when_[2] = {nullptr, nullptr};
++    lv_obj_t* standby_count_ = nullptr;
++    std::atomic<bool> standby_visible_{false};
++    int standby_clock_min_ = -1;
++    int top_bar_index_ = 0;  // 顶栏原来的 z 序，退出看板时放回去
++    // 看板显示时状态栏文字不显示（否则屏上两个时间），但文字要留着，退出看板再补上
++    std::string standby_pending_status_;
+     esp_timer_handle_t preview_timer_ = nullptr;
+     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
+     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
+ 
+     void InitializeLcdThemes();
+     void ShowEmotion();
++    void UpdateStandbyClock();
+     virtual bool Lock(int timeout_ms = 0) override;
+     virtual void Unlock() override;
+ 
+@@ -55,6 +72,12 @@ public:
+     // Add theme switching function
+     virtual void SetTheme(Theme* theme) override;
+ 
++    // 待机看板（D85）：只覆盖待机时的画面，对话/提醒时照旧走表情和气泡
++    virtual void SetStandbyDashboard(bool visible) override;
++    virtual void SetStandbyInfo(const StandbyInfo& info) override;
++    virtual void SetStatus(const char* status) override;
++    virtual void UpdateStatusBar(bool update_all = false) override;
++
+     // Set whether to hide chat messages/subtitles
+     virtual void SetHideSubtitle(bool hide) override;
+ };
+diff --git b/main/xiaoma_dashboard.cc b/main/xiaoma_dashboard.cc
+new file mode 100644
+index 0000000..9a06965
+--- /dev/null
++++ b/main/xiaoma_dashboard.cc
+@@ -0,0 +1,213 @@
++#include "xiaoma_dashboard.h"
++
++#include <cJSON.h>
++#include <esp_err.h>
++#include <esp_http_client.h>
++#include <esp_log.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/semphr.h>
++#include <freertos/task.h>
++
++#include <cstdio>
++#include <string>
++
++#include "board.h"
++#include "display.h"
++
++namespace {
++
++constexpr const char* TAG = "XmDashboard";
++constexpr int kRefreshSeconds = 300;
++constexpr int kRetrySeconds = 60;
++constexpr int kMaxBody = 8192;
++
++SemaphoreHandle_t refresh_sem = nullptr;
++
++std::string NumberText(cJSON* item) {
++    if (!cJSON_IsNumber(item)) {
++        return "";
++    }
++    char buffer[16];
++    double value = item->valuedouble;
++    if (value == static_cast<int>(value)) {
++        snprintf(buffer, sizeof(buffer), "%d", static_cast<int>(value));
++    } else {
++        snprintf(buffer, sizeof(buffer), "%.1f", value);
++    }
++    return buffer;
++}
++
++std::string HttpGet() {
++    esp_http_client_config_t config = {};
++    config.url = CONFIG_XIAOMA_DASHBOARD_URL;
++    config.timeout_ms = 6000;
++    config.disable_auto_redirect = true;
++
++    esp_http_client_handle_t client = esp_http_client_init(&config);
++    if (client == nullptr) {
++        ESP_LOGW(TAG, "HTTP client init failed");
++        return "";
++    }
++    if (CONFIG_XIAOMA_DASHBOARD_TOKEN[0] != '\0') {
++        esp_http_client_set_header(client, "X-Display-Token",
++                                   CONFIG_XIAOMA_DASHBOARD_TOKEN);
++    }
++
++    std::string body;
++    esp_err_t err = esp_http_client_open(client, 0);
++    if (err != ESP_OK) {
++        ESP_LOGW(TAG, "open failed: %s", esp_err_to_name(err));
++        esp_http_client_cleanup(client);
++        return "";
++    }
++    // 必须先收完响应头，get_status_code() 才有值；之前先读状态码拿到的是 0。
++    int content_length = esp_http_client_fetch_headers(client);
++    int status = esp_http_client_get_status_code(client);
++    if (status == 200) {
++        char buffer[256];
++        int read = 0;
++        while ((read = esp_http_client_read(client, buffer, sizeof(buffer))) > 0) {
++            body.append(buffer, read);
++            if (body.size() >= kMaxBody) {
++                break;
++            }
++        }
++        if (body.empty() && content_length == 0) {
++            ESP_LOGW(TAG, "empty body");
++        }
++    } else {
++        ESP_LOGW(TAG, "HTTP %d", status);
++    }
++    esp_http_client_close(client);
++    esp_http_client_cleanup(client);
++    return body;
++}
++
++void ApplyBody(const std::string& body) {
++    cJSON* root = cJSON_Parse(body.c_str());
++    if (root == nullptr) {
++        ESP_LOGW(TAG, "invalid JSON");
++        return;
++    }
++
++    StandbyInfo info;
++    cJSON* lunar = cJSON_GetObjectItem(root, "lunar");
++    if (cJSON_IsString(lunar) && lunar->valuestring != nullptr) {
++        info.lunar = lunar->valuestring;
++    }
++
++    std::string weather_line;
++    std::string weather_note;
++    cJSON* weather = cJSON_GetObjectItem(root, "weather");
++    if (cJSON_IsObject(weather) && cJSON_IsTrue(cJSON_GetObjectItem(weather, "ok"))) {
++        cJSON* sky = cJSON_GetObjectItem(weather, "sky");
++        if (cJSON_IsString(sky) && sky->valuestring != nullptr) {
++            weather_line += sky->valuestring;
++        }
++        std::string temp = NumberText(cJSON_GetObjectItem(weather, "temp"));
++        if (!temp.empty()) {
++            if (!weather_line.empty()) {
++                weather_line += " ";
++            }
++            weather_line += temp + "℃";
++        }
++        std::string feels = NumberText(cJSON_GetObjectItem(weather, "feels"));
++        if (!feels.empty()) {
++            weather_line += " · 体感 " + feels + "°";
++        }
++        // 第二行：风 + 今天的高低温。缺哪个就少哪段，不补「--」
++        cJSON* wind = cJSON_GetObjectItem(weather, "wind");
++        if (cJSON_IsString(wind) && wind->valuestring != nullptr && wind->valuestring[0] != '\0') {
++            weather_note += wind->valuestring;
++        }
++        std::string high = NumberText(cJSON_GetObjectItem(weather, "high"));
++        std::string low = NumberText(cJSON_GetObjectItem(weather, "low"));
++        if (!high.empty() && !low.empty()) {
++            if (!weather_note.empty()) {
++                weather_note += " · ";
++            }
++            weather_note += high + "° / " + low + "°";
++        }
++    }
++    info.weather = weather_line;
++    info.weather_note = weather_note;
++
++    cJSON* today = cJSON_GetObjectItem(root, "today");
++    if (cJSON_IsObject(today)) {
++        cJSON* count = cJSON_GetObjectItem(today, "count");
++        const int total = cJSON_IsNumber(count) ? count->valueint : 0;
++        cJSON* items = cJSON_GetObjectItem(today, "items");
++        if (cJSON_IsArray(items)) {
++            const int n = cJSON_GetArraySize(items);
++            for (int i = 0; i < n && static_cast<int>(info.items.size()) < 2; ++i) {
++                cJSON* row = cJSON_GetArrayItem(items, i);
++                if (!cJSON_IsObject(row)) {
++                    continue;
++                }
++                StandbyItem item;
++                cJSON* title = cJSON_GetObjectItem(row, "title");
++                if (cJSON_IsString(title) && title->valuestring != nullptr) {
++                    item.title = title->valuestring;
++                }
++                cJSON* when = cJSON_GetObjectItem(row, "when");
++                if (cJSON_IsString(when) && when->valuestring != nullptr) {
++                    item.when = when->valuestring;
++                }
++                info.items.push_back(item);
++            }
++        }
++        if (total == 0) {
++            info.items.clear();
++            info.items.push_back(StandbyItem{"今天没事", ""});
++        } else if (total > 2) {
++            info.count = "还有 " + std::to_string(total - 2) + " 件";
++        }
++    }
++
++    auto display = Board::GetInstance().GetDisplay();
++    if (display != nullptr) {
++        display->SetStandbyInfo(info);
++    }
++    cJSON_Delete(root);
++}
++
++void DashboardTask(void*) {
++    // 等 Wi-Fi 连上、OTA 把时间校准，再拉第一轮
++    vTaskDelay(pdMS_TO_TICKS(8000));
++    for (;;) {
++        std::string body = HttpGet();
++        if (!body.empty()) {
++            ApplyBody(body);
++        }
++        TickType_t wait = pdMS_TO_TICKS(
++            (body.empty() ? kRetrySeconds : kRefreshSeconds) * 1000);
++        xSemaphoreTake(refresh_sem, wait);
++    }
++}
++
++}  // namespace
++
++void XmDashboardStart() {
++    if (CONFIG_XIAOMA_DASHBOARD_URL[0] == '\0') {
++        ESP_LOGI(TAG, "未配置 dashboard URL，待机看板不启用");
++        return;
++    }
++    if (refresh_sem != nullptr) {
++        return;
++    }
++    refresh_sem = xSemaphoreCreateBinary();
++    if (refresh_sem == nullptr) {
++        ESP_LOGE(TAG, "create semaphore failed");
++        return;
++    }
++    xTaskCreate(DashboardTask, "xm_dashboard", 8192, nullptr, 2, nullptr);
++    ESP_LOGI(TAG, "待机看板已启动：%s", CONFIG_XIAOMA_DASHBOARD_URL);
++}
++
++bool XmDashboardEnabled() { return CONFIG_XIAOMA_DASHBOARD_URL[0] != '\0'; }
++
++void XmDashboardRequestRefresh() {
++    if (refresh_sem != nullptr) {
++        xSemaphoreGive(refresh_sem);
++    }
++}
+diff --git b/main/xiaoma_dashboard.h b/main/xiaoma_dashboard.h
+new file mode 100644
+index 0000000..c0767be
+--- /dev/null
++++ b/main/xiaoma_dashboard.h
+@@ -0,0 +1,19 @@
++#pragma once
++
++// 小马待机看板（D85）：待机时显示时间/日期/天气/今天最急的一件事。
++//
++// 数据来自服务端只读接口 `GET /api/display`（请求头 X-Display-Token）。
++// 地址和令牌在 menuconfig 的「Xiaoma Dashboard」里填；URL 留空时整个功能
++// 不启动，固件行为和上游完全一致。
++//
++// 为什么由设备主动拉：设备只跟小智语音服务端有一条 WebSocket，那条协议
++// 只送 TTS/会话指令；为了几行字去扩协议不划算，HTTP 拉一次 5 分钟更简单。
++
++// 启动后台拉取任务（可重复调用，只启动一次）。
++void XmDashboardStart();
++
++// 功能是否启用（menuconfig 里 URL 非空）。没启用时待机仍走上游的表情界面。
++bool XmDashboardEnabled();
++
++// 请求立即刷新一次（比如从对话回到待机时），失败会在下一轮自动重试。
++void XmDashboardRequestRefresh();

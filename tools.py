@@ -301,12 +301,13 @@ def get_weather_tool(weather):
             "forecast=未来几天，不含今天（days 指定天数，默认 3）；"
             "不传 scope 则三段都给。"
             "用户问「现在」用 now，问「今天/穿什么/要不要带伞」用 today，问「明天/这周」用 forecast。"
-            "location 不传就查家里所在城市，只有问别的城市时才传城市名。"
+            "location 不传就查家里所在城市（优先取 facts 里「家 / 所在城市」，其次配置的默认城市）；"
+            "家里城市还不知道时会让你问用户在哪个城市，别猜一个城市去查。"
         ),
         properties={
             "location": {
                 "type": "string",
-                "description": "城市名，如'烟台'；不传则查本地",
+                "description": "城市名，如'烟台'；不传则查家里所在城市",
             },
             "scope": {
                 "type": "string",
@@ -752,6 +753,7 @@ def get_fact_tools(facts, proposals=None):
             description=(
                 "保存结构化事实，如户号、地址、品牌、型号、偏好。"
                 "用户说'爸妈家电费户号是123''牛奶是蒙牛的'时调用。"
+                "「我家在杭州」「我们住在杭州」记成 subject='家'、predicate='所在城市'（天气等共用这一条）。"
                 "只记用户自己说出来的；你从对话里推断的偏好用 profile_set。"
                 "同一主体+属性再次保存会关闭旧值、保留历史。"
             ),
@@ -1405,7 +1407,7 @@ def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
         tools += get_profile_tools(facts, proposals)
     if home is not None:
         tools += get_home_tools(home)
-    if weather is not None and getattr(weather, "configured", False):
+    if weather is not None:
         tools.append(get_weather_tool(weather))
     # 摄像头只在带摄像头的终端上可用；assistant 会按入口决定给不给模型看这个 schema
     tools.append(get_camera_tool())

@@ -63,8 +63,9 @@ class FakeAssistant:
         self.seen_device_camera = None
 
     def process_text(self, text, client_id, on_delta=None, device_camera=False,
-                     task_id=None, attachment=None):
+                     task_id=None, attachment=None, extra_tools=None):
         self.seen_device_camera = device_camera
+        self.seen_extra_tools = extra_tools
         self.seen_attachment = attachment
         if on_delta is not None:
             on_delta(text)
@@ -1040,7 +1041,7 @@ class StreamingAssistant(FakeAssistant):
     """模拟 agent 分两段吐出内容。"""
 
     def process_text(self, text, client_id, on_delta=None, device_camera=False,
-                     task_id=None):
+                     task_id=None, extra_tools=None):
         if on_delta is not None:
             on_delta("第一句。")
             on_delta("第二句。")
@@ -1069,7 +1070,7 @@ def test_chat_completions_stream_emits_multiple_chunks(monkeypatch):
 def test_chat_completions_stream_survives_agent_error(monkeypatch):
     class BrokenAssistant(FakeAssistant):
         def process_text(self, text, client_id, on_delta=None, device_camera=False,
-                     task_id=None):
+                     task_id=None, extra_tools=None):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(server, "API_TOKEN", "secret")
@@ -1285,7 +1286,7 @@ class CameraAssistant(FakeAssistant):
     """模拟带摄像头时 agent 的决定：这一轮交给设备拍，不生成回复。"""
 
     def process_text(self, text, client_id, on_delta=None, device_camera=False,
-                     task_id=None):
+                     task_id=None, extra_tools=None):
         self.seen_device_camera = device_camera
         return {
             "type": "device_call", "reply": "",
@@ -1359,6 +1360,86 @@ def test_chat_completions_passes_camera_capability(monkeypatch):
 
     _camera_request(client)
     assert assistant.seen_device_camera is True
+
+
+EXIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "handle_exit_intent",
+        "description": "当用户想结束对话或需要退出系统时调用",
+        "parameters": {
+            "type": "object",
+            "properties": {"say_goodbye": {"type": "string"}},
+            "required": ["say_goodbye"],
+        },
+    },
+}
+
+
+class ExitAssistant(FakeAssistant):
+    """模拟模型决定结束会话：这一轮把 handle_exit_intent 交给服务端执行。"""
+
+    def __init__(self):
+        super().__init__()
+        self.seen_extra_tools = None
+
+    def process_text(self, text, client_id, on_delta=None, device_camera=False,
+                     task_id=None, extra_tools=None):
+        self.seen_extra_tools = extra_tools
+        return {
+            "type": "device_call", "reply": "",
+            "device_call": {
+                "name": "handle_exit_intent",
+                "arguments": {"say_goodbye": "好的，再见"},
+            },
+        }
+
+
+def test_chat_completions_passes_exit_tool_and_returns_its_call(monkeypatch):
+    """「再见」要能结束会话：schema 转给模型，模型一调就原样回给服务端执行。"""
+    assistant = ExitAssistant()
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+
+    body = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "messages": [{"role": "user", "content": "再见"}],
+            "tools": [EXIT_TOOL],
+        },
+    ).json()
+
+    assert [t["function"]["name"] for t in assistant.seen_extra_tools] == [
+        "handle_exit_intent"
+    ]
+    # 上游那句描述太笼统，转发时补了「去忙了」这类边界
+    assert "去忙了" in assistant.seen_extra_tools[0]["function"]["description"]
+    call = body["choices"][0]["message"]["tool_calls"][0]
+    assert call["function"]["name"] == "handle_exit_intent"
+    assert json.loads(call["function"]["arguments"]) == {"say_goodbye": "好的，再见"}
+
+
+def test_chat_completions_stream_returns_exit_tool_call(monkeypatch):
+    assistant = ExitAssistant()
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", assistant)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "messages": [{"role": "user", "content": "再见"}],
+            "stream": True,
+            "tools": [EXIT_TOOL],
+        },
+    )
+
+    assert "handle_exit_intent" in response.text
+    assert '"finish_reason": "tool_calls"' in response.text
+    assert response.text.rstrip().endswith("[DONE]")
 
 
 class VisionAssistant(FakeAssistant):
@@ -1756,6 +1837,116 @@ def test_board_endpoint_returns_payload(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True and "today" in body
+
+
+def test_weather_cache_refreshes_when_city_changes(monkeypatch):
+    """D55：城市是运行时才说的，换城市不能等 10 分钟缓存过期。"""
+    class _Weather:
+        def __init__(self):
+            self.city = "烟台"
+            self.calls = 0
+
+        def city_for(self, location=""):
+            return self.city
+
+        def snapshot(self):
+            self.calls += 1
+            return {"ok": True, "city": self.city}
+
+    fake = _Weather()
+
+    class _Assistant:
+        weather = fake
+
+    monkeypatch.setattr(server, "assistant", _Assistant())
+    monkeypatch.setattr(server, "_weather_cache", {"at": 0.0, "data": None})
+
+    assert server._weather_snapshot()["city"] == "烟台"
+    assert server._weather_snapshot()["city"] == "烟台"
+    assert fake.calls == 1
+
+    fake.city = "杭州"
+    assert server._weather_snapshot()["city"] == "杭州"
+    assert fake.calls == 2
+
+
+def test_display_endpoint_requires_its_own_token(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    monkeypatch.setattr(server, "DISPLAY_TOKEN", "dsecret")
+    client = TestClient(server.app)
+
+    assert client.get("/api/display").status_code == 403
+    assert client.get(
+        "/api/display", headers={"X-Display-Token": "wrong"}
+    ).status_code == 403
+
+
+def test_display_endpoint_disabled_without_token(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    monkeypatch.setattr(server, "DISPLAY_TOKEN", "")
+    client = TestClient(server.app)
+
+    assert client.get(
+        "/api/display", headers={"X-Display-Token": "x"}
+    ).status_code == 503
+
+
+def test_display_payload_has_weather_and_most_urgent(monkeypatch):
+    """待机屏只拿几行字：天气 + 最急的一件事 + 还有几件。"""
+    class FakeTasks:
+        def get_due(self, days=0):
+            return [
+                {"title": "取快递", "days_left": -3, "due_at": "2026-11-25T15:00:00"},
+                {"title": "交电费", "days_left": 0, "due_at": "2026-11-28T09:00:00"},
+            ]
+
+    class FakeItems:
+        def get_due(self, days=0):
+            return [{"name": "牛奶", "days_left": 0, "expiry_date": "2026-11-28"}]
+
+    class FakeAssistant:
+        tasks = FakeTasks()
+        items = FakeItems()
+
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    monkeypatch.setattr(server, "assistant", FakeAssistant())
+    monkeypatch.setattr(server, "DISPLAY_TOKEN", "dsecret")
+    monkeypatch.setattr(server, "_weather_snapshot", lambda force=False: {
+        "ok": True,
+        "city": "烟台",
+        "now": {"sky": "晴", "temp": 6, "feels": 4,
+                "wind_dir": "东南风", "wind_level": "3级"},
+        "days": [{"sky": "多云", "high": 9, "low": -1}],
+    })
+    client = TestClient(server.app)
+
+    body = client.get(
+        "/api/display", headers={"X-Display-Token": "dsecret"}
+    ).json()
+
+    assert body["weather"] == {
+        "ok": True, "city": "烟台", "sky": "晴", "temp": 6,
+        "feels": 4, "wind": "东南风 3级", "high": 9, "low": -1,
+    }
+    assert body["today"]["count"] == 3
+    # 屏幕放得下两条；第三条靠 count 交代
+    assert body["today"]["items"] == [
+        {"kind": "task", "title": "取快递", "when": "逾期 3 天"},
+        {"kind": "task", "title": "交电费", "when": "今天 09:00"},
+    ]
+    assert body["lunar"].startswith("农历")
+
+
+def test_display_lunar_line_degrades_when_unavailable(monkeypatch):
+    """没装 cnlunar 就不显示农历那一行，不要编一个日子。"""
+    from agent import lunar as lunar_mod
+
+    monkeypatch.setattr(lunar_mod, "available", lambda: False)
+    assert server._lunar_text(datetime.now()) == ""
+
+    monkeypatch.setattr(lunar_mod, "available", lambda: True)
+    text = server._lunar_text(datetime.now())
+    assert text.startswith("农历") and "月" in text
 
 
 def test_weather_endpoint_reports_unconfigured(monkeypatch):

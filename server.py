@@ -40,6 +40,7 @@ from config import (
     DATA_DIR,
     DIALOGUE_ENABLED,
     DIALOGUE_KEEP_DAYS,
+    DISPLAY_TOKEN,
     HOME_SCAN_SECONDS,
     MAX_AUDIO_SECONDS,
     MAX_CLIENT_ID_CHARS,
@@ -472,14 +473,23 @@ _board_lock = threading.Lock()
 
 def _weather_snapshot(force=False):
     """天气快照（结构化）。失败也缓存 60 秒，别让页面每个请求都去打上游。"""
+    weather = getattr(assistant, "weather", None)
+    city = ""
+    if weather is not None:
+        try:
+            city = weather.city_for()
+        except Exception:
+            city = ""
     now = time.time()
     with _weather_lock:
         cached = _weather_cache["data"]
         if cached is not None:
             age = now - _weather_cache["at"]
-            if not force and age < (60 if not cached.get("ok") else WEATHER_CACHE_SECONDS):
+            # 城市是运行时说的（D55）：换城市必须立刻重查，不能等 10 分钟缓存过期
+            if (_weather_cache.get("city", "") == city
+                    and not force
+                    and age < (60 if not cached.get("ok") else WEATHER_CACHE_SECONDS)):
                 return cached
-    weather = getattr(assistant, "weather", None)
     if weather is None:
         data = {"ok": False, "error": "天气服务还没配置"}
     else:
@@ -487,6 +497,7 @@ def _weather_snapshot(force=False):
     with _weather_lock:
         _weather_cache["data"] = data
         _weather_cache["at"] = time.time()
+        _weather_cache["city"] = city
     return data
 
 
@@ -1309,7 +1320,8 @@ def _sse_chunk(completion_id, created, model, delta, finish_reason=None):
 
 
 async def _chat_completion_stream(text, completion_id, created, model,
-                                  device_camera=False, camera_tool=None):
+                                  device_camera=False, camera_tool=None,
+                                  extra_tools=None):
     """把 agent loop 的流式输出转成 OpenAI SSE。
 
     agent 在 to_thread 里跑（同步阻塞），通过 queue 把 delta 交回事件循环；
@@ -1324,7 +1336,8 @@ async def _chat_completion_stream(text, completion_id, created, model,
     def work():
         try:
             result = assistant.process_text(
-                text, "xiaozhi", on_delta=on_delta, device_camera=device_camera
+                text, "xiaozhi", on_delta=on_delta, device_camera=device_camera,
+                extra_tools=extra_tools,
             )
             loop.call_soon_threadsafe(queue.put_nowait, ("done", result))
         except Exception as exc:
@@ -1359,8 +1372,7 @@ async def _chat_completion_stream(text, completion_id, created, model,
                             "id": "call_" + secrets.token_hex(8),
                             "type": "function",
                             "function": {
-                                "name": camera_tool or device_call.get("name")
-                                        or "self.camera.take_photo",
+                                "name": _device_call_name(device_call, camera_tool),
                                 "arguments": arguments,
                             },
                         }],
@@ -1471,6 +1483,51 @@ def _camera_tool_name(tools):
 def _has_camera_tool(tools):
     """设备工具清单里有没有拍照（有才把 camera_look 给模型看）。"""
     return _camera_tool_name(tools) is not None
+
+
+# 小智服务端自己的插件工具：我们把 schema 转给模型，模型一调用就回 tool_calls
+# 让服务端自己执行。没有 `handle_exit_intent`，说「再见」之后服务端不会置
+# close_after_chat，设备就一直停在聆听中（2026-11-28 真机踩到）。
+_PASSTHROUGH_TOOL_NAMES = frozenset(("handle_exit_intent",))
+
+# 上游给这个工具的描述只有「当用户想结束对话时调用」，模型很少自己想到；
+# 补一句可判定的边界（仍是「什么时候能用」，不是关键词路由）。
+_EXIT_TOOL_HINT = (
+    "用户明确要结束这次对话时调用，比如「我睡了」「先这样」「去忙了」「不用了」"
+    "「没别的事了」；只是聊天里提到「再见」、或还在问事情时不要调用。"
+    "say_goodbye 用一句简短告别。"
+)
+
+
+def _passthrough_tools(tools):
+    """从请求的工具清单里挑出「交给服务端执行」的那几个，schema 原样保留。
+
+    只补 `handle_exit_intent` 的描述：上游那句太笼统，模型听不出「去忙了」也算结束。
+    """
+    picked = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = dict(tool.get("function") or {})
+        if function.get("name") not in _PASSTHROUGH_TOOL_NAMES:
+            continue
+        if function.get("name") == "handle_exit_intent":
+            function["description"] = (str(function.get("description") or "").strip()
+                                       + " " + _EXIT_TOOL_HINT).strip()
+        picked.append(dict(tool, function=function))
+    return picked
+
+
+# 设备端拍照工具在请求里的名字（小智会把点换成下划线），回 tool_calls 必须用原名
+_CAMERA_CALL_NAMES = frozenset(("self.camera.take_photo", "camera_look"))
+
+
+def _device_call_name(device_call, camera_tool):
+    """这一轮要交回去的工具名：拍照用请求里的原名，其它（结束会话）用它的本名。"""
+    name = (device_call or {}).get("name") or ""
+    if name in _CAMERA_CALL_NAMES or not name:
+        return camera_tool or name or "self.camera.take_photo"
+    return name
 
 
 async def _synthesize(reply: str) -> str:
@@ -1629,6 +1686,130 @@ async def api_status(space: Space = Depends(current_space),
         "space_id": space.id,
         "runtime": runtime,  # 跑多久 / 数据多大 / 磁盘还剩多少（D67）
     }
+
+
+def _lunar_text(day):
+    """待机屏那一行农历：「农历十月十四」+ 节气/节日（有才加）。
+
+    屏幕只有一行位置，所以由服务端拼好；缺 cnlunar 时返回空串，固件不显示这一行，
+    而不是显示一个猜的日子。
+    """
+    try:
+        from agent import lunar as lunar_mod
+        if not lunar_mod.available():
+            return ""
+        info = lunar_mod.day_info(day)
+        month = ("闰" if info.get("leap") else "") + (info.get("month_text") or "")
+        text = "农历" + month + (info.get("day_text") or "")
+        note = info.get("term") or ""
+        if not note and info.get("festivals"):
+            note = info["festivals"][0]
+        if note:
+            text += " · " + note
+        return text
+    except Exception as exc:
+        print("⚠️ 待机屏农历计算失败：%s" % exc)
+        return ""
+
+
+def _display_sync(space):
+    """设备待机屏（320×240）要的几行字：天气 + 今天最急的两件事。
+
+    不返回网页看板那一整包（设备、打印机、最近记忆）——屏幕放不下，也少泄露。
+    """
+    now = datetime.now()
+    weather = _weather_snapshot()
+    day = ((weather.get("days") or [{}])[0]) if weather.get("ok") else {}
+    current = weather.get("now") or {}
+    slim_weather = {
+        "ok": bool(weather.get("ok")),
+        "city": weather.get("city") or "",
+        "sky": current.get("sky") or day.get("sky") or "",
+        "temp": current.get("temp"),
+        "feels": current.get("feels"),
+        # 风向和风级分开取，缺哪个就少哪段，不拼「None」
+        "wind": " ".join(
+            str(part) for part in (current.get("wind_dir"), current.get("wind_level"))
+            if part
+        ),
+        "high": day.get("high"),
+        "low": day.get("low"),
+    }
+
+    entries = []
+    assistant_obj = space.assistant
+    try:
+        for task in assistant_obj.tasks.get_due(days=0):
+            entries.append({
+                "kind": "task",
+                "title": task.get("title") or "提醒",
+                "days_left": task.get("days_left"),
+                "due_at": task.get("due_at") or "",
+            })
+    except Exception as exc:
+        print("⚠️ 待机屏任务读取失败：%s" % exc)
+    try:
+        for item in assistant_obj.items.get_due(days=0):
+            entries.append({
+                "kind": "item",
+                "title": item.get("name") or "物品",
+                "days_left": item.get("days_left"),
+                "due_at": item.get("expiry_date") or "",
+            })
+    except Exception as exc:
+        print("⚠️ 待机屏物品读取失败：%s" % exc)
+
+    def when_text(entry):
+        left = entry.get("days_left")
+        if left is None:
+            return ""
+        if left < 0:
+            return "逾期 %d 天" % -left
+        if left == 0:
+            due = str(entry.get("due_at") or "")
+            if entry.get("kind") == "task" and "T" in due:
+                return "今天 %s" % due.split("T", 1)[1][:5]
+            return "今天到期"
+        return "%d 天后" % left
+
+    def has_time(entry):
+        return entry.get("kind") == "task" and "T" in str(entry.get("due_at") or "")
+
+    # 逾期越久越靠前；同一天里带具体时刻的（「今天 09:00」）排在只有日期的前面
+    entries.sort(key=lambda entry: (
+        entry.get("days_left") is None,
+        entry.get("days_left") or 0,
+        0 if has_time(entry) else 1,
+        entry.get("due_at") or "",
+    ))
+    # 屏幕只放得下两条；剩下的用「还有 N 件」交代，别让用户以为只有这两件
+    items = [{
+        "kind": entry["kind"],
+        "title": entry["title"],
+        "when": when_text(entry),
+    } for entry in entries[:2]]
+    return {
+        "ok": True,
+        "at": now.isoformat(timespec="seconds"),
+        "lunar": _lunar_text(now),
+        "weather": slim_weather,
+        "today": {"count": len(entries), "items": items},
+    }
+
+
+@app.get("/api/display")
+async def api_display(x_display_token: str = Header(default="", alias="X-Display-Token"),
+                      space: Space = Depends(current_space)):
+    """ESP32 待机屏的只读数据源。
+
+    单独一个 `DISPLAY_TOKEN`（请求头 X-Display-Token）：固件里不能编完整的
+    API_TOKEN，设备丢了最多泄露「今天有什么事」。空 token = 接口不启用。
+    """
+    if not DISPLAY_TOKEN:
+        raise HTTPException(status_code=503, detail="待机屏接口未启用（DISPLAY_TOKEN 为空）")
+    if not x_display_token or not secrets.compare_digest(x_display_token, DISPLAY_TOKEN):
+        raise HTTPException(status_code=403, detail="待机屏令牌不正确")
+    return await asyncio.to_thread(_display_sync, space)
 
 
 @app.get("/api/spaces")
@@ -2299,20 +2480,24 @@ async def api_chat_completions(req: ChatCompletionRequest,
     # 名字要用请求里给的那个（小智会把点换成下划线），否则它认不出这次调用。
     camera_tool = _camera_tool_name(req.tools)
     device_camera = camera_tool is not None
+    # 服务端插件（结束会话）：模型能调，执行在服务端，我们只转交
+    extra_tools = _passthrough_tools(req.tools)
 
     if req.stream:
         # 先把 head 发出去，再在后台线程跑 agent loop，按 delta 实时下发，
         # 让语音端第一句就能开始合成。
         return StreamingResponse(
             _chat_completion_stream(
-                text, completion_id, created, model, device_camera, camera_tool
+                text, completion_id, created, model, device_camera, camera_tool,
+                extra_tools=extra_tools,
             ),
             media_type="text/event-stream",
         )
 
     try:
         result = await asyncio.to_thread(
-            assistant.process_text, text, "xiaozhi", device_camera=device_camera
+            assistant.process_text, text, "xiaozhi", device_camera=device_camera,
+            extra_tools=extra_tools,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -2336,8 +2521,7 @@ async def api_chat_completions(req: ChatCompletionRequest,
                         "id": "call_" + secrets.token_hex(8),
                         "type": "function",
                         "function": {
-                            "name": camera_tool or device_call.get("name")
-                                    or "self.camera.take_photo",
+                            "name": _device_call_name(device_call, camera_tool),
                             "arguments": arguments,
                         },
                     }],

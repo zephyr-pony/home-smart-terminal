@@ -99,6 +99,35 @@ def test_no_decision_llm_keeps_single_model():
     assert len(answer.calls) == 1
 
 
+def test_home_city_reads_from_facts_and_ignores_other_households():
+    """D55：用户说过的城市存在 facts，天气与看板共用这一条。"""
+    assistant = make_assistant()
+    assistant.facts.store("爸妈家", "所在城市", "青岛")
+    assert assistant._home_city() == ""
+
+    assistant.facts.store("家", "所在城市", "杭州")
+    assert assistant._home_city() == "杭州"
+
+
+def test_fact_store_home_city_feeds_weather():
+    """用户说「我家在杭州」→ fact_store 落库 → 天气立刻用杭州（不用重启）。"""
+    assistant = make_assistant()
+
+    assistant._run_tool_by_name(
+        "fact_store", {"subject": "家", "predicate": "所在城市", "value": "杭州"}
+    )
+
+    assert assistant._home_city() == "杭州"
+    assert assistant.weather.city_for() == "杭州"
+
+
+def test_weather_tool_registered_before_city_is_known():
+    """城市是运行时才说的：工具不能等重启才注册，否则说完城市还是查不了。"""
+    assistant = make_assistant()
+    names = [item["schema"]["function"]["name"] for item in assistant.tools]
+    assert "weather_query" in names
+
+
 def test_tool_metadata():
     assert Assistant._tool_metadata(["item_search", "time_now"]) == ("items", "search")
     assert Assistant._tool_metadata(["memory_store"]) == ("memory", "store")
@@ -567,6 +596,42 @@ def test_camera_look_falls_back_to_user_words():
     result = assistant.process_text("看看冰箱里还有牛奶吗", "xiaozhi", device_camera=True)
 
     assert result["device_call"]["arguments"]["question"] == "看看冰箱里还有牛奶吗"
+
+
+EXIT_INTENT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "handle_exit_intent",
+        "description": "当用户想结束对话或需要退出系统时调用",
+        "parameters": {
+            "type": "object",
+            "properties": {"say_goodbye": {"type": "string"}},
+            "required": ["say_goodbye"],
+        },
+    },
+}
+
+
+def test_passthrough_tool_goes_back_to_caller():
+    """小智服务端自己的插件（结束会话）不在本机执行，原样交回调用方。"""
+    llm = ScriptedLLM([
+        _tool_call_reply("handle_exit_intent", {"say_goodbye": "好的，再见"}),
+    ])
+    assistant = make_assistant(llm)
+
+    result = assistant.process_text("再见", "xiaozhi",
+                                    extra_tools=[EXIT_INTENT_SCHEMA])
+
+    assert "handle_exit_intent" in llm.tools_seen[0]
+    # 模型不会自己想到「结束会话」要调工具，系统提示里点了一句
+    assert "handle_exit_intent" in llm.calls[0][0]["content"]
+    assert result["type"] == "device_call"
+    assert result["reply"] == ""
+    assert result["device_call"] == {
+        "name": "handle_exit_intent",
+        "arguments": {"say_goodbye": "好的，再见"},
+    }
+    assert len(llm.calls) == 1  # 服务端执行工具后自己会说告别语，不再花一轮
 
 
 def test_camera_look_without_device_says_it_cannot():

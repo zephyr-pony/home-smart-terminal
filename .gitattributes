@@ -1,0 +1,2 @@
+# 补丁文件里有整段上下文行，git diff --check 会把它们当成尾随空格
+*.patch -whitespace

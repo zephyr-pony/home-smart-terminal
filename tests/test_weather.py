@@ -31,14 +31,78 @@ def test_cn_date_formats_for_speech():
     assert _cn_date("") == ""
 
 
-def test_not_configured_says_how_to_configure():
-    text = Weather().query()
-    assert "WEATHER_CITY" in text or "配置" in text
+def test_without_city_asks_for_one_instead_of_config_talk():
+    """Open-Meteo 不要 key，缺的只是城市：说人话让用户补，别再提环境变量。"""
+    for weather in (Weather(), Weather("", "", "")):
+        text = weather.query()
+        assert "城市" in text
+        assert "WEATHER_CITY" not in text
 
 
-def test_without_city_asks_for_one():
-    text = Weather("", "", "").query()
-    assert "配置" in text
+def test_city_lookup_wins_over_configured_city(monkeypatch):
+    """用户说过的城市（facts）优先于 .env 的默认城市（D55）。"""
+    urls = []
+    monkeypatch.setattr(
+        "adapters.weather.requests.get",
+        _open_meteo_router(urls, {"杭州市": [
+            {"name": "杭州市", "latitude": 30.29, "longitude": 120.16,
+             "population": 7510000},
+        ]}),
+    )
+
+    weather = Weather("", "", "烟台", city_lookup=lambda: "杭州")
+    text = weather.query(scope="now")
+
+    assert "杭州市" in text
+
+
+def test_city_lookup_empty_falls_back_to_configured_city(monkeypatch):
+    urls = []
+    monkeypatch.setattr(
+        "adapters.weather.requests.get",
+        _open_meteo_router(urls, {"青岛市": [
+            {"name": "青岛市", "latitude": 36.07, "longitude": 120.38,
+             "population": 7172451},
+        ]}),
+    )
+
+    weather = Weather("", "", "青岛", city_lookup=lambda: "")
+    text = weather.query(scope="now")
+
+    assert "青岛市" in text
+
+
+def test_explicit_location_wins_over_city_lookup(monkeypatch):
+    urls = []
+    monkeypatch.setattr(
+        "adapters.weather.requests.get",
+        _open_meteo_router(urls, {"北京市": [
+            {"name": "北京市", "latitude": 39.9, "longitude": 116.4,
+             "population": 18960744},
+        ]}),
+    )
+
+    text = Weather("", "", "烟台", city_lookup=lambda: "杭州").query(
+        "北京", scope="now"
+    )
+
+    assert "北京市" in text
+
+
+def test_snapshot_without_city_is_not_an_error_to_call_api(monkeypatch):
+    calls = []
+
+    def fake_get(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("没有城市不该发请求")
+
+    monkeypatch.setattr("adapters.weather.requests.get", fake_get)
+
+    snap = Weather().snapshot()
+
+    assert snap["ok"] is False
+    assert "城市" in snap["error"]
+    assert calls == []
 
 
 # ---------- 和风 ----------

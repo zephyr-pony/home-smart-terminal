@@ -82,6 +82,21 @@ def test_drops_candidate_whose_evidence_is_not_in_transcript():
     assert [item["predicate"] for item in payloads] == ["口味"]
 
 
+def test_drops_candidate_without_evidence():
+    """没写证据不能算「对得上」：模型偷懒时整条丢掉，别让防编造空转。"""
+    miner, store, _facts = make_miner([
+        {"predicate": "怕冷", "value": "冬天室温要 24 度以上", "evidence": ""},
+        {"predicate": "口味", "value": "不吃辣", "evidence": "我不吃辣"},
+    ])
+
+    result = miner.run()
+
+    assert result["candidates"] == 1
+    assert result["skipped"] == 1
+    payloads = [row["payload"] for row in store.list_proposals(10)]
+    assert [item["predicate"] for item in payloads] == ["口味"]
+
+
 def test_skips_when_too_few_turns():
     dialogue = DialogueStore(":memory:", enabled=True)
     _turns(dialogue, ["今天好冷"])

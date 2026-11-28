@@ -83,29 +83,50 @@ _WIND_DIRS = ("北风", "东北风", "东风", "东南风", "南风", "西南风
 class Weather:
     """天气查询。provider 由配置决定：和风的 host+key 优先，否则 Open-Meteo。"""
 
-    def __init__(self, api_host="", api_key="", city="", lat=None, lon=None):
+    def __init__(self, api_host="", api_key="", city="", lat=None, lon=None,
+                 city_lookup=None):
         self.api_host = (api_host or "").strip()
         self.api_key = (api_key or "").strip()
         self.city = (city or "").strip()
         self.lat = lat
         self.lon = lon
+        # 「家里在哪」由调用方注入（D55）：用户说过的城市存 facts，配置只作兜底
+        self._city_lookup = city_lookup
         self.provider = self._pick_provider()
+
+    def set_city_lookup(self, lookup):
+        """注入读取家里城市的函数；返回空串就退回构造时的 city。"""
+        self._city_lookup = lookup
+
+    def city_for(self, location=""):
+        """这次查询用哪个城市：显式指定的 > 用户说过的 > 配置里的。"""
+        city = (location or "").strip()
+        if city:
+            return city
+        if self._city_lookup is not None:
+            try:
+                city = str(self._city_lookup() or "").strip()
+            except Exception:
+                city = ""
+        return city or self.city
 
     def _pick_provider(self):
         if self.api_host and self.api_key:
             return "qweather"
-        if self.city or (self.lat is not None and self.lon is not None):
-            return "open-meteo"
-        return None
+        # Open-Meteo 不要 key；没有城市也能先问用户一句，所以总是可用
+        return "open-meteo"
 
     @property
     def configured(self):
-        return self.provider is not None
+        """有默认城市/坐标/和风 key 时能直接答；不能答也会注册工具，由模型问城市。"""
+        return bool(
+            self.city
+            or (self.lat is not None and self.lon is not None)
+            or (self.api_host and self.api_key)
+        )
 
     def query(self, location="", scope="all", days=FORECAST_DAYS):
         """scope: now=此刻 / today=今天 / forecast=未来几天 / all=三段都给。"""
-        if not self.configured:
-            return "天气服务还没配置：填 WEATHER_CITY 就能用 Open-Meteo，或填和风的 Host/Key"
         scope = (scope or "all").strip().lower()
         if scope not in ("now", "today", "forecast", "all"):
             scope = "all"
@@ -127,8 +148,13 @@ class Weather:
         为什么不复用 query()：那边拼的是「气温：7℃」这种句子，前端要拆字符串
         才能排版，还容易跟着措辞改而坏掉。两边都从同一份原始响应取，不多发请求。
         """
-        if not self.configured:
-            return {"ok": False, "error": "天气服务还没配置"}
+        city = self.city_for(location)
+        has_coords = (
+            self.provider == "open-meteo"
+            and self.lat is not None and self.lon is not None
+        )
+        if not city and not has_coords:
+            return {"ok": False, "error": "还没设置所在城市"}
         try:
             want = int(days)
         except (TypeError, ValueError):
@@ -136,14 +162,14 @@ class Weather:
         want = max(1, min(want, FORECAST_DAYS))
         try:
             if self.provider == "qweather":
-                return self._snapshot_qweather(location, want)
-            return self._snapshot_open_meteo(location, want)
+                return self._snapshot_qweather(city, want)
+            return self._snapshot_open_meteo(city, want)
         except Exception as exc:
             logger.warning("天气快照失败: %s", exc)
             return {"ok": False, "error": "天气服务暂时连不上"}
 
     def _snapshot_open_meteo(self, location, days):
-        city = (location or self.city).strip()
+        city = self.city_for(location)
         lat, lon, city_name = self._om_coords(city)
         if lat is None:
             return {"ok": False, "error": "没找到 %s 这个地方" % (city or "位置")}
@@ -191,7 +217,7 @@ class Weather:
         }
 
     def _snapshot_qweather(self, location, days):
-        city = (location or self.city).strip()
+        city = self.city_for(location)
         info = self._qw_city(city)
         if not info:
             return {"ok": False, "error": "没找到 %s 这个地方" % (city or "位置")}
@@ -255,7 +281,7 @@ class Weather:
     # ---------- 和风 ----------
 
     def _query_qweather(self, location, scope, days):
-        city = (location or self.city).strip()
+        city = self.city_for(location)
         if not city:
             return "我还不知道你家在哪个城市，说个城市名我就查"
         try:
@@ -329,7 +355,7 @@ class Weather:
     # ---------- Open-Meteo ----------
 
     def _query_open_meteo(self, location, scope, days):
-        city = (location or self.city).strip()
+        city = self.city_for(location)
         lat, lon, city_name = self._om_coords(city)
         if lat is None:
             return "没找到 %s 这个地方，换个说法试试" % city if city else (

@@ -110,6 +110,12 @@ HOME_PROMPT_LINE = """
 HOME_READONLY_PROMPT_LINE = """
 - home_query 只能查不能操作：用户要求开关设备时，如实说现在只能查、还不能控制"""
 
+# 语音终端结束会话：只有调用方把 handle_exit_intent 交给这一轮时才说
+EXIT_TOOL_PROMPT_LINE = """
+- 这轮接在语音终端上，用户要结束对话（"我睡了""去忙了""先这样""不用了"这类意思）时，
+  调用 handle_exit_intent 收尾，say_goodbye 给一句简短告别；只在文字里说再见不会结束会话。
+  用户还在问事情、或只是随口提到「再见」时不要调用"""
+
 # 白名单非空时才有 home_control
 HOME_CONTROL_PROMPT_LINE = """
 - 开关设备（"把客厅灯关了""空调调到 26 度""扫地机回去充电"）→ home_control，device 用设备名
@@ -190,10 +196,13 @@ class Assistant:
         self.facts.set_entity_lookup(self.clarifier.store.find_any_entity)
         # 记忆也一样（D83）：问「饮水机滤芯」要能捞到写着「净水器」的那条
         self.memory.set_entity_lookup(self.clarifier.store.find_any_entity)
-        # 天气：默认 Open-Meteo（零 key），配了和风 key 就用和风；配置不全时不注册
+        # 天气：默认 Open-Meteo（零 key），配了和风 key 就用和风。
+        # 家里城市优先取 facts 的「家 / 所在城市」（D55），用户说一次就到处共用；
+        # WEATHER_CITY 只作兜底，保留给没在对话里设过城市的部署。
         self.weather = Weather(
             WEATHER_API_HOST, WEATHER_API_KEY, WEATHER_CITY,
             _float_or_none(WEATHER_LAT), _float_or_none(WEATHER_LON),
+            city_lookup=self._home_city,
         )
         # 打印（D61）：Linux CUPS 队列；没装 lp/lpstat 时 available=False，
         # 工具不注册，上传入口也会如实说不可用。
@@ -257,16 +266,18 @@ class Assistant:
     # ---------- 对外接口 ----------
 
     def process_text(self, text, client_id=None, on_delta=None, device_camera=False,
-                     task_id=None, attachment=None):
+                     task_id=None, attachment=None, extra_tools=None):
         """处理用户文本，并记一条「这轮有没有开思考」（D63）。
 
         记录只是一次本地追加，不联网、不调模型；写失败也不影响回答。
+        extra_tools 是调用方（`/v1`）转来的外部工具 schema，模型一调用就原样交回
+        调用方执行——小智服务端自己的插件（如 `handle_exit_intent`）走这条。
         """
         started = time.time()
         try:
             result = self._process_text_inner(
                 text, client_id, on_delta=on_delta, device_camera=device_camera,
-                task_id=task_id, attachment=attachment,
+                task_id=task_id, attachment=attachment, extra_tools=extra_tools,
             )
         finally:
             state = getattr(self._turn, "state", None)
@@ -300,7 +311,7 @@ class Assistant:
             print("⚠️ 对话记录写入失败：%s" % exc)
 
     def _process_text_inner(self, text, client_id=None, on_delta=None, device_camera=False,
-                            task_id=None, attachment=None):
+                            task_id=None, attachment=None, extra_tools=None):
         """处理用户文本输入，返回结构化结果 dict。
 
         Args:
@@ -395,7 +406,7 @@ class Assistant:
         try:
             rtype, answer, extras = self._agent_loop(
                 text, client_id, on_delta, device_camera=device_camera,
-                task_id=task_id, attachment=attachment,
+                task_id=task_id, attachment=attachment, extra_tools=extra_tools,
             )
         except ConfirmationRequired as exc:
             self._record_turn(client_id, text, exc.reply)
@@ -649,6 +660,28 @@ class Assistant:
                 text += "\n" + line
             break
         return text if len(text) > len("【已知信息】") else ""
+
+    def _home_city(self):
+        """家里在哪个城市：facts 的「家 / 所在城市」优先（D55）。
+
+        用户说一次「我家在杭州」就该让天气、看板共用，而不是再去改 .env。
+        只认主体是「家」这类、属性是城市/位置的当前有效事实，避免把
+        「爸妈家」或别的地址当成自己家。
+        """
+        try:
+            rows = self.facts.search(query="城市", n_results=20)
+        except Exception:
+            return ""
+        for row in rows:
+            subject = str(row.get("subject") or "").strip()
+            predicate = str(row.get("predicate") or "").strip()
+            value = str(row.get("value") or "").strip()
+            if not value:
+                continue
+            if subject in ("家", "我家", "我的家", "家里", "自家", "自己家", "家庭") and \
+                    predicate in ("所在城市", "所在的城市", "城市", "城市名"):
+                return value
+        return ""
 
     def _task_context_note(self, task_id):
         """把「点开的那条提醒」说成一条 system 提示；没有有效 id 就返回空串。
@@ -1005,7 +1038,7 @@ class Assistant:
         return prompt
 
     def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False,
-                    task_id=None, attachment=None):
+                    task_id=None, attachment=None, extra_tools=None):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
 
         client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
@@ -1020,6 +1053,16 @@ class Assistant:
             device_camera 时还可能返回 device_call（这一轮交给设备端执行，不落库也不生成回复）。
         """
         sys_prompt = self._system_prompt(device_camera)
+        # 调用方转来的外部工具（小智服务端插件）：schema 照发，模型一调用就交回去执行
+        extra_tools = [t for t in (extra_tools or []) if isinstance(t, dict)]
+        passthrough_names = set()
+        for item in extra_tools:
+            fn = item.get("function") or {}
+            if fn.get("name"):
+                passthrough_names.add(fn["name"])
+        if "handle_exit_intent" in passthrough_names:
+            # 模型不会自己想到「结束会话」是一个要调的工具，点一句；只在调用方给了这个工具时加
+            sys_prompt += "\n\n" + EXIT_TOOL_PROMPT_LINE
         # 热点上下文（D58）：画像/常用事实/最近记忆，冻结快照，省掉查记忆那一轮
         hot = self._hot_context(client_id)
         if hot:
@@ -1071,6 +1114,8 @@ class Assistant:
                 or attachment
             )
         ]
+        own_names = {s["function"]["name"] for s in schemas}
+        schemas += [t for t in extra_tools if t["function"]["name"] not in own_names]
         tools_by_name = self._tools_by_name
         used_tools = []
         used_tool_names = set()
@@ -1152,6 +1197,11 @@ class Assistant:
                             "content": blocked,
                         })
                         continue
+                    if name in passthrough_names:
+                        # 小智服务端自己的插件（如 handle_exit_intent）：我们没有实现，
+                        # 原样交回调用方去执行——它执行完会关会话，设备回待机。
+                        device_call = {"name": name, "arguments": args or {}}
+                        break
                     if name not in used_tool_names:
                         used_tools.append(name)
                         used_tool_names.add(name)
@@ -1358,10 +1408,11 @@ class Assistant:
         # 要看东西：把工具调用交给调用方去设备端执行。这里不生成回复（设备会把
         # 画面描述直接念出来），也不写库——照片是一次性的，不进记忆。
         if device_call is not None:
+            is_camera = device_call.get("name") == "self.camera.take_photo"
             return "device_call", "", {
                 "used_tools": used_tools,
-                "domain": "vision",
-                "action": "look",
+                "domain": "vision" if is_camera else "chat",
+                "action": "look" if is_camera else "passthrough",
                 "device_call": device_call,
             }
 

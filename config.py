@@ -134,6 +134,9 @@ SERVER_PORT = _get_int("SERVER_PORT", 8000)
 API_TOKEN = _get("API_TOKEN", "")
 # MCP 接入点（小智设备端出站连接）。空 = 不启用，避免默认开一个能写库的入口
 MCP_TOKEN = _get("MCP_TOKEN", "")
+# 设备待机屏只读接口（时间/天气/今天待办）。空 = 不启用；单独一个令牌，
+# 别把完整 API_TOKEN 编进固件——设备丢了也只泄露「今天有什么事」。
+DISPLAY_TOKEN = _get("DISPLAY_TOKEN", "")
 MAX_TEXT_CHARS = _get_int("MAX_TEXT_CHARS", 2000)
 MAX_CLIENT_ID_CHARS = _get_int("MAX_CLIENT_ID_CHARS", 128)
 MAX_UPLOAD_BYTES = _get_int("MAX_UPLOAD_BYTES", 10 * 1024 * 1024)

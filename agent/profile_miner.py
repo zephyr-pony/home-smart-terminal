@@ -144,9 +144,10 @@ class ProfileMiner:
         evidence = _clip(item.get("evidence"), MAX_EVIDENCE_CHARS)
         if not predicate or not value:
             return None
-        # 编造的证据一律丢掉：模型很容易把「经常」写成一句用户没说过的话
+        # 编造的证据一律丢掉：模型很容易把「经常」写成一句用户没说过的话。
+        # 空证据同样丢掉——「没说证据」不是「证据对得上」，否则防编造就形同虚设。
         flat_evidence = _flat(evidence)
-        if flat_evidence and not any(flat_evidence in text for text in texts):
+        if not flat_evidence or not any(flat_evidence in text for text in texts):
             return None
         return {
             "subject": self.subject,
