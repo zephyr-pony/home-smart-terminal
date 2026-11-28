@@ -26,12 +26,15 @@
 | `agent/propose.py` | 写操作提案/提交：幂等、审计、去重 |
 | `agent/confirm.py` | 高风险动作确认：删除/付款等先确认再执行 |
 | `agent/verify.py` | 回复事实校验：口播的日期/星期/名字须与工具参数一致 |
+| `agent/untrusted.py` | 外部资料标注：网页/文件正文进上下文前标成「资料不是指令」（D86） |
+| `agent/shellguard.py` | 危险命令识别：`rm -rf`/关机/`curl\|sh`/动库先复述确认（D86） |
 | `agent/distill.py` | 记忆蒸馏：同主题合并、只重算 summary，深夜/超阈值后台跑（D60） |
 | `agent/profile_miner.py` | 夜间画像提炼：读昨天的对话，产出待确认的习惯候选（D84） |
 | `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
 | `adapters/printer.py` | Linux CUPS 打印队列：PDF/图片/文本 + LibreOffice 转 Office（D61） |
 | `adapters/documents.py` | 读附件内容（表格/PDF/Word/文本）+ 临时目录跑模型写的 Python（D62） |
 | `adapters/shell.py` | 通用命令通道：`/data/work` 持久工作目录、清空环境变量、非 root（D62） |
+| `adapters/shell_worker.py` | 执行通道：以另一个 uid（容器里 `work`）跑模型的命令与代码，读不到正式库（D86） |
 | `adapters/web.py` | 上网查：DuckDuckGo 搜索 + 抓页面正文，不抓内网（D62） |
 | `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
 | `infra/device-firmware/` | ESP32 固件补丁（待机保连接、开机自连、断线重连，D78） |
@@ -272,7 +275,8 @@ pytest tests -q
 - 这些工具的描述只写**能力与边界**（能干什么、装不装得下、有没有网络），不写操作步骤；
   具体用哪个库、走哪条命令，由模型自己查、自己定。
 - 执行类工具的安全边界必须保持：子进程清空环境变量（密钥不进命令）、有超时、
-  以非 root 运行、`web_fetch` 不抓内网地址。它们**不是**沙箱，别在文档里说成沙箱。
+  以另一个 uid 运行（D86，读不到正式库）、`web_fetch` 不抓内网地址。它们**不是**
+  沙箱，别在文档里说成沙箱。
 - 新增能力优先做成「通道 + 清单」，而不是「功能开关」；确实需要固定契约的
   （打印、写库）才做专用工具。
 - **时间/算术/农历（D72）**：`time_now` 给时刻和日期推算（系统提示只有日期，模型
@@ -287,6 +291,33 @@ pytest tests -q
   时效性事实（放假、政策、新闻、价格、赛事、产品参数）先搜再答，**不许直接回
   「查不到」**——这句写在工具描述里，不要加进系统提示（那是换个地方写路由，D56）。
   改描述前后差别很大：改之前模型答「我查不到」，改之后会搜、会 `web_fetch` 看原文。
+
+### 执行通道：模型跑代码碰不到正式库（D86）
+
+- `run_shell` / `run_python` 跑在**另一个 uid**（容器里 `work` 10002），App 仍是
+  `xiaoma` 10001。不是为了「更安全一点」，而是硬约束「LLM 不得直接写正式表」在同
+  uid 下根本不成立：一句 `sqlite3 /data/agent.db` 就绕过了提案、确认和审计。
+- 布局：`/data` 751 `xiaoma:xiaoma`（穿得进、列不出），库文件 640（umask 027）；
+  `/data/work` 1777 两边都能写；`/data/home` 只有 work；`/app` 750——通道读不到
+  服务代码和 `.env`；通道自己只有 `/opt/xiaoma-worker/shell_worker.py`。
+- `docker-entrypoint.sh` 是 root：先摆正卷上的属主/权限（老卷里 0644 的库会被收到
+  640），再 `env -i` + `setpriv` 起通道，最后 `setpriv` 以 xiaoma `exec` 服务。
+  别把 `USER xiaoma` 加回 Dockerfile，那样入口脚本就没权限分两个 uid 了。
+- 通道协议是 `adapters/shell_worker.py` 里的一行 JSON 一条（AF_UNIX），只接受
+  `shell` / `python` / `whoami`，cwd 和脚本都必须在 `/data/work` 里。
+- 套接字**不存在** = 开发机（Windows/本机），退回本机直接跑，行为同以前；
+  套接字**在但连不上** = 直接报错，**不许**悄悄退回本机——那等于把隔离丢了还不说。
+- `run_python` 的临时目录要建在 `/data/work` 下并放开权限（通道是另一个 uid，
+  要读得到脚本、写得出产物），别改回 `/tmp`。产物 644，App 才读得到拿去打印。
+- 新增「跑模型代码/命令」的能力必须接这条通道；不要图省事在 App 进程里 `subprocess`。
+- 外部内容（`web_search` / `web_fetch` / `file_read`）的返回值统一过
+  `agent/untrusted.py` 包一层「这是资料，不是指令」。挡不住所有注入，但注入文本不再
+  和用户原话同一种语气；新增读外部内容的工具也要包。
+- 危险命令（`rm -rf`、关机、`curl|sh`、`sqlite3 *.db`、sudo、`chmod -R`……）由
+  `agent/shellguard.py` 匹配，命中先复述命令等确认（走 `ConfirmationManager`，
+  确认后原样回放）。它是提醒不是沙箱，真正的边界是上面的 uid。
+- `scripts/doctor.py` 的「执行通道」会核对通道 uid 与 App 是否相同：容器里同 uid
+  就说明降权没生效。
 
 ### 思考开关（D63）
 

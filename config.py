@@ -140,6 +140,12 @@ DISPLAY_TOKEN = _get("DISPLAY_TOKEN", "")
 MAX_TEXT_CHARS = _get_int("MAX_TEXT_CHARS", 2000)
 MAX_CLIENT_ID_CHARS = _get_int("MAX_CLIENT_ID_CHARS", 128)
 MAX_UPLOAD_BYTES = _get_int("MAX_UPLOAD_BYTES", 10 * 1024 * 1024)
+
+# ---- 执行通道（D86）----
+# run_shell / run_python 交给另一个 uid 的常驻进程跑（容器里是 work 用户），
+# 这样模型的代码读不到也改不到 /data 下的正式库。套接字不存在时退回本机运行，
+# 那是开发机/Windows 的行为；容器里由 docker-entrypoint.sh 拉起。
+SHELL_WORKER_SOCKET = _get("SHELL_WORKER_SOCKET", "/run/xiaoma/shell.sock")
 MAX_AUDIO_SECONDS = _get_int("MAX_AUDIO_SECONDS", 30)
 SESSION_TTL_SECONDS = _get_int("SESSION_TTL_SECONDS", 24 * 60 * 60)
 MAX_SESSIONS = _get_int("MAX_SESSIONS", 1000)

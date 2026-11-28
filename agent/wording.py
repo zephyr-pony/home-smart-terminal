@@ -241,6 +241,18 @@ def print_question(args, user_text=None):
     )
 
 
+def shell_question(command, reason, limit=140):
+    """危险命令的确认句：把命令原样念出来，不概括。
+
+    概括成「要执行一条命令」等于没问——用户点头时不知道点的是什么。
+    太长就截断并保留开头，开头通常就是 rm / shutdown / curl 这些关键字。
+    """
+    cmd = " ".join(str(command or "").split())
+    if len(cmd) > limit:
+        cmd = cmd[:limit].rstrip() + "…"
+    return "这条命令%s：「%s」。要我执行吗？" % (reason or "有风险", cmd)
+
+
 def print_reply(args, result):
     """打印回执：内容来自参数和 CUPS 的返回，不让模型自己说。
 

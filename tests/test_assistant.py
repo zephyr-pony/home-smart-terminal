@@ -471,6 +471,41 @@ def test_assistant_item_delete_requires_confirmation():
     assert assistant.items.count() == 0
 
 
+def test_dangerous_shell_command_asks_before_running():
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("run_shell", {"command": "rm -rf /data/work/x"}),
+    ]))
+
+    result = assistant.process_text("把 work 清一下", client_id="c1")
+
+    assert result["type"] == "confirm"
+    assert "rm -rf /data/work/x" in result["reply"]
+    pending = assistant.confirmations.get_pending("c1")
+    assert pending["action_type"] == "run_shell"
+
+
+def test_safe_shell_command_does_not_ask(monkeypatch):
+    """普通命令不该多一轮确认（语音里每句话都是几秒）。"""
+    from adapters import shell as shell_mod
+
+    ran = {}
+
+    def fake_run(command, timeout=None, cwd=""):
+        ran["command"] = command
+        return {"returncode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr(shell_mod, "run", fake_run)
+    assistant = make_assistant(ScriptedLLM([
+        _tool_call_reply("run_shell", {"command": "ls /data/work"}),
+        _stop_reply("看完了"),
+    ]))
+
+    result = assistant.process_text("看看 work 里有什么", client_id="c1")
+
+    assert result["type"] == "chat"
+    assert ran["command"] == "ls /data/work"
+
+
 def test_agent_loop_reports_unknown_tool_without_crashing():
     assistant = make_assistant(ScriptedLLM([
         _tool_call_reply("no_such_tool", {}),

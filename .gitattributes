@@ -1,2 +1,5 @@
 # 补丁文件里有整段上下文行，git diff --check 会把它们当成尾随空格
 *.patch -whitespace
+# 启动脚本给 Linux 跑，必须 LF
+docker-entrypoint.sh text eol=lf
+*.sh text eol=lf

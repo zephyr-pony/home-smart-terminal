@@ -65,14 +65,28 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} \
 
 COPY . .
 
-# 容器里不要用 root 跑；/data 提前建好并交给运行用户，
-# 这样命名卷第一次挂载时继承的是可写权限。
+# 容器里不要用 root 跑服务；通道和库用不同的 uid（D86）：
+#   xiaoma 10001  跑服务端，拥有 /data 与正式库
+#   work   10002  只跑模型写的命令，能写 /data/work，进不了 /data 根部
+# /app 收到 750，work 读不到服务代码和 .env；执行通道单独拷到 /opt（只有代码）。
 RUN useradd --create-home --uid 10001 xiaoma \
-    && mkdir -p /data /data/work /data/home /home/xiaoma/.cache \
-    && chown -R xiaoma:xiaoma /data /app /home/xiaoma
+    && useradd --uid 10002 --no-create-home --shell /bin/sh work \
+    && mkdir -p /data/work /data/home /home/xiaoma/.cache /opt/xiaoma-worker /run/xiaoma \
+    && cp /app/adapters/shell_worker.py /opt/xiaoma-worker/shell_worker.py \
+    && chown -R xiaoma:xiaoma /data /app /home/xiaoma \
+    && chown -R work:work /data/work /data/home /opt/xiaoma-worker \
+    && chown work:xiaoma /run/xiaoma \
+    && chmod 751 /data \
+    && chmod 1777 /data/work \
+    && chmod 750 /data/home /app \
+    && chmod 2770 /run/xiaoma \
+    && chmod 755 /opt/xiaoma-worker \
+    && chmod 644 /opt/xiaoma-worker/shell_worker.py
 # soffice / 字体缓存都往 HOME 写；不显式设会继承 /root
 ENV HOME=/home/xiaoma
-USER xiaoma
+
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod 755 /docker-entrypoint.sh
 
 VOLUME ["/data"]
 EXPOSE 8000
@@ -81,4 +95,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)" || exit 1
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["python", "server.py"]

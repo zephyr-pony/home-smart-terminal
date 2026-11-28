@@ -154,6 +154,42 @@ def check_optional(report, push_enabled, vapid_private, home_token, home_devices
         )
 
 
+def check_shell_channel(report, config):
+    """执行通道（D86）：run_shell / run_python 应该跑在另一个 uid 下。
+
+    同 uid 时模型的一段代码就能直接改正式库，所以这里把它当错误级别的提醒：
+    容器里没起来就是隔离失效，开发机（没有套接字）则本来就跑本机。
+    """
+    from adapters import shell
+
+    socket_path = getattr(config, "SHELL_WORKER_SOCKET", "")
+    if not shell.worker_available():
+        if os.name == "posix" and str(config.DATA_DIR).startswith("/"):
+            report.warn(
+                "执行通道没起来",
+                "%s 不存在：run_shell 会以 App 用户运行，模型能直接改 /data 下的库"
+                % (socket_path or shell._worker_socket()),
+            )
+        else:
+            report.ok("执行通道", "未启用（本机开发模式，命令直接跑）")
+        return
+    who = shell.worker_identity()
+    if not who:
+        report.warn("执行通道", "%s 在，但问不到身份" % socket_path)
+        return
+    if who.get("uid") == os.getuid():
+        report.warn(
+            "执行通道和 App 同 uid",
+            "%s（uid %s）：降权没生效，模型能直接写正式库"
+            % (who.get("user"), who.get("uid")),
+        )
+    else:
+        report.ok(
+            "执行通道",
+            "%s（uid %s），和 App 分开" % (who.get("user"), who.get("uid")),
+        )
+
+
 def check_backup_scope(report, data_dir, root=ROOT):
     """备份脚本扫的是仓库下的 data/；DATA_DIR 指到别处时提醒一句。"""
     default = os.path.join(root, "data")
@@ -220,6 +256,7 @@ def run(config=None):
         db_paths,
     )
     check_port(report, config.SERVER_HOST, config.SERVER_PORT)
+    check_shell_channel(report, config)
     check_optional(
         report,
         push_enabled=bool(getattr(config, "PUSH_ENABLED", False)),

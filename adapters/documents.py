@@ -242,18 +242,30 @@ def run_code(code, src_path=None, out_name=""):
     if src_path and not os.path.exists(src_path):
         raise DocumentError("文件不存在或已过期，请重新上传")
 
-    workdir = tempfile.mkdtemp(prefix="xiaoma_file_")
+    # 容器里执行通道是另一个 uid（work）：临时目录要放在它的工作目录下，
+    # 并且放开权限，否则它进不来也写不进产出文件（D86）。
+    from adapters import shell as shell_mod
+    use_worker = shell_mod.worker_available()
+    if use_worker:
+        os.makedirs(shell_mod.WORK_DIR, exist_ok=True)
+        workdir = tempfile.mkdtemp(prefix="xiaoma_file_", dir=shell_mod.WORK_DIR)
+        os.chmod(workdir, 0o777)
+    else:
+        workdir = tempfile.mkdtemp(prefix="xiaoma_file_")
     # 和 run_shell 用同一个家目录：pip install --user 装的东西两边都能用，
     # 而且落在 /data 卷里，重建容器不用重装。
-    home_dir = os.path.join(
-        os.environ.get("DATA_DIR", "/data"), "home"
-    )
-    try:
-        os.makedirs(home_dir, exist_ok=True)
-        if not os.access(home_dir, os.W_OK):
-            raise OSError
-    except OSError:
-        home_dir = workdir
+    if use_worker:
+        home_dir = shell_mod.HOME_DIR
+    else:
+        home_dir = os.path.join(
+            os.environ.get("DATA_DIR", "/data"), "home"
+        )
+        try:
+            os.makedirs(home_dir, exist_ok=True)
+            if not os.access(home_dir, os.W_OK):
+                raise OSError
+        except OSError:
+            home_dir = workdir
     input_path = ""
     if src_path:
         input_path = os.path.join(workdir, "input" + _ext(src_path))
@@ -263,6 +275,15 @@ def run_code(code, src_path=None, out_name=""):
     script_path = os.path.join(workdir, "run.py")
     with open(script_path, "w", encoding="utf-8") as fh:
         fh.write(code)
+    if use_worker:
+        # 执行通道是另一个 uid，脚本和输入得让它读得到（它们只是这一轮的临时文件）
+        for path in (script_path, input_path):
+            if not path:
+                continue
+            try:
+                os.chmod(path, 0o644)
+            except OSError:
+                pass
 
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -283,27 +304,45 @@ def run_code(code, src_path=None, out_name=""):
         if key in os.environ:
             env[key] = os.environ[key]
     try:
-        kwargs = {}
-        if os.name == "posix":
-            kwargs["preexec_fn"] = _limits
         before = set(os.listdir(workdir))
-        result = subprocess.run(
-            [sys.executable, script_path],
-            cwd=workdir, env=env, timeout=CODE_TIMEOUT_SECONDS,
-            capture_output=True, **kwargs
-        )
+        if use_worker:
+            result = shell_mod.run_python_script(
+                script_path, cwd=workdir, env=env,
+                timeout=CODE_TIMEOUT_SECONDS, cpu_limit=CODE_TIMEOUT_SECONDS,
+            )
+        else:
+            kwargs = {}
+            if os.name == "posix":
+                kwargs["preexec_fn"] = _limits
+            proc = subprocess.run(
+                [sys.executable, script_path],
+                cwd=workdir, env=env, timeout=CODE_TIMEOUT_SECONDS,
+                capture_output=True, **kwargs
+            )
+            result = {
+                "returncode": proc.returncode,
+                "stdout": (proc.stdout or b"").decode("utf-8", errors="replace"),
+                "stderr": (proc.stderr or b"").decode("utf-8", errors="replace"),
+            }
+    except shell_mod.ShellError as exc:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise DocumentError("代码没跑起来：%s" % exc)
     except subprocess.TimeoutExpired:
         shutil.rmtree(workdir, ignore_errors=True)
         raise DocumentError("这段代码跑了超过 %d 秒，先改简单点" % CODE_TIMEOUT_SECONDS)
-    finally:
-        pass
 
-    stdout = (result.stdout or b"").decode("utf-8", errors="replace").strip()
-    stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
-    if result.returncode != 0:
+    if result.get("timed_out"):
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise DocumentError("这段代码跑了超过 %d 秒，先改简单点" % CODE_TIMEOUT_SECONDS)
+
+    stdout = str(result.get("stdout") or "").strip()
+    stderr = str(result.get("stderr") or "").strip()
+    if result.get("returncode") != 0:
         shutil.rmtree(workdir, ignore_errors=True)
         detail = (stderr or stdout)[-600:]
-        raise DocumentError("代码执行失败：%s" % (detail or "退出码 %d" % result.returncode))
+        raise DocumentError("代码执行失败：%s" % (
+            detail or "退出码 %s" % result.get("returncode")
+        ))
     if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
         # 模型常见几种写法：改输入文件本身、自己起了个名字、甚至把输出路径
         # 当成目录用。只认「工作目录里新出现的普通文件」，别为了名字较劲。

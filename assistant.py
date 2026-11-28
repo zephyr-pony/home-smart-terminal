@@ -52,6 +52,8 @@ from agent.guard import (
 from agent.home_watch import build_home_watch
 from agent.verify import verify_reply
 from agent import wording
+from agent import shellguard
+from agent import untrusted
 from agent.propose import ProposalService
 from agent import thinking
 from adapters.home import build_home
@@ -1249,9 +1251,9 @@ class Assistant:
                             if name == "file_read" and not attachment:
                                 result = "错误：这一轮没有附带文件。"
                             elif name == "file_read":
-                                result = documents.read_document(
+                                result = untrusted.wrap(documents.read_document(
                                     attachment.get("path"), attachment.get("name")
-                                )
+                                ))
                             else:
                                 print("🐍 run_python 代码：%s" % str(
                                     (args or {}).get("code") or ""
@@ -1350,6 +1352,19 @@ class Assistant:
                         except (TypeError, ValueError):
                             search_n = 5
                         search_n = max(1, min(search_n, 50))
+                    # 危险命令：执行前复述一遍等确认（D86）。命令也可能只是模型
+                    # 照着一段被注入的网页抄的，删文件、关机做错了收不回来。
+                    if name == "run_shell":
+                        reason = shellguard.risk((args or {}).get("command"))
+                        if reason:
+                            question = wording.shell_question(
+                                (args or {}).get("command"), reason
+                            )
+                            conversation_id = (client_id or "cli").strip()
+                            pending = self.confirmations.request(
+                                conversation_id, name, dict(args), question, user_text
+                            )
+                            raise ConfirmationRequired(question, pending)
                     execute = tools_by_name.get(name)
                     if execute is None:
                         result = f"错误：未知工具 {name}"

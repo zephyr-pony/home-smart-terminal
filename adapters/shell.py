@@ -11,15 +11,19 @@
 - 以容器内的普通用户（xiaoma）运行，不是 root，装不了系统包；
   需要系统包时由人改 Dockerfile 重建镜像，这也是刻意的。
 """
+import json
 import os
 import shutil
+import socket
 import subprocess
 
-from config import DATA_DIR
+from config import DATA_DIR, SHELL_WORKER_SOCKET
 
 TIMEOUT_SECONDS = 90
 MAX_STDOUT_CHARS = 4000
 MAX_STDERR_CHARS = 2000
+# 等执行通道的宽限：命令自己有时限，这里只多等它把输出送回来
+WORKER_GRACE_SECONDS = 15
 
 WORK_DIR = os.path.join(DATA_DIR, "work")
 HOME_DIR = os.path.join(DATA_DIR, "home")
@@ -63,13 +67,14 @@ def _env():
 
 
 def run(command, timeout=TIMEOUT_SECONDS, cwd=""):
-    """跑一条 shell 命令，返回 {returncode, stdout, stderr}。"""
+    """跑一条 shell 命令，返回 {returncode, stdout, stderr}。
+
+    容器里有执行通道（另一个 uid）就走它；开发机上没有套接字，退回本机。
+    通道在但不通时直接报错，**不**悄悄退回本机——那等于把隔离丢了还不告诉人。
+    """
     command = str(command or "").strip()
     if not command:
         raise ShellError("没有要执行的命令")
-    shell = _shell()
-    if not shell:
-        raise ShellError("这台机器没有 bash/sh")
     _prepare_dirs()
     workdir = cwd if cwd and os.path.isdir(cwd) else WORK_DIR
     try:
@@ -77,6 +82,19 @@ def run(command, timeout=TIMEOUT_SECONDS, cwd=""):
     except (TypeError, ValueError):
         timeout = TIMEOUT_SECONDS
 
+    if worker_available():
+        result = _worker_call(
+            {"kind": "shell", "command": command,
+             "cwd": workdir, "timeout": timeout},
+            timeout + WORKER_GRACE_SECONDS,
+        )
+        if result.get("timed_out"):
+            raise ShellError("命令超过 %d 秒还没结束，先拆小一点" % timeout)
+        return result
+
+    shell = _shell()
+    if not shell:
+        raise ShellError("这台机器没有 bash/sh")
     try:
         result = subprocess.run(
             [shell, "-lc", command],
@@ -93,6 +111,87 @@ def run(command, timeout=TIMEOUT_SECONDS, cwd=""):
         "stdout": (result.stdout or b"").decode("utf-8", errors="replace"),
         "stderr": (result.stderr or b"").decode("utf-8", errors="replace"),
     }
+
+
+def run_python_script(script_path, cwd="", env=None, timeout=30, cpu_limit=None):
+    """用执行通道跑一个脚本文件（run_python 用）。没有通道就返回 None。
+
+    调用方拿走 None 时自己在本机跑（开发机/Windows），逻辑和以前一样。
+    """
+    if not worker_available():
+        return None
+    result = _worker_call(
+        {
+            "kind": "python",
+            "script": script_path,
+            "cwd": cwd or WORK_DIR,
+            "timeout": timeout,
+            "cpu_limit": cpu_limit or timeout,
+            "env": {str(k): str(v) for k, v in (env or {}).items()},
+        },
+        timeout + WORKER_GRACE_SECONDS,
+    )
+    return result
+
+
+def worker_available():
+    """通道在不在。套接字路径不存在 = 没启用（开发机），不是故障。"""
+    if not hasattr(socket, "AF_UNIX"):
+        return False
+    path = _worker_socket()
+    return bool(path) and os.path.exists(path)
+
+
+def worker_identity():
+    """通道以哪个 uid 跑；问不到返回 None。doctor.py 用它核对是否真的降权了。"""
+    if not worker_available():
+        return None
+    try:
+        reply = _worker_call({"kind": "whoami"}, 10)
+    except ShellError:
+        return None
+    return reply if reply.get("ok") else None
+
+
+def _worker_socket():
+    return os.environ.get("SHELL_WORKER_SOCKET", SHELL_WORKER_SOCKET)
+
+
+def _worker_call(payload, wait_seconds):
+    path = _worker_socket()
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(5)
+    try:
+        try:
+            conn.connect(path)
+        except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
+            raise ShellError("执行通道没起来（%s），先别跑命令" % exc)
+        conn.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        conn.settimeout(max(1, wait_seconds))
+        buffer = b""
+        while not buffer.endswith(b"\n"):
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            if len(buffer) > 1024 * 1024:
+                raise ShellError("执行通道回的包太大")
+    except socket.timeout:
+        raise ShellError("执行通道一直没有回话，稍后再试")
+    except OSError as exc:
+        raise ShellError("执行通道出错：%s" % exc)
+    finally:
+        conn.close()
+
+    try:
+        reply = json.loads(buffer.decode("utf-8", errors="replace"))
+    except ValueError:
+        raise ShellError("执行通道回的不是 JSON")
+    if not isinstance(reply, dict):
+        raise ShellError("执行通道回的内容看不懂")
+    if not reply.get("ok"):
+        raise ShellError(str(reply.get("error") or "命令没跑起来"))
+    return reply
 
 
 def format_result(result):

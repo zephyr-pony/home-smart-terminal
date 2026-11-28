@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from agent import wording
 from agent import lunar as lunar_mod
+from agent import untrusted
 from domain.facts import profile_subject
 from memory import Memory
 
@@ -1136,11 +1137,11 @@ def get_capability_tools():
             results = web.search(kwargs.get("query"), kwargs.get("n") or 5)
         except web.WebError as exc:
             return "错误：%s" % exc
-        return web.format_results(results)
+        return untrusted.wrap(web.format_results(results))
 
     def do_fetch(**kwargs):
         try:
-            return web.fetch(kwargs.get("url"))
+            return untrusted.wrap(web.fetch(kwargs.get("url")))
         except web.WebError as exc:
             return "错误：%s" % exc
 

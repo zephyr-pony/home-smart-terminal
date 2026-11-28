@@ -197,6 +197,11 @@ docker compose up -d --build
 - 数据放在命名卷 `xiaoma-data`（容器内 `/data`，对应 `DATA_DIR`）。备份要用
   `python scripts/backup_docker.py`（自动找卷、容器里走 sqlite 热备、打包校验），
   别直接拷卷文件；换机器/搬家也用它导出的 zip。细节见 `docs/backup.md`。
+- **两个 uid（D86）**：服务端以 `xiaoma`（10001）跑，`run_shell` / `run_python`
+  交给 `work`（10002）跑，库文件 640，模型写的代码读不到也改不到正式库。入口脚本
+  以 root 摆权限再降权，所以**容器以 root 启动**、最后只剩两个非 root 进程；升级时
+  要 `docker compose up -d --build`（旧镜像没有这个入口脚本），老卷里的库权限会被
+  自动收到 640。`doctor.py` 的「执行通道」能确认它真的生效。
 - 容器日志默认 JSON 文件会一直长；`docker-compose.example.yml` 里已配
   `logging`（10MB × 3 份轮转）。自己改过 compose 的别忘了抄这一段，否则跑几个月能把盘吃满。
 - 语音模型缓存在 `xiaoma-cache` 卷（`/home/xiaoma/.cache`），重建容器不用重下 900MB 模型。
@@ -387,6 +392,7 @@ iPhone 的限制：必须在 iOS 16.4+，且只能从「添加到主屏幕」的
 | `STT_MODEL` | `iic/SenseVoiceSmall` | 语音识别模型 |
 | `STT_LANGUAGE` | `zh` | 识别语言 |
 | `DATA_DIR` | `./data` | 所有数据库的默认目录；单独设下面 `*_DB_PATH` 的仍以它为优先 |
+| `SHELL_WORKER_SOCKET` | `/run/xiaoma/shell.sock` | 执行通道套接字（D86）；容器里由入口脚本拉起，本地开发不存在时退回本机运行 |
 | `MEMORY_DB_PATH` | `<DATA_DIR>/memory.db` | 记忆库位置（一般不用改） |
 | `ITEMS_DB_PATH` | `<DATA_DIR>/items.db` | 物品库位置 |
 | `AGENT_DB_PATH` | `<DATA_DIR>/agent.db` | 实体 / 待澄清动作 / 提案库位置 |
