@@ -1186,6 +1186,10 @@ class Assistant:
         search_keywords = None
         search_n = 5
         device_call = None
+        # 子任务已经跑过：下一轮把工具收走，逼模型直接组织回答（D89）。
+        # 实测不收走时它会拿着结论接着 web_search / run_python，5 轮用光，
+        # 用户等了 77 秒只听到一句「我绕晕了」——子任务等于白跑。
+        spawned_subagent = False
 
         max_loops = self.max_agent_loops
         if attachment:
@@ -1206,14 +1210,16 @@ class Assistant:
                 # 已经写过东西时不流式：最终回答要过事实校验，逐字推出去的片段
                 # 收不回来，校验失败就只能让用户听到错日期。
                 can_stream = on_delta is not None and not executed_writes
+                # 子任务回来后不再给工具：结论已经在了，它只要组织成一句话（D89）。
+                turn_schemas = [] if spawned_subagent else schemas
                 if can_stream and hasattr(client, "chat_with_tools_stream"):
                     data = client.chat_with_tools_stream(
-                        messages, schemas, on_delta=on_delta,
+                        messages, turn_schemas, on_delta=on_delta,
                         max_tokens=turn_tokens, reasoning_effort=effort,
                     )
                 else:
                     data = client.chat_with_tools(
-                        messages, schemas, max_tokens=turn_tokens,
+                        messages, turn_schemas, max_tokens=turn_tokens,
                         reasoning_effort=effort,
                     )
             except Exception as exc:
@@ -1426,6 +1432,8 @@ class Assistant:
                         if wording.looks_written(name, result):
                             executed_writes.append((name, dict(args)))
                         executed_results.append(str(result))
+                        if name == "spawn_agent":
+                            spawned_subagent = True
                         if name in wording.QUERY_TOOLS:
                             query_total += 1
                             if wording.is_empty_query(name, result):

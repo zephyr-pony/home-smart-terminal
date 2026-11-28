@@ -160,3 +160,50 @@ def test_spawn_agent_hidden_unless_allowed():
     # 网页文字 / CLI：给
     assistant.process_text("你好", "web-like", allow_subagent=True)
     assert "spawn_agent" in recorder.seen[-1]
+
+
+def test_tools_are_taken_away_after_subagent_returns():
+    """子任务回来之后不再给工具：结论已经在了，再搜一轮只会把轮数用光（D89）。"""
+
+    class Scripted:
+        def __init__(self):
+            self.responses = [
+                {
+                    "choices": [{
+                        "message": {
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call-1",
+                                "function": {
+                                    "name": "spawn_agent",
+                                    "arguments": json.dumps({"task": "查两家店的营业时间"}),
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }]
+                },
+                {"choices": [{"message": {"content": "两家都开到 18:00。"}, "finish_reason": "stop"}]},
+            ]
+            self.seen = []
+
+        def chat_with_tools(self, messages, tools, **kwargs):
+            self.seen.append([t["function"]["name"] for t in tools])
+            return self.responses.pop(0)
+
+    assistant = make_assistant()
+    assistant.llm = Scripted()
+
+    def fake_runner(task, purpose="research"):
+        return "子任务结论：A 9:00-18:00，B 10:00-18:00。"
+
+    # 工具闭包在 init 时就绑好了真实的 runner，这里两处都要换成假的
+    for tool in assistant.tools:
+        if tool["schema"]["function"]["name"] == "spawn_agent":
+            tool["execute"] = fake_runner
+    assistant._tools_by_name["spawn_agent"] = fake_runner
+    result = assistant.process_text("查两家店的营业时间", "subagent-once", allow_subagent=True)
+    assert "spawn_agent" in result["used_tools"]
+    assert "18:00" in result["reply"]
+    assert assistant.llm.seen[1] == []  # 第二轮一个工具都不给
+
