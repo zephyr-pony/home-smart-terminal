@@ -1462,9 +1462,9 @@ class Assistant:
 
             # 普通回答（finish=stop）
             answer = (message.get("content") or "").strip()
-            # 有些模型会把工具调用写成 <invoke ...> 文本（多发生在输出被截断时）；
-            # 这种半截文本不能当回复念给用户
-            if "<invoke" in answer or "<tool_call" in answer:
+            # 有些模型会把工具调用写成 <invoke ...> 文本（多发生在输出被截断时，
+            # 或子任务回来后没工具可调时）；这种半截文本不能当回复念给用户
+            if wording.looks_like_tool_call_text(answer):
                 answer = "这一步我没走通，能再发一次吗？"
             break
         else:

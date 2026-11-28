@@ -13,6 +13,8 @@ import json
 import time
 from datetime import datetime
 
+from agent.wording import looks_like_tool_call_text
+
 # 白名单而不是黑名单：以后新增的写工具默认不会漏进子任务（fail-closed）。
 READONLY_TOOLS = frozenset({
     # 时间 / 计算 / 农历
@@ -137,10 +139,23 @@ def run(task, llm, tools, purpose="research"):
                 })
             continue
         answer = (message.get("content") or "").strip()
-        if "<invoke" in answer or "<tool_call" in answer:
-            answer = ""
+        if looks_like_tool_call_text(answer):
+            # 工具已经收走了，它还是把 tool_call 写成了正文（deepseek 实测会输出
+            # `< invoke…>`，闭合标签甚至是 `</｜tool_calls>`）。再催一次，还不行就
+            # 如实说没结论——别把尖括号当结论交给主会话。
+            messages.append({
+                "role": "system",
+                "content": "不要再调用工具。用两三句话直接给结论；查不到就说查不到。",
+            })
+            try:
+                data = llm.chat_with_tools(messages, [], max_tokens=MAX_TOKENS)
+                answer = (data["choices"][0]["message"].get("content") or "").strip()
+            except Exception:
+                answer = ""
         if not answer:
             return "子任务没有给出结论。"
+        if looks_like_tool_call_text(answer):
+            return "子任务没给出结论（模型把工具调用写成了正文）。"
         if len(answer) > MAX_ANSWER_CHARS:
             answer = answer[:MAX_ANSWER_CHARS].rstrip() + "…"
         if used:

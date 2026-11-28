@@ -18,6 +18,16 @@ _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日
 # 也不能把一个编出来的号码念给用户——他照着念、照着记，错的就是错的。
 UNVERIFIED_NUMBER_REPLY = "这个号码我这边没核对上，先不念了——你再确认一下要查的是哪一项？"
 
+# 模型偶尔把工具调用写成正文（deepseek 实测会输出 `< invoke …>`，
+# 甚至把闭合标签写成 `</｜tool_calls>`——全角竖线和多余空格都见过）。
+# 这种半截文本念给用户就是一堆尖括号，必须整句换掉。
+_PSEUDO_CALL = re.compile(r"[<｜]\s*(?:invoke|tool_?calls?)", re.IGNORECASE)
+
+
+def looks_like_tool_call_text(text):
+    """这段文字是不是「模型把工具调用写成了正文」。"""
+    return bool(_PSEUDO_CALL.search(text or ""))
+
 # 引用原话的上限：超过这个长度就不引用了。整段话复述一遍要念十几秒
 # （语音确认最怕这个），而且长句通常是多个意图混在一起，引用了反而更好听错。
 _QUOTE_MAX_CHARS = 20

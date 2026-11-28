@@ -145,3 +145,26 @@ def test_no_conclusion_returns_message():
     executed = []
     text = subagent.run("查一下", ScriptedLLM([_stop("")]), _tools(executed))
     assert "没有给出结论" in text
+
+
+def test_pseudo_tool_call_text_is_retried_once():
+    """模型把 tool_call 写成正文（`< invoke`、`</｜tool_calls>`）时，催一次再要结论。"""
+    executed = []
+    llm = ScriptedLLM([
+        _stop('<tool_calls>\n< invoke name="web_search">'),
+        _stop("查到了：两家都开到 18:00。"),
+    ])
+    text = subagent.run("查营业时间", llm, _tools(executed))
+    assert "18:00" in text
+    assert "<" not in text.split("（子任务用了")[0]
+
+
+def test_pseudo_tool_call_text_twice_gives_up():
+    executed = []
+    llm = ScriptedLLM([
+        _stop('<invoke name="web_search">'),
+        _stop('</｜tool_calls>'),
+    ])
+    text = subagent.run("查一下", llm, _tools(executed))
+    assert "写成了正文" in text
+

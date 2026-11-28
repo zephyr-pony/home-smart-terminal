@@ -145,3 +145,14 @@ def test_empty_query_is_recognized_for_search_tools():
     assert not wording.is_empty_query("memory_search", "[2026-11-23] 牛奶快喝完了")
     # 清单类没有关键词，不在此列
     assert not wording.is_empty_query("task_list", "（暂无任务）")
+
+
+def test_looks_like_tool_call_text_catches_broken_markup():
+    """deepseek 会把工具调用写成正文，而且格式很随意（多空格、全角竖线）。"""
+    assert wording.looks_like_tool_call_text('<invoke name="web_search">')
+    assert wording.looks_like_tool_call_text('< invoke name="web_search">')
+    assert wording.looks_like_tool_call_text("</｜tool_calls>")
+    assert wording.looks_like_tool_call_text("<tool_calls>")
+    assert not wording.looks_like_tool_call_text("明天上午九点开会。")
+    assert not wording.looks_like_tool_call_text("")
+
