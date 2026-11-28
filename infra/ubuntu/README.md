@@ -311,7 +311,7 @@ sudo /opt/opencode-my/scripts/deploy_server.sh --check  # 只看有哪些新提�
 sudo /opt/opencode-my/scripts/deploy_server.sh --build  # 只改了文档也强制重建
 ```
 
-装好的机器上还有个短名字（同一份脚本，`install -m 755` 拷进 `/usr/local/bin`）：
+装好的机器上还有个短名字（软链到同一份脚本，改了脚本不用重新安装）：
 
 ```bash
 sudo xiaoma-deploy          # 平时用这个
