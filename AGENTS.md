@@ -39,6 +39,7 @@
 | `infra/xiaozhi-server/` | 小智侧提醒桥：构建时锚点打补丁，订阅设备通道并调 `speak_txt` |
 | `infra/device-firmware/` | ESP32 固件补丁（待机保连接、开机自连、断线重连，D78） |
 | `infra/ubuntu/` | 迁移到 Ubuntu Server 的部署件：开机拉起 compose、加密备份的 systemd 单元 |
+| `infra/installer/` | 一键安装盘：官方 Ubuntu Server ISO → 带 autoinstall 的镜像；iLO（Redfish）挂载、一次性启动、装完找新机 |
 | `agent/entities.py` | 实体管理：新增、改名、别名、列表 |
 | `agent/synonyms.py` | 检索同义词：户号/账号、燃气/煤气等归一，只影响查询 |
 | `agent/legacy.py` | 旧数据迁移：记忆分类、日期解析、迁移计划 |
@@ -135,9 +136,15 @@ pytest tests -q
 - 手工诊断脚本在 `scripts/record_diagnostic.py`，不会被 pytest 收集。
 - 正确率基线在 `scripts/eval_accuracy.py`：43 条固定输入（含摄像头决策 2 条、周期提醒 4 条、软硬提醒 2 条、同义检索 2 条、提醒绑定 3 条）、真模型、每个用例独立内存库，
   卡类型/工具/库状态/关键事实而不是措辞。慢且有网络依赖，按需手动跑；
-  已知问题的用例标 `known=True`，不计入失败。**单次结果有 LLM 抖动**（2026-11-27 连跑四次：
+  已知问题的用例标 `known=True`，**不计入分母**（以前 `total` 把它算进去，才出现
+  「41/43」和「41/41」两个分母）。**单次结果有 LLM 抖动**（2026-11-27 连跑四次：
   40/41、40/41、40/41、41/41，每次挂的是不同用例）；判断回归看同一类用例是否连续下滑，
-  别按单次数字下结论，也别为了让某条变绿去反复调工具描述——那是拟合噪声。`case()` 的 `device_camera=True` 走「终端带摄像头」分支；
+  别按单次数字下结论，也别为了让某条变绿去反复调工具描述——那是拟合噪声。
+  改描述/换模型前后各存一份，用对比看有没有真退化：
+  `python scripts/eval_accuracy.py --json data/eval/before.json`，改完再跑一次，
+  `python scripts/eval_diff.py data/eval/before.json data/eval/after.json`
+  （或 `--baseline` 直接比）。判据只有一条：**基线通过、这次失败**才算回归，按类目拆开；
+  对比逻辑在 `scripts/eval_compare.py`，有 pytest（不打模型）。`case()` 的 `device_camera=True` 走「终端带摄像头」分支；
   `bound_task="latest"`（或具体 id）模拟「点开提醒」，配合 `not_tools` 断言没有多调 `task_list`。
   热点上下文（D59）已把事实/记忆塞进提示词，答案正确、只是没调工具的用例可以用
   `context_ok=True` 放行（回复内容和库状态照验，通过行会标「上下文作答」）。

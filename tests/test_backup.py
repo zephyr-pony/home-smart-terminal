@@ -60,6 +60,30 @@ def test_print_files_are_backed_up_by_default(project):
     assert "data/chroma/index.bin" not in names
 
 
+def test_backup_from_an_external_data_dir_keeps_archive_paths(tmp_path, project):
+    """Docker 卷快照解在仓库外的临时目录时，压缩包里的路径必须还是 data/…。
+
+    以前这里相对仓库根算 relpath，跨盘直接抛 ValueError，同盘则写成
+    `../temp/xiaoma-volume-…/data/print/x`——压缩包「成功」了，但校验失败、
+    恢复出来位置也不对。
+    """
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "memory.db").write_bytes(b"snapshot")
+    (snapshot / "print").mkdir()
+    (snapshot / "print" / "a.txt").write_text("原件的副本", encoding="utf-8")
+
+    zip_path = backup.create_backup(
+        root=project, out_dir=os.path.join(project, "backups"),
+        data_dir=str(snapshot),
+    )
+    with zipfile.ZipFile(zip_path) as zf:
+        names = set(zf.namelist())
+    assert "data/memory.db" in names
+    assert "data/print/a.txt" in names
+    assert not [name for name in names if name.startswith("..")]
+
+
 def test_all_data_includes_subdirs(project):
     zip_path = backup.create_backup(
         root=project, out_dir=os.path.join(project, "backups"), all_data=True

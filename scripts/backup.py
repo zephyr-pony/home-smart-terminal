@@ -183,8 +183,11 @@ def collect_sources(root=ROOT, all_data=False, data_dir=None):
             for base, _dirs, files in os.walk(path):
                 for filename in files:
                     full = os.path.join(base, filename)
-                    rel = os.path.relpath(full, root).replace(os.sep, "/")
-                    items.append((rel, full))
+                    # 相对 data_dir 算，不能相对仓库根：Docker 卷快照解在临时目录里，
+                    # 相对仓库根会算出 `../temp/xiaoma-volume-…/data/print/x`，
+                    # 跨盘时直接抛 ValueError（备份「成功」了但校验和恢复都错位）
+                    rel = os.path.relpath(full, data_dir).replace(os.sep, "/")
+                    items.append(("data/" + rel, full))
             continue
         if name.endswith(SKIP_SUFFIXES):
             continue

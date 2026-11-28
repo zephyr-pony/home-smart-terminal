@@ -205,7 +205,9 @@ docker compose up -d --build
 - 容器日志默认 JSON 文件会一直长；`docker-compose.example.yml` 里已配
   `logging`（10MB × 3 份轮转）。自己改过 compose 的别忘了抄这一段，否则跑几个月能把盘吃满。
 - 语音模型缓存在 `xiaoma-cache` 卷（`/home/xiaoma/.cache`），重建容器不用重下 900MB 模型。
-- 长期部署（Ubuntu Server + 开机自启 + 定时加密备份）见 [`infra/ubuntu/README.md`](infra/ubuntu/README.md)。
+- 长期部署（Ubuntu Server + 开机自启 + 定时加密备份）见 [`infra/ubuntu/README.md`](infra/ubuntu/README.md)；
+  新机器没有显示器键盘也能装：`infra/installer/` 把官方 ISO 做成带 autoinstall 的安装盘，
+  HPE 机器一条命令挂到 iLO 上（见 [`infra/installer/README.md`](infra/installer/README.md)）。
 - 拉不到 `docker.io` 时（国内网络常见）先给 Docker 配镜像加速器或改用可访问的镜像源拉
   `python:3.12-slim` 并打回同名标签，Dockerfile 本身不用改。系统包/ pip 也连不上时，
   构建加镜像源参数：`APT_MIRROR=mirrors.aliyun.com`、`PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`
@@ -579,13 +581,15 @@ Web Push 也走同一个入口（见上一节）。
 ├── domain/          # 领域层：实体 / 待澄清 / 提案 / 任务 / 事实 / 空间 / 打印 / 对话记录
 ├── adapters/        # Home Assistant、打印机（CUPS）、文档、命令、上网、小智 MCP
 ├── static/index.html # Web 客户端（单文件，无构建）
-├── infra/           # 部署件：小智提醒桥补丁、ESP32 固件补丁、Ubuntu 部署
+├── infra/           # 部署件：小智提醒桥补丁、ESP32 固件补丁、Ubuntu 部署、一键安装盘
 ├── docs/            # ROADMAP、changes、备份/小智/提醒等文档
 ├── scripts/
 │   ├── backup.py             # 数据备份 / 校验 / 恢复（见 docs/backup.md）
 │   ├── backup_docker.py      # 命名卷备份 / 恢复（容器里走 sqlite 热备）
 │   ├── doctor.py             # 启动前自检（配置 / 目录 / 端口 / 可选模块）
-│   ├── eval_accuracy.py      # 43 条固定评测集（真模型，不进 pytest）
+│   ├── eval_accuracy.py      # 43 条固定评测集（真模型，不进 pytest；--json 存结果）
+│   ├── eval_compare.py       # 两次评测结果的对比（纯计算，有 pytest）
+│   ├── eval_diff.py          # 命令行对比：before.json after.json，有回归才退出 1
 │   ├── fake_camera_device.py # 假设备：无硬件验摄像头整条链
 │   └── record_diagnostic.py  # 手工录音/播放诊断（不参与 pytest）
 ├── tests/           # pytest 自动化测试

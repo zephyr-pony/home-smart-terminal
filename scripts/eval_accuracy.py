@@ -6,9 +6,17 @@ agent loop，回答的是「用户那句话，小马到底做对没有」。慢�
 
   用法：python scripts/eval_accuracy.py
         python scripts/eval_accuracy.py --only 记忆   只跑名字里含「记忆」的用例
+        python scripts/eval_accuracy.py --json data/eval/2026-11-28.json
+        python scripts/eval_accuracy.py --baseline data/eval/2026-11-28.json
 
 判据只卡「做对没有」，不卡措辞：类型、调用到的工具、库里的状态、以及回复里必须
 出现/不能出现的关键事实（日期、名字、号码）。措辞好坏靠人看最后一列。
+
+计分口径：`known=True` 的用例是已知问题，**永远不进分母**。通过数写成
+「通过 N/计分数」，known 单独报，避免「41/43」和「41/41」两个分母并存。
+
+`--json` 存一份结果；`--baseline` 拿历史结果比，比的是「基线通过、这次失败」，
+按类目拆开看（脚本也可以单独用 `scripts/eval_diff.py a.json b.json`）。
 
 `case()` 的 `bound_task` 模拟「点开提醒」：`"latest"` 取 setup 造出的第一条任务，
 也可以给具体 id（用来验旧通知）；`not_tools` 断言没有多调指定工具（比如 task_list）。
@@ -16,21 +24,26 @@ agent loop，回答的是「用户那句话，小马到底做对没有」。慢�
 每次用例都用全新的内存库，互不影响。
 """
 import argparse
+import json
 import os
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 同目录的 eval_compare
 
-from agent.clarify import Clarifier
-from assistant import Assistant
-from domain.facts import Facts
-from domain.store import AgentStore
-from domain.tasks import Tasks
-from items import Items
-from llm import LLM, build_decision_llm
-from memory import Memory
+import eval_compare  # noqa: E402  纯计算，测试在 tests/test_eval_compare.py
+
+from agent.clarify import Clarifier  # noqa: E402
+from assistant import Assistant  # noqa: E402
+from domain.facts import Facts  # noqa: E402
+from domain.store import AgentStore  # noqa: E402
+from domain.tasks import Tasks  # noqa: E402
+from items import Items  # noqa: E402
+from llm import LLM, build_decision_llm  # noqa: E402
+from memory import Memory  # noqa: E402
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
@@ -393,11 +406,10 @@ case("周期：没说几点要追问", "每天提醒我吃药",
      check=lambda a, r: (a.tasks.count() == 0, "没说几点却落库了"))
 
 
-def run(only=None):
-    passed = 0
-    failed = []
-    known_failed = []
+def run(only=None, json_path=None, baseline=None):
     timings = []
+    records = []
+    started_at = datetime.now().isoformat(timespec="seconds")
     for item in CASES:
         if only and only not in item["name"]:
             continue
@@ -460,32 +472,75 @@ def run(only=None):
         suffix = "（上下文作答）" if context_answered else ""
         line = "%-22s %5.1fs  %s%s" % (item["name"], elapsed, reply[:56], suffix)
         if not problems:
-            passed += 1
             print("✅ " + line)
         elif item["known"]:
-            known_failed.append((item["name"], problems))
             print("⚠️  " + line)
             print("     已知问题：" + "；".join(problems))
         else:
-            failed.append((item["name"], problems, reply))
             print("❌ " + line)
             print("     " + "；".join(problems))
+        records.append({
+            "name": item["name"],
+            "ok": not problems,
+            "known": bool(item["known"]),
+            "context_answered": context_answered,
+            "problems": list(problems),
+            "seconds": round(elapsed, 1),
+            "reply": reply[:200],
+        })
 
-    total = passed + len(failed) + len(known_failed)
-    print("\n通过 %d/%d" % (passed, total))
+    summary = eval_compare.summarize(records)
+    print("\n通过 %d/%d" % (summary["passed"], summary["scored"]))
+    if summary["known_passed"] or summary["known_failed"]:
+        print("已知问题 %d 条不计分（通过 %d、失败 %d）" % (
+            summary["known_passed"] + summary["known_failed"],
+            summary["known_passed"], summary["known_failed"],
+        ))
     if timings:
         print("耗时：平均 %.1fs，最长 %.1fs，最短 %.1fs" % (
             sum(timings) / len(timings), max(timings), min(timings),
         ))
-    if known_failed:
-        print("已知问题 %d 条（不计入失败）：%s" % (
-            len(known_failed), "、".join(name for name, _ in known_failed),
-        ))
-    return 1 if failed else 0
+    known_names = [row["name"] for row in records if row["known"] and not row["ok"]]
+    if known_names:
+        print("已知问题里失败的：%s" % "、".join(known_names))
+
+    current = {
+        "version": 1,
+        "started_at": started_at,
+        "model": os.environ.get("LLM_MODEL") or "未知模型",
+        "cases": records,
+        "summary": summary,
+    }
+    if json_path:
+        _write_json(json_path, current)
+        print("结果已写入：%s" % json_path)
+    if baseline:
+        previous = eval_compare.load(baseline)
+        comparison = eval_compare.compare(previous, current)
+        print("")
+        for line in eval_compare.format_report(previous, current, comparison):
+            print(line)
+        if eval_compare.blocking_regressions(comparison):
+            return 1
+    return 1 if summary["failed"] else 0
+
+
+def _write_json(path, payload):
+    """写结果文件。目录不存在就建——`--json data/eval/x.json` 不用先 mkdir。"""
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="小马固定评测集（打真模型）")
     parser.add_argument("--only", default=None, help="只跑名字里含这个词的用例")
+    parser.add_argument("--json", default=None, metavar="文件",
+                        help="把这次结果写成 JSON（以后用 --baseline 比）")
+    parser.add_argument("--baseline", default=None, metavar="文件",
+                        help="和一份历史 JSON 比，只把「基线通过、这次失败」算回归")
     args = parser.parse_args()
-    sys.exit(run(args.only))
+    sys.exit(run(args.only, json_path=args.json, baseline=args.baseline))

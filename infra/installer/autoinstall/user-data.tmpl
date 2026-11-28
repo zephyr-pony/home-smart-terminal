@@ -1,0 +1,34 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: {{LOCALE}}
+  timezone: {{TIMEZONE}}
+  keyboard:
+    layout: us
+  identity:
+    hostname: {{HOSTNAME}}
+    username: {{USERNAME}}
+    password: "{{PASSWORD_HASH}}"
+  ssh:
+    install-server: true
+    allow-pw: true
+{{SSH_KEYS}}
+  apt:
+    geoip: false
+    primary:
+      - arches: [default]
+        uri: "{{MIRROR}}"
+  network:
+    version: 2
+    ethernets:
+      all-ethernet:
+        match:
+          name: "e*"
+        dhcp4: true
+        dhcp6: true
+  storage:
+    layout:
+      name: direct
+  packages:
+{{PACKAGES}}
+  shutdown: reboot

@@ -2599,3 +2599,110 @@ py write db rc=1  sqlite3.OperationalError: unable to open database file
 
 测试新增 14 条（协议、越界目录、超时、截断、危险命令、包装、确认流程），
 全套 781 通过 / 11 跳过（Windows 上没有 AF_UNIX 的那批在 CI 跑）。
+
+## 五十七、2026-11-28：评测终于能回答「这次有没有改坏」
+
+评审里「评测停在脚本级」这条只做了一半，理由写在 ROADMAP 10.1：CI 那半要等
+「经常忘了跑」，本地这半便宜且立刻有用。
+
+### 先修分母
+
+以前 `total = 通过 + 失败 + known`，于是同一个结果能说成「41/43」，也能说成「41/41」。
+现在 `known=True` 的用例**永远不进分母**，单独报「已知问题 N 条不计分（通过 x、失败 y）」。
+
+### 存下来、比出来
+
+```
+python scripts/eval_accuracy.py --json data/eval/before.json   # 改之前
+# 改工具描述 / 换模型
+python scripts/eval_accuracy.py --baseline data/eval/before.json   # 改完直接比
+# 或者比两份历史结果，不用重跑
+python scripts/eval_diff.py data/eval/before.json data/eval/after.json
+```
+
+判据只有一条：「基线通过、这次失败」才是回归；修好、仍失败、新增/少了用例分开列，
+再按类目给通过率变化——只知道总数掉了 1 没用，得知道是「提醒」掉了还是「记忆」掉了。
+已知问题掉了不拦人（它本来就不计分），但会单独念一句。
+
+对比逻辑抽在 `scripts/eval_compare.py`（纯计算，10 条 pytest，不打模型）；
+`eval_diff.py` 有回归才退出 1，可以接脚本。
+
+### 剩下的五项
+
+数据库迁移、trace_id/限流、CI 那半、拆巨型文件、向量检索、多用户权限，
+连同触发条件和「到时最便宜的做法」写进 ROADMAP 10.1。**不搭半套框架**——
+半套迁移比没有更糟。另一条已知残留也记在那里：注入仍可能骗模型把假事实记下来。
+
+## 五十八、2026-11-28：新机器实装（Gen10 Plus）+ 一键安装盘
+
+搬家从计划变成实物：HPE MicroServer Gen10 Plus 上电，**用 iLO 远程装成 Ubuntu Server
+26.04**，全程没有显示器键盘。顺手把「怎么装下一台」做成了仓库里的可复用件。
+
+### 机器比计划小一档
+
+| 项 | 实际 | 与计划的差 |
+|---|---|---|
+| CPU | Xeon E-2224 4C/4T | ✅ |
+| 内存 | **16GB DDR4-2667 ECC 单条**（另一个槽空着） | 计划 48GB，得再补一条 32GB |
+| 系统盘 | KIOXIA `KXG60ZNV1T02` 1TB NVMe，健康 96% | ✅ |
+| 12TB 机械盘 | 没装 | 与计划一致 |
+| iLO | iLO 5 **v2.33**（2020-12）+ **Advanced 永久授权** | 虚拟光驱和图形 KVM 都能用 |
+| BIOS | U48 v2.20（2020-10） | 出厂固件，暂时不动 |
+
+出厂装的是 **ESXi 7.0 U2**（2021-09 自签证书、主机名还是 `localhost.localdomain`、
+SSH 关着、7.0 已过支持期），没有 root 密码、也没有虚拟机——整盘抹掉，按 2026-11-27
+定的方向装 Ubuntu Server。
+
+### 一键安装盘（`infra/installer/`）
+
+`build_iso.py` 把官方 ISO 改成带 autoinstall 的安装盘，`serve_http.py` 是给 BMC
+虚拟光驱用的 Range 静态服务（固件按扇区随机读，标准库的 `http.server` 不认 Range，
+挂上去读不动），`ilo_deploy.py` 走 iLO Redfish 挂载 + 启动 + 找新机。配置模板在
+`autoinstall/user-data.tmpl`；17 条 pytest 只测纯逻辑（改 GRUB、填模板、Range 解析），
+打包和安装要手动跑。决策与取舍（为什么不做 PXE、为什么不是手装）记在 ROADMAP **D87**。
+
+### 真机上踩出来的六个坑
+
+1. **GRUB 里 `;` 是语句分隔符**：`ds=nocloud;s=/cdrom/autoinstall/` 不引起来会被截成
+   `ds=nocloud`，剩下的当一条不存在的命令——现象是安装器正常起来、停在「选语言」。
+2. **Ubuntu 的 EFI 镜像不在 ISO9660 里**，是 ISO 末尾的附加分区；pycdlib 这类只重写
+   文件系统的工具会把它弄丢，机器直接起不来。只能 xorriso 原样重打包。
+3. **iLO 的虚拟光驱要「已连接」**（`ConnectedVia: URI`）。只在 CLI 里
+   `vm cdrom insert <url>` 会留下 `Image Connected = No`：URL 写了，没连上。
+4. **冷启动才认介质**，而且 Redfish 的「一次性从光驱启动」会被 POST 清掉而不生效；
+   稳妥做法是在 iLO 里把虚拟光驱调到引导顺序第一位，再 `power off hard` → `power on`。
+5. **iLO 5 2.33 在「虚拟媒体 + 频繁调接口」下会整机卡死**（443 和 22 一起没响应、
+   连 ping 都不通）。这种状态只能**断 AC** 复位——iLO 走待机供电，普通关机不算。
+6. **autoinstall 不写 `network:` 段时，subiquity 会拿 live 环境的配置去套目标机**，
+   `netplan apply` 返回 1，安装就地中断（「An error occurred. Press enter to start a
+   shell」）。显式给一段 `match: {name: "e*"}, dhcp4: true` 才稳。这一条靠 iLO 的
+   图形 KVM 截图才看出来——没有远程控制台，只会看到「装完却没起来」。
+
+六条都写进了 `infra/installer/README.md`，免得下次重踩。
+
+### 顺带修掉一个备份 bug
+
+`scripts/backup.py` 的 `collect_sources` 用**相对仓库根**的 relpath 算压缩包内路径。
+Docker 卷快照解在临时目录里时，`print/` 这类子目录会被写成
+`../temp/xiaoma-volume-…/data/print/x`（跨盘时直接抛 `ValueError`）——备份「成功」，
+但校验失败、恢复出来位置也不对。改成相对 `data_dir` 算，并加了一条专门的测试
+（`test_backup_from_an_external_data_dir_keeps_archive_paths`）。
+
+### 结果
+
+装好的机器在 `192.168.2.155`（DHCP，建议在路由器上做预留）。`xiaoma` 容器 healthy，
+`/api/stats` 与旧机逐项一致（memories 3 / items 0 / tasks 8 / facts 3 / entities 1），
+`doctor.py` 的执行通道检查在真机上通过（通道 uid 10002，和 App 分开）。重启演练按清单
+做过：不登录、等 75 秒，容器和 compose oneshot 自己起来。
+
+搬的过程中又踩到两个只有真机才暴露的问题：
+
+- **`backup_docker.py --restore` 被 entrypoint 降权**（D86 的副作用）：`docker run
+  --user root` 只决定 entrypoint 自己是谁，正文命令照样以 `xiaoma` 跑，
+  `chown -R /data`、读 `/data/home` 全部失败。加 `--entrypoint sh` 才恢复正常。
+- **新机拉不到 Docker Hub**（`registry-1.docker.io` connection refused），
+  `docker compose build` 在第一步就断。改成在本机 `docker save` 出镜像、scp 过去
+  `docker load`——顺带保证跑的就是本地验证过的那一份。以后要在服务器上重建，
+  得先给 Docker 配镜像加速器。
+
+设备（小智 / ESP32）**没有切到新机**：旧机继续跑，切不切、什么时候切等用户定。

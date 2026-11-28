@@ -197,11 +197,15 @@ def restore(zip_path, volume, image=DEFAULT_IMAGE, with_env=False, yes=False,
         for name in running:
             _run(["docker", "stop", name])
         try:
+            # `--entrypoint sh` 不能省：D86 之后镜像的 entrypoint 会把命令降权成
+            # xiaoma/work 两个 uid（执行通道隔离），`--user root` 只决定 entrypoint
+            # 自己是谁——正文命令照样是 xiaoma，`chown -R /data` 和读 /data/home
+            # 都会失败（真机恢复时踩到：Operation not permitted）
             _run([
-                "docker", "run", "--rm", "--user", "root",
+                "docker", "run", "--rm", "--user", "root", "--entrypoint", "sh",
                 "-v", "%s:/data" % volume,
                 "-v", "%s:/in:ro" % data_dir,
-                image, "sh", "-c",
+                image, "-c",
                 "cp -a /in/. /data/ && chown -R 10001:10001 /data",
             ])
         finally:
