@@ -83,8 +83,9 @@ cp .env.example .env && chmod 600 .env
 - `API_TOKEN`：**必填**。监听非本机又没有 Token 时 `_check_exposure()` 会直接拒绝启动。
   `SERVER_HOST` 不用在 `.env` 里纠结：compose 已经把容器内固定成 `0.0.0.0`
   （`environment` 优先于 `env_file`），对外靠端口映射 + Token，不靠改监听地址。
-- `LLM_PROXY`：现在是 `http://host.docker.internal:10808`，指向 Windows 上的 Clash。
-  Ubuntu 上没有这个代理就**清空**（留空仍然先直连，不影响）。
+- `LLM_PROXY`：留空就是直连（先直连、连不上才用它）。以前填的是 Windows 上
+  v2rayN 的 `10808`；服务器本机跑了自己的 xray 之后（见第 9 节），要兜底可以填
+  `http://host.docker.internal:10808`，不填也正常。
 - `HOME_BASE_URL`：HA 还是容器，`http://host.docker.internal:8123` 不用改
   （compose 里已经加了 `host-gateway`）。
 
@@ -240,3 +241,61 @@ idle_after_voice_time: 15
   否则夜间蒸馏、提醒冷却的时间点都会偏。
 - **`data/` 目录**：HA 的配置在 `data/homeassistant`（compose 用相对路径挂载），
   跟小马的数据库不是一回事，备份脚本默认也不含它（`--all-data` 才带）。
+
+## 9. 服务器本机跑 xray（代理不再依赖 Windows）
+
+以前 `LLM_PROXY` / `WEB_PROXY` 指向开发机上 v2rayN 的 `192.168.2.41:10808`，那台
+一关机，服务器就拉不动 Docker Hub、查不了被墙的站。现在服务器自己跑一份：
+
+```bash
+# 1. 取二进制（GitHub 直连能下；不行就先借开发机的代理）
+curl -fL -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+sudo install -d /opt/xray
+# 2. 解包到 /opt/xray（xray / geoip.dat / geosite.dat 三个文件）
+# 3. 配置：直接把开发机 v2rayN 的 binConfigs/config.json 拷过来
+sudo install -m 644 config.json /opt/xray/config.json
+# 4. 起服务（unit 见下）
+sudo systemctl enable --now xray
+```
+
+`xray.service` 的要点：`User=xray`（`useradd -r -s /usr/sbin/nologin xray`，别用
+`nobody`，systemd 会告警）、`ExecStart=/opt/xray/xray run -config /opt/xray/config.json`、
+`Restart=on-failure`。配置里的入站是 `mixed` `0.0.0.0:10808`，和 v2rayN 一致。
+
+**`geosite.dat` / `geoip.dat` 必须用 v2rayN 自带的那两个（`bin/` 目录下）**，
+不能用 Xray 官方 release 里的：官方包只有 `geosite:cn`、`geosite:google` 这些，
+没有 `geosite:gfw` / `geosite:greatfire`，xray 启动会直接报
+`illegal domain rule: geosite:gfw` 然后退出。
+
+系统级改成走本机：
+
+```bash
+# /etc/environment（http_proxy / https_proxy / no_proxy，内网段放 no_proxy）
+# /etc/apt/apt.conf.d/95proxy
+# /etc/systemd/system/docker.service.d/http-proxy.conf  → HTTP(S)_PROXY=http://127.0.0.1:10808
+sudo systemctl daemon-reload && sudo systemctl restart docker
+```
+
+**Docker 只 `reload` 不生效**：Go 把 `HTTP_PROXY` 缓存了，必须先重启
+`docker.service` 才会用新值（容器有 restart 策略，会自己回来）。
+
+小马自己的上网工具（`web_search` / `web_fetch`）走的是 `config.WEB_PROXY`，
+**填在 `.env` 里，别写进 compose 的 `environment:`**——那里会盖掉 `env_file`，
+而且部署脚本一改 compose 就没了：
+
+```bash
+WEB_PROXY=http://host.docker.internal:10808   # 容器 → 宿主机 xray
+```
+
+验收（三条都要过）：
+
+```bash
+curl -sI -m 10 https://registry-1.docker.io/v2/ | head -n 1   # 401 = 通了
+docker pull hello-world
+docker exec -i xiaoma python -c "from adapters.web import fetch; print(fetch('https://duckduckgo.com', 40))"
+```
+
+注意：`/opt/xray/config.json` 只是 v2rayN 配置的**静态快照**，换节点/换订阅要重新拷；
+它监听 `0.0.0.0:10808`（和 v2rayN 一样，局域网里谁都能当代理用），只想本机用就把
+`inbounds[].listen` 改成 `127.0.0.1`，此时容器改走 `172.17.0.1` 之类的桥地址或
+`host-gateway`。
