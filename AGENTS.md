@@ -606,4 +606,8 @@ python -m py_compile *.py tests/*.py
 git diff --check
 ```
 
+服务器部署用 `sudo /opt/opencode-my/scripts/deploy_server.sh`（服务器自己拉 GitHub →
+重建镜像 → 重建容器 → 健康检查，失败自动回滚）。别再手搓 `git bundle` + `scp`：
+漏掉 `--force-recreate` 的话镜像重建了容器还是旧的，跑的是老代码。
+
 只在被明确要求时创建 commit。
