@@ -51,9 +51,12 @@ die() { log "❌ $*"; exit 1; }
 [ -d "$REPO/.git" ] || die "不是 git 仓库：$REPO"
 cd "$REPO" || die "进不去 $REPO"
 
-# 同一个仓库同时只允许一个部署在跑
-exec 9>"$REPO/.deploy.lock" || die "建不了锁文件"
-flock -n 9 || die "已经有一个部署在跑（.deploy.lock 被占用）"
+# 同一个仓库同时只允许一个部署在跑。锁放在仓库外面：
+# 放仓库里会出现在 git status 里，把「工作区必须干净」这条自己判成脏。
+LOCK=${DEPLOY_LOCK:-/run/lock/xiaoma-deploy.lock}
+mkdir -p "$(dirname "$LOCK")" 2>/dev/null || LOCK=/tmp/xiaoma-deploy.lock
+exec 9>"$LOCK" || die "建不了锁文件 $LOCK"
+flock -n 9 || die "已经有一个部署在跑（$LOCK 被占用）"
 
 # git 走 xray：服务器直连 GitHub 不通，代理可用就用，不可用就退回直连
 git_net=()
