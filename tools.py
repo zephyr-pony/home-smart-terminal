@@ -1204,6 +1204,89 @@ def get_capability_tools():
     ]
 
 
+def get_skill_tools(skills):
+    """技能包：先看清单，需要时加载完整步骤（D89）。
+
+    技能只讲流程，不给权限：脚本照样用 run_python 跑（降权通道，D86），
+    上网还是 web_search / web_fetch。没装技能就不注册这两个工具。
+    """
+    from agent import skills as skills_mod
+
+    def do_list(**kwargs):
+        return skills_mod.format_list(skills)
+
+    def do_load(**kwargs):
+        name = str(kwargs.get("name") or "").strip()
+        if not name:
+            return "要加载哪个技能？先调 skill_list 看名字。"
+        return skills_mod.load(skills, name)
+
+    return [
+        _build(
+            name="skill_list",
+            description=(
+                "列出装好的技能（名字 + 一句话）。"
+                "技能是本机预置的工作流程说明，专门应付「整理表格」「汇总几处资料」"
+                "这类多步活；不确定有没有对应技能时先看一眼。这只是清单，不含步骤。"
+            ),
+            properties={},
+            required=[],
+            execute=do_list,
+        ),
+        _build(
+            name="skill_load",
+            description=(
+                "加载一个技能的完整步骤（正文 + 目录里的脚本清单）。"
+                "技能不给你额外权限：要跑代码仍然用 run_python，要上网仍然用 web_search。"
+                "名字从 skill_list 里取；同一轮里加载一次就够，别重复加载。"
+            ),
+            properties={
+                "name": {"type": "string", "description": "技能名，和 skill_list 里的写法一致"},
+            },
+            required=["name"],
+            execute=do_load,
+        ),
+    ]
+
+
+def get_agent_tool(runner):
+    """把活交给只读子任务（D89）。runner(task, purpose) → 结论文字。
+
+    只给网页和 CLI：子任务要几十秒，语音里这个空档用户听不到任何声音。
+    """
+    def do_spawn(**kwargs):
+        task = str(kwargs.get("task") or "").strip()
+        if not task:
+            return "错误：要交给子任务的事情没写清楚。"
+        purpose = str(kwargs.get("purpose") or "research").strip().lower()
+        if purpose not in ("research", "compute"):
+            purpose = "research"
+        return runner(task, purpose)
+
+    return _build(
+        name="spawn_agent",
+        description=(
+            "把「要多步查证、但不需要写任何东西」的活交给一个只读子助手，它跑完只回结论。"
+            "适合：要翻好几处资料才能拼出答案、要跑代码算或整理、要查好几条记忆/任务。"
+            "不适合：一句话能答的、一条查询就够的、任何写入（它不能记东西、加任务、改事实、"
+            "打印、控制设备）。它会慢几十秒，用户等着听结果时别用。"
+        ),
+        properties={
+            "task": {
+                "type": "string",
+                "description": "要它查清楚的问题：目标、判断标准、要它带回什么",
+            },
+            "purpose": {
+                "type": "string",
+                "enum": ["research", "compute"],
+                "description": "research=查资料；compute=跑代码算或整理",
+            },
+        },
+        required=["task"],
+        execute=do_spawn,
+    )
+
+
 def get_thinking_tool():
     """让模型自己决定要不要开思考（D63）。默认关，省下语音场景的几秒。
 
@@ -1387,8 +1470,13 @@ def _lunar_month_day(month, day, leap=False):
 
 
 def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
-                  tasks=None, facts=None, home=None, weather=None):
-    """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备 + 天气）。"""
+                  tasks=None, facts=None, home=None, weather=None,
+                  skills=None, subagent_runner=None):
+    """聚合全部工具（memory + 日期 + items + 实体 + 任务 + 事实 + 设备 + 天气）。
+
+    skills 是装好的技能（D89），subagent_runner 是只读子任务的入口；两者都由
+    Assistant 传入，没传就不注册——没技能时别在模型眼前摆两个空工具。
+    """
     tools = get_memory_tools(memory, proposals) + [
         get_time_tool(), get_calc_tool(),
     ]
@@ -1416,4 +1504,8 @@ def get_all_tools(memory: Memory, items=None, proposals=None, entities=None,
     tools += get_file_tools()
     tools += get_capability_tools()
     tools.append(get_thinking_tool())
+    if skills:
+        tools += get_skill_tools(skills)
+    if subagent_runner is not None:
+        tools.append(get_agent_tool(subagent_runner))
     return tools

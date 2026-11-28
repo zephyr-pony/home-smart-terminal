@@ -63,10 +63,12 @@ class FakeAssistant:
         self.seen_device_camera = None
 
     def process_text(self, text, client_id, on_delta=None, device_camera=False,
-                     task_id=None, attachment=None, extra_tools=None):
+                     task_id=None, attachment=None, extra_tools=None,
+                     allow_subagent=False):
         self.seen_device_camera = device_camera
         self.seen_extra_tools = extra_tools
         self.seen_attachment = attachment
+        self.seen_allow_subagent = allow_subagent
         if on_delta is not None:
             on_delta(text)
         return {
@@ -1584,6 +1586,23 @@ def test_chat_passes_bound_task(monkeypatch):
 
     assert response.status_code == 200
     assert seen["task_id"] == 7
+
+
+def test_chat_allows_subagent_voice_does_not(monkeypatch):
+    """D89：只有网页文字和 CLI 能开子任务，语音入口不给。"""
+    fake = FakeAssistant()
+    monkeypatch.setattr(server, "API_TOKEN", "secret")
+    monkeypatch.setattr(server, "assistant", fake)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/chat",
+        headers={"Authorization": "Bearer secret"},
+        json={"text": "帮我查三家店的营业时间"},
+    )
+
+    assert response.status_code == 200
+    assert fake.seen_allow_subagent is True
 
 
 def test_voice_passes_bound_task(monkeypatch, tmp_path):

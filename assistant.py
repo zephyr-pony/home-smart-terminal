@@ -55,6 +55,8 @@ from agent import wording
 from agent import shellguard
 from agent import untrusted
 from agent.propose import ProposalService
+from agent import skills as skills_mod
+from agent import subagent as subagent_mod
 from agent import thinking
 from adapters.home import build_home
 from adapters.printer import build_printer, kind_of, pdf_page_count
@@ -225,6 +227,11 @@ class Assistant:
         self._printer_checking = False
         self._printer_tool = get_printer_tool()
         # 工具注册表（memory + 日期 + items + 实体）
+        # 技能包（D89）：仓库 skills/ 是内置的，空间的 skills/ 是用户装的，同名以用户为准
+        self.skills = skills_mod.discover([
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills"),
+            os.path.join(self.space["dir"], "skills"),
+        ])
         self.tools = get_all_tools(
             self.memory,
             self.items,
@@ -234,6 +241,8 @@ class Assistant:
             facts=self.facts,
             home=self.home,
             weather=self.weather,
+            skills=self.skills,
+            subagent_runner=self._run_subagent,
         )
         if self.printer_ready:
             self.tools.append(self._printer_tool)
@@ -268,7 +277,8 @@ class Assistant:
     # ---------- 对外接口 ----------
 
     def process_text(self, text, client_id=None, on_delta=None, device_camera=False,
-                     task_id=None, attachment=None, extra_tools=None, speaker=None):
+                     task_id=None, attachment=None, extra_tools=None, speaker=None,
+                     allow_subagent=False):
         """处理用户文本，并记一条「这轮有没有开思考」（D63）。
 
         记录只是一次本地追加，不联网、不调模型；写失败也不影响回答。
@@ -276,13 +286,15 @@ class Assistant:
         调用方执行——小智服务端自己的插件（如 `handle_exit_intent`）走这条。
         speaker 是小智声纹认出来的人（`{"speaker_id", "name"}`），只用来说话时称呼，
         不参与鉴权、也不改任何写操作流程（D88）。
+        allow_subagent 只由网页文字和 CLI 传 True（D89）：子任务要几十秒，
+        语音入口等不起，也不该让设备那头静默半天。
         """
         started = time.time()
         try:
             result = self._process_text_inner(
                 text, client_id, on_delta=on_delta, device_camera=device_camera,
                 task_id=task_id, attachment=attachment, extra_tools=extra_tools,
-                speaker=speaker,
+                speaker=speaker, allow_subagent=allow_subagent,
             )
         finally:
             state = getattr(self._turn, "state", None)
@@ -316,7 +328,8 @@ class Assistant:
             print("⚠️ 对话记录写入失败：%s" % exc)
 
     def _process_text_inner(self, text, client_id=None, on_delta=None, device_camera=False,
-                            task_id=None, attachment=None, extra_tools=None, speaker=None):
+                            task_id=None, attachment=None, extra_tools=None, speaker=None,
+                            allow_subagent=False):
         """处理用户文本输入，返回结构化结果 dict。
 
         Args:
@@ -414,7 +427,7 @@ class Assistant:
             rtype, answer, extras = self._agent_loop(
                 text, client_id, on_delta, device_camera=device_camera,
                 task_id=task_id, attachment=attachment, extra_tools=extra_tools,
-                speaker=speaker,
+                speaker=speaker, allow_subagent=allow_subagent,
             )
         except ConfirmationRequired as exc:
             self._record_turn(client_id, text, exc.reply)
@@ -1065,7 +1078,8 @@ class Assistant:
         return prompt
 
     def _agent_loop(self, user_text, client_id=None, on_delta=None, device_camera=False,
-                    task_id=None, attachment=None, extra_tools=None, speaker=None):
+                    task_id=None, attachment=None, extra_tools=None, speaker=None,
+                    allow_subagent=False):
         """手写 agent loop：LLM 决策 → 执行工具 → 结果回传 → 再决策，最多 N 轮。
 
         client_id 用于取该客户端的最近对话，作为多轮上下文注入 messages。
@@ -1134,11 +1148,14 @@ class Assistant:
         # 没有摄像头的入口不给这个 schema：模型看不到就不会说「我看到了」；
         # file_read 只在有附件时露出来；run_python 任何时候都能生成文件，
         # 所以 printer_print 只要有打印机就给——没文件时调用会被拦下并说明原因。
+        # spawn_agent 同理：语音入口（设备 / 网页录音 / MCP）不给，它要几十秒，
+        # 那段时间用户听不到任何声音（D89）。
         show_printer = self.printer_ready
         file_tools = {"file_read", "run_python"}
         schemas = [
             t["schema"] for t in self.tools
             if (device_camera or t["schema"]["function"]["name"] != "camera_look")
+            and (allow_subagent or t["schema"]["function"]["name"] != "spawn_agent")
             and (t["schema"]["function"]["name"] != "printer_print" or show_printer)
             and (
                 t["schema"]["function"]["name"] not in file_tools
@@ -1564,6 +1581,14 @@ class Assistant:
         if not args["predicate"] or not args["value"]:
             return args, "要记的是哪方面、什么内容？我没太听明白。"
         return args, None
+
+    def _run_subagent(self, task, purpose="research"):
+        """开一个只读子任务（D89）。
+
+        只给网页和 CLI：子任务要几十秒，语音里这段空档用户是听不到的
+        （`allow_subagent` 由入口传进来，见 _agent_loop 的 schema 过滤）。
+        """
+        return subagent_mod.run(task, self.llm, self.tools, purpose=purpose)
 
     def _run_tool_by_name(self, name, args):
         execute = self._tools_by_name.get(name)

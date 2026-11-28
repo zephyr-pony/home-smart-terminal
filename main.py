@@ -89,7 +89,9 @@ def run_wake_loop(assistant, stt, tts):
                 return
 
             print(f"👤 {command}")
-            result = assistant.process_text(command, client_id="cli")
+            result = assistant.process_text(
+                command, client_id="cli", allow_subagent=True,
+            )
             print_result(result)
             tts.speak(result.get("reply", ""))
         except KeyboardInterrupt:
@@ -166,7 +168,9 @@ def main():
             else:
                 # --- 文字输入 ---
                 text = user_input
-                result = assistant.process_text(text, client_id="cli")
+                result = assistant.process_text(
+                    text, client_id="cli", allow_subagent=True,
+                )
                 print_result(result)
                 tts.speak(result.get("reply", ""))
 

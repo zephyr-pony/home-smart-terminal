@@ -2609,6 +2609,9 @@ async def api_chat(req: ChatRequest, space: Space = Depends(current_space),
         result = await asyncio.to_thread(
             space.assistant.process_text, req.text, req.client_id,
             task_id=req.task_id, attachment=attachment,
+            # 网页文字聊天是唯一能和子任务一起「等」的入口（D89）：网页录音和
+            # 设备语音都不给，那几十秒里用户听不到任何声音。
+            allow_subagent=True,
         )
     except Exception as e:
         traceback.print_exc()

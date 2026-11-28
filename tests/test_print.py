@@ -732,7 +732,8 @@ class UploadAssistant:
                 "state": "unknown", "jobs": None,
                 "error": "连不上 CUPS（192.168.1.15:631）"}
 
-    def process_text(self, text, client_id=None, task_id=None, attachment=None):
+    def process_text(self, text, client_id=None, task_id=None, attachment=None,
+                     allow_subagent=False):
         self.attachments.append(attachment)
         return {"type": "chat", "reply": "好"}
 

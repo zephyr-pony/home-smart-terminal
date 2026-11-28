@@ -30,6 +30,8 @@
 | `agent/shellguard.py` | 危险命令识别：`rm -rf`/关机/`curl\|sh`/动库先复述确认（D86） |
 | `agent/distill.py` | 记忆蒸馏：同主题合并、只重算 summary，深夜/超阈值后台跑（D60） |
 | `agent/profile_miner.py` | 夜间画像提炼：读昨天的对话，产出待确认的习惯候选（D84） |
+| `agent/skills.py` | 技能包：`skills/<名字>/SKILL.md` 的发现与加载，只教流程不新增权限（D89） |
+| `agent/subagent.py` | 只读子 agent：多步查证、只回结论，不能写库（D89） |
 | `adapters/mcp_endpoint.py` | MCP 接入点：小智出站连接，暴露 `ask_xiaoma`，读 `_meta` 声纹身份 |
 | `adapters/printer.py` | Linux CUPS 打印队列：PDF/图片/文本 + LibreOffice 转 Office（D61） |
 | `adapters/documents.py` | 读附件内容（表格/PDF/Word/文本）+ 临时目录跑模型写的 Python（D62） |
@@ -277,6 +279,28 @@ pytest tests -q
   （`Assistant.printer_status`），打印机断电时 `lpstat` 会等到超时，轮询不能每次去碰它。
   `Printer.status()` 不抛异常，原因放 `error`；上传接口的 503 也带上这个原因，
   别只说「没有可用的打印机」。网页是「先看能不能打，再传文件」，不是传完才报错。
+
+### 技能与子任务（D89）
+
+参照 OpenClaw 的经验，但只取「提示词」那一半，权限模型一个字不动。
+
+- **技能只教流程，不新增权限**。`skills/<名字>/SKILL.md` 是给模型看的工作说明，
+  脚本只能通过 `run_python` / `run_shell`（D86 的降权通道）执行，**不许 import 进
+  主进程**——那等于把「LLM 不得直接写正式表」拆了。技能里也不能写「必须这样说」
+  的话术，不能覆盖 `guard` / `verify` / `confirm`。
+- 两个工具够用：`skill_list`（名字 + 一句话）和 `skill_load`（正文 + 脚本清单，
+  不含脚本源码）。没装技能时**不注册**这两个工具，别在模型眼前摆空工具。
+- 仓库 `skills/` 是内置的，`<空间目录>/skills/` 是用户装的，同名以用户为准
+  （`agent/skills.py` 的 `discover` 顺序即优先级）。
+- **子 agent 只读**（`agent/subagent.py`）：白名单工具（fail-closed，新增工具默认
+  不进子任务），不带用户会话历史，最多 8 步 / 90 秒，只回结论。它**不能写库、
+  不能打印、不能控制设备、不能再开子 agent**——子任务里没有用户，确认流程走不了，
+  这是 D59/D61 的护栏能成立的前提，不是性能取舍。
+- **入口只有网页文字和 CLI**（`process_text(..., allow_subagent=True)`，由
+  `/api/chat` 与 `main.py` 传）。设备语音、`/api/voice`、MCP 一律不给：子任务要
+  几十秒，语音里那段时间用户听不到任何声音。新增入口默认不给，别顺手打开。
+- 子任务的结论就是普通工具返回，自动进 `executed_results`，所以日期/时刻/长数字
+  的出处校验照旧生效——不要为它单开一条「免检」通道。
 
 ### 通用能力，不按需求加工具（D62）
 
