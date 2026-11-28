@@ -717,9 +717,11 @@ async def _broadcast(event, subscribers=None):
                 traceback.print_exc()
 
 
-async def _send_push(text, event):
+async def _send_push(text, event, title=None):
     """把一条提醒推给所有有效订阅；失败按 404/410 或失败次数清理。
 
+    title 为空时用「小马提醒」——提醒走这个标题；本机自检/备份失败这类
+    普通通知由 /api/push/notify 自己给标题（D90）。
     返回 (sent, removed, failed)，failed 只用于 /api/push/test 的排障提示。
     """
     if push_sender is None or push_store is None or not push_sender.available:
@@ -732,7 +734,7 @@ async def _send_push(text, event):
     task = event.get("task") or {}
     item = event.get("item") or {}
     payload = {
-        "title": "小马提醒",
+        "title": title or "小马提醒",
         "body": text,
         "url": "/",
         "tag": event.get("tag") or "xiaoma-reminder",
@@ -1266,6 +1268,13 @@ class PushSubscribeRequest(BaseModel):
 
 class PushEndpointRequest(BaseModel):
     endpoint: str = Field(min_length=10, max_length=2000)
+
+
+class PushNotifyRequest(BaseModel):
+    """普通通知（不是提醒）：标题可省，正文必填。"""
+    body: str = Field(default="", max_length=500)
+    title: str = Field(default="", max_length=40)
+    tag: str = Field(default="", max_length=40)
 
 
 class AskRequest(BaseModel):
@@ -2315,6 +2324,25 @@ async def api_push_unsubscribe(req: PushEndpointRequest, _auth=Depends(require_a
     removed = await asyncio.to_thread(push_store.remove, req.endpoint)
     total = await asyncio.to_thread(push_store.count_active)
     return {"ok": True, "removed": removed, "subscriptions": total}
+
+
+@app.post("/api/push/notify")
+async def api_push_notify(req: PushNotifyRequest, _auth=Depends(require_api_token)):
+    """推一条普通通知（不是提醒）：本机自检、备份失败这类要让人知道的事。
+
+    和 /api/push/test 的区别：文案由调用方给，标题也是；不带任务绑定，
+    点了只打开首页。D90 的 update 脚本就靠它报错。
+    """
+    body = (req.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="body 不能为空")
+    if push_sender is None or not push_sender.available:
+        raise HTTPException(status_code=503, detail="服务端未配置推送密钥")
+    title = (req.title or "小马").strip()[:40] or "小马"
+    sent, removed, failed = await _send_push(
+        body[:500], {"tag": (req.tag or "xiaoma-alert")[:40]}, title=title,
+    )
+    return {"ok": sent > 0, "sent": sent, "removed": removed, "failed": failed}
 
 
 @app.post("/api/push/test")

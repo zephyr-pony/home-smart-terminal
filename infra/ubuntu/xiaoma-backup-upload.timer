@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily upload of xiaoma backups to OneDrive
+
+[Timer]
+# 03:32 的备份之后再跑，留足出包时间
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

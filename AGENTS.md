@@ -159,6 +159,9 @@ pytest tests -q
   **离开本机的那一份必须加密**：`--encrypt`，口令只走 `BACKUP_PASSPHRASE` 或
   `--passphrase-file`（别写进命令行历史），产物是 `.zip.enc`，明文 zip 加密后立即删除。
   备份不能只留在同一块盘上——单盘部署时盘坏了原数据和备份一起没。
+  服务器上的异地那份走 rclone：`infra/ubuntu/xiaoma-backup-upload.timer` 每天 04:10
+  把 `backups/*.zip.enc` 传到 `onedrive:xiaoma-backup/`（用户级 timer + linger，
+  只上传加密包、只增不删），细节见 `docs/backup.md`。
 - 设备联调探针在 `scripts/xiaozhi_probe.py`（合成一句话 → 走小智协议 → 打印识别与回答），搭建步骤见 `docs/xiaozhi-setup.md`。
 - 摄像头整条链用 `scripts/fake_camera_device.py --image 图.jpg`：假设备报工具、收调用、把图 POST 到
   `vision_explain`，验证 `tool_calls` 名字、设备驱动和播报。它先试 LAN 地址再退 `127.0.0.1`，

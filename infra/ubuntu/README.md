@@ -8,7 +8,12 @@ infra/ubuntu/
 ├─ README.md                # 迁移日执行顺序（先读这个）
 ├─ xiaoma-compose.service   # 开机把 compose 项目拉起来（restart 策略之外的第二道）
 ├─ xiaoma-backup.service    # 每天备份小马数据卷（加密）
-└─ xiaoma-backup.timer      # 触发上面那个 service
+├─ xiaoma-backup.timer      # 触发上面那个 service
+├─ xiaoma-backup-upload.sh  # 把加密包传到 OneDrive（只增不删）
+├─ xiaoma-backup-upload.service
+├─ xiaoma-backup-upload.timer  # 每天 04:10 触发上传
+├─ xiaoma-alert.sh          # 出问题往手机推一条（走小马 Web Push）
+└─ deploy_server.sh 在 ../scripts/  # 服务器自己拉 GitHub + 重建 + 回滚
 ```
 
 执行清单在 `docs/server-migration.local.md`（本机笔记，不入库）；备份的口令、
@@ -181,6 +186,19 @@ systemctl list-timers xiaoma-backup.timer
 
 口令只在这一个文件里（`600`，root 可读），**不要**写进 `.env`、不要进仓库、
 不要和 `backups/` 放同一个目录。丢了备份就打不开。
+
+### 5.1 异地备份（OneDrive）
+
+备份只留在服务器上，跟没有备份差不多（单盘）。服务器已经接好 rclone，上传是**用户级**
+的，不需要 sudo：
+
+- 03:32 `xiaoma-backup.service` 出加密包 → 04:10 `xiaoma-backup-upload.timer` 把
+  `backups/*.zip.enc` 传到 `onedrive:xiaoma-backup/`。只增不删。
+- 重装/换机时：rclone 装到 `~/.local/bin`，`rclone authorize onedrive` 走一次浏览器授权，
+  把 `infra/ubuntu/xiaoma-backup-upload.sh` 拷到 `~/.local/bin/`、
+  `infra/ubuntu/xiaoma-backup-upload.{service,timer}` 拷进 `~/.config/systemd/user/`，
+  再 `loginctl enable-linger "$USER"`、`systemctl --user enable --now xiaoma-backup-upload.timer`。
+- 位置、日志、清理云端旧包的细节见 `docs/backup.md` 的「异地那一份」。
 
 ## 6. 端口与暴露面
 

@@ -143,15 +143,41 @@ journalctl -u xiaoma-backup.service -n 50      # 看最近一次结果
 
 `--keep 14` 保留两周；内存/磁盘都吃得下，出问题时能往回多看几天。
 
-## 异地那一份
+异地那一份由另一个 user timer 负责（`xiaoma-backup-upload.timer`），见下节。
 
-脚本**不碰网络**（备份里有密钥，自动上传等于扩大暴露面）。目前是手动：
+## 异地那一份（OneDrive，2026-11-28 起）
 
-- 每月一次把最新的 `backups/xiaoma-*.zip.enc` 拷到手机、网盘或另一台机器
-  （加密包可以放公共网盘；**别把口令和它放在一起**）
-- 或者等迁移到家庭服务器后，插一块移动硬盘每周 rsync 一次
+`backup.py` / `backup_docker.py` 仍然**不碰网络**：制包和上传分成两步，上传只认
+`.zip.enc`，明文包永不出机器。服务器上已经装好 rclone（用户级，不需要 sudo）：
+
+| 东西 | 位置 |
+|---|---|
+| rclone | `~/.local/bin/rclone` |
+| 授权配置 | `~/.config/rclone/rclone.conf`（`600`） |
+| 上传脚本 | `~/.local/bin/xiaoma-backup-upload.sh`（模板在 `infra/ubuntu/`） |
+| 定时器 | `~/.config/systemd/user/xiaoma-backup-upload.timer` |
+| 日志 | `~/.local/state/xiaoma-backup-upload.log` |
+| 云端目录 | `onedrive:xiaoma-backup/` |
+
+- 每天 **04:10**（03:32 出包之后）跑一次，`RandomizedDelaySec=15m` 错开整点。
+  user timer 靠 `loginctl enable-linger "$USER"`，没人登录也会触发。
+- 手动跑：`systemctl --user start xiaoma-backup-upload.service`；看结果：
+  `systemctl --user show xiaoma-backup-upload.service -p Result` 和上面那个日志。
+- **只 `copy` 不 `sync`**：云端是只增的归档，本地 `--keep 14` 删掉的旧包在云上还在。
+  要清旧包自己来：`rclone delete onedrive:xiaoma-backup --min-age 180d`。
+- 恢复时先把包拉回来：`~/.local/bin/rclone copy onedrive:xiaoma-backup ./backups`，再走上面的
+  `--restore` 流程。
+- 授权是 OAuth，token 就在 `rclone.conf` 里（`600`）。换机器/重装要重走一次
+  `rclone authorize onedrive`：服务器没有浏览器，用 SSH 把 53682 端口转出来
+  （`ssh -L 53682:127.0.0.1:53682 …`），浏览器授权完 token 直接写回服务器。
+- 口令仍只在 `/etc/xiaoma/backup.env`，**不要**和 OneDrive 放一起：云端只有加密包，
+  口令丢了等于没备份。
+- **上传失败会往手机推一条**：脚本先看 rclone 退出码，非 0 就调 `xiaoma-alert.sh`
+  （`POST /api/push/notify`，走小马自己的 Web Push）。token 过期、OneDrive 改了密码、
+  网络抽风都会触发，不用天天翻 journal。告警本身失败不影响退出码——systemd 还是能
+  看到这次失败。要临时关掉：`XIAOMA_ALERT_DISABLE=1`。
 - 单盘部署（Gen10 只有一块 SSD）尤其要注意：**备份不能只留在同一台机器上**，
-  否则盘坏了两份一起没
+  否则盘坏了两份一起没。
 
 ## 演练记录（2026-11-23）
 

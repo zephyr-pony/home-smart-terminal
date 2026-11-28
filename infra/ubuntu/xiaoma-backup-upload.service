@@ -1,0 +1,8 @@
+[Unit]
+Description=Upload encrypted xiaoma backups to OneDrive
+
+[Service]
+Type=oneshot
+# 模板在 infra/ubuntu/，实际按 README 5.1 拷到 ~/.local/bin/；
+# 走 bash 显式执行，不依赖 checkout 出来的可执行位
+ExecStart=/bin/bash %h/.local/bin/xiaoma-backup-upload.sh

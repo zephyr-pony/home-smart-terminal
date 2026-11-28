@@ -608,6 +608,44 @@ def test_push_test_endpoint_sends(monkeypatch, tmp_path):
     assert "推送测试" in sender.sent[0][1]["body"]
 
 
+def test_push_notify_sends_custom_title_and_body(monkeypatch, tmp_path):
+    """普通通知（备份失败这类）：标题和正文都由调用方给，不带任务绑定。"""
+    sender = FakePushSender()
+    store = make_push_env(monkeypatch, tmp_path, sender)
+    store.save("https://push.example.com/a", "k", "a")
+    client = TestClient(server.app)
+
+    body = client.post(
+        "/api/push/notify",
+        headers={"Authorization": "Bearer secret"},
+        json={"title": "备份上传失败", "body": "OneDrive 上传没成功，看日志"},
+    ).json()
+
+    assert body["ok"] is True and body["sent"] == 1
+    payload = sender.sent[0][1]
+    assert payload["title"] == "备份上传失败"
+    assert "OneDrive" in payload["body"]
+    assert payload["kind"] == ""      # 不是提醒，点了只打开首页
+    assert payload["task_id"] == 0
+
+
+def test_push_notify_rejects_empty_body(monkeypatch, tmp_path):
+    make_push_env(monkeypatch, tmp_path, FakePushSender())
+    client = TestClient(server.app)
+    response = client.post(
+        "/api/push/notify",
+        headers={"Authorization": "Bearer secret"},
+        json={"title": "x", "body": "   "},
+    )
+    assert response.status_code == 400
+
+
+def test_push_notify_requires_token(monkeypatch, tmp_path):
+    make_push_env(monkeypatch, tmp_path, FakePushSender())
+    client = TestClient(server.app)
+    assert client.post("/api/push/notify", json={"body": "x"}).status_code == 401
+
+
 def test_push_removes_gone_subscription(monkeypatch, tmp_path):
     """410 的订阅在推送后被删除。"""
     import asyncio
