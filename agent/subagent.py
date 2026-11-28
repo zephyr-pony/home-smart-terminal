@@ -29,8 +29,8 @@ READONLY_TOOLS = frozenset({
     "file_read", "run_python",
 })
 
-MAX_STEPS = 8
-DEADLINE_SECONDS = 90
+MAX_STEPS = 6
+DEADLINE_SECONDS = 75
 MAX_TOKENS = 1024
 MAX_ANSWER_CHARS = 1500
 
@@ -79,13 +79,20 @@ def run(task, llm, tools, purpose="research"):
     ]
     deadline = time.monotonic() + DEADLINE_SECONDS
     used = []
-    for _step in range(MAX_STEPS):
+    seen_calls = {}
+    for step in range(MAX_STEPS):
         if time.monotonic() >= deadline:
             return "子任务超时（%d 秒没查完）。已经用过的工具：%s。" % (
                 DEADLINE_SECONDS, "、".join(sorted(set(used))) or "无",
             )
+        # 最后一步把工具收走：模型必须用已经查到的东西作答。
+        # 否则它会一直查到步数用完（实测「查供暖时间」这类问题会连查 8 轮），
+        # 用户等了 60 多秒，最后得到一句「还没查完」——那等于白等。
+        last_step = step == MAX_STEPS - 1
         try:
-            data = llm.chat_with_tools(messages, schemas, max_tokens=MAX_TOKENS)
+            data = llm.chat_with_tools(
+                messages, [] if last_step else schemas, max_tokens=MAX_TOKENS,
+            )
         except Exception as exc:  # 子任务失败不该把主会话打挂
             return "子任务失败（模型调用出错）：%s" % exc
         try:
@@ -93,7 +100,7 @@ def run(task, llm, tools, purpose="research"):
         except (KeyError, IndexError, TypeError):
             return "子任务失败（模型返回格式不对）。"
         tool_calls = message.get("tool_calls") or []
-        if tool_calls:
+        if tool_calls and not last_step:
             messages.append(message)
             for call in tool_calls:
                 fn = call.get("function") or {}
@@ -103,14 +110,26 @@ def run(task, llm, tools, purpose="research"):
                 except ValueError:
                     args = {}
                 execute = by_name.get(name)
+                key = (name, json.dumps(args or {}, ensure_ascii=False, sort_keys=True))
                 if execute is None:
                     result = "错误：子任务不能调用 %s，只能用只读工具。" % (name or "这个工具")
+                elif seen_calls.get(key):
+                    # 同一组参数反复查：搜索引擎不会因为是第二次就换答案，
+                    # 只会把步数和时间烧光（实测「查供暖时间」连查 8 轮同一批结果）。
+                    seen_calls[key] += 1
+                    result = ("这一组参数刚查过（第 %d 次），结果就是上一条，不会变。"
+                              "换个说法再查，或者直接用已经查到的内容给结论。"
+                              % seen_calls[key])
                 else:
                     try:
                         result = execute(**(args or {}))
                     except Exception as exc:
                         result = "工具执行出错：%s" % exc
+                    seen_calls[key] = 1
                     used.append(name)
+                print("🤖 子任务 %s -> %s" % (
+                    name or "?", str(result).replace("\n", " ")[:120],
+                ))
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call.get("id", ""),

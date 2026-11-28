@@ -97,12 +97,42 @@ def test_no_readonly_tools_returns_error():
     assert "没有可用的只读工具" in text
 
 
-def test_max_steps_exhausted():
+def test_last_step_forces_an_answer():
+    """最后一步不给工具，模型必须用已查到的内容作答，而不是再查一轮。"""
     executed = []
-    calls = [_tool_call("web_search", {"query": "q"}) for _ in range(subagent.MAX_STEPS)]
+    calls = [_tool_call("web_search", {"query": "q%d" % i})
+             for i in range(subagent.MAX_STEPS - 1)]
+    calls.append(_stop("查到几条，都不确定具体日期。"))
     llm = ScriptedLLM(calls)
     text = subagent.run("一直查", llm, _tools(executed))
-    assert "还没结论" in text
+    assert "都不确定" in text
+    # 最后一次调用时工具已经被收走
+    assert llm.tools_seen[-1] == []
+    # 前面每一步都真的执行了（参数不同，不会被去重挡住）
+    assert len(executed) == subagent.MAX_STEPS - 1
+
+
+def test_tool_calls_when_tools_are_gone_is_not_executed():
+    """模型在最后一步还硬要调工具：不执行，如实说没结论。"""
+    executed = []
+    calls = [_tool_call("web_search", {"query": "q%d" % i})
+             for i in range(subagent.MAX_STEPS)]
+    text = subagent.run("一直查", ScriptedLLM(calls), _tools(executed))
+    assert "没有给出结论" in text
+    assert len(executed) == subagent.MAX_STEPS - 1
+
+
+def test_same_call_twice_is_not_executed_twice():
+    """同一组参数重复查不会换答案，只会烧掉步数——第二次起直接告诉模型别重复。"""
+    executed = []
+    llm = ScriptedLLM([
+        _tool_call("web_search", {"query": "一样的"}),
+        _tool_call("web_search", {"query": "一样的"}),
+        _stop("查完了。"),
+    ])
+    text = subagent.run("查一下", llm, _tools(executed))
+    assert len(executed) == 1
+    assert "查完了" in text
 
 
 def test_llm_failure_does_not_raise():
