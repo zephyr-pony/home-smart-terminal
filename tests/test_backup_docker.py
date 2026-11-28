@@ -21,6 +21,34 @@ _spec.loader.exec_module(bd)
 backup_mod = bd.backup_mod
 
 
+def test_snapshot_bypasses_the_image_entrypoint(monkeypatch):
+    """D86 之后镜像的 entrypoint 会 chown /data，而快照是 `:ro` 挂进去的。
+
+    不绕开 entrypoint，`backup_docker.py` 直接报
+    「chown: changing ownership of '/data': Read-only file system」——备份静默失效。
+    """
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(bd, "_run", fake_run)
+    with pytest.raises(RuntimeError):
+        bd.snapshot("some-volume")
+    cmd = calls[0]
+    assert "--entrypoint" in cmd
+    assert cmd[cmd.index("--entrypoint") + 1] == "sh"
+    assert "some-volume:/data:ro" in cmd
+
+
+def test_both_docker_run_calls_use_an_explicit_entrypoint():
+    """快照和恢复都要显式 --entrypoint，少一个就是权限错。"""
+    with open(os.path.join(ROOT, "scripts", "backup_docker.py"), encoding="utf-8") as fh:
+        source = fh.read()
+    assert source.count('"--entrypoint", "sh"') == 2
+
+
 def test_pick_volume_auto_when_single():
     volumes = ["abc", "opencode-my_xiaoma-data", "xiaoma_other"]
     assert bd.pick_volume(volumes=volumes) == "opencode-my_xiaoma-data"

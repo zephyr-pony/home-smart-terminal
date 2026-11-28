@@ -112,10 +112,13 @@ def snapshot(volume, image=DEFAULT_IMAGE, all_data=False, timeout=300):
     """把卷快照 tar 出来解到临时目录，返回目录（调用方负责删）。"""
     script = _snapshot_py(all_data)
     shell = "python - <<'PY'\n%s\nPY\ntar -cf - -C %s/out ." % (script, WORK)
+    # `--entrypoint sh`：D86 之后镜像的 entrypoint 会对 /data 做 chown 和建目录，
+    # 而这里按设计是 `:ro` 挂进来做只读快照——不绕开 entrypoint 就会
+    # 「chown: changing ownership of '/data': Read-only file system」，备份直接失败
     data = _run([
-        "docker", "run", "--rm",
+        "docker", "run", "--rm", "--entrypoint", "sh",
         "-v", "%s:/data:ro" % volume,
-        image, "sh", "-c", shell,
+        image, "-c", shell,
     ], binary=True, timeout=timeout)
     if not data:
         raise RuntimeError("快照是空的：%s" % volume)
