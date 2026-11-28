@@ -311,10 +311,16 @@ sudo /opt/opencode-my/scripts/deploy_server.sh --check  # 只看有哪些新提�
 sudo /opt/opencode-my/scripts/deploy_server.sh --build  # 只改了文档也强制重建
 ```
 
+装好的机器上还有个短名字（同一份脚本，`install -m 755` 拷进 `/usr/local/bin`）：
+
+```bash
+sudo xiaoma-deploy          # 平时用这个
+```
+
 它做的事，顺序固定：
 
 1. `git fetch` 最新的 `master`（走本机 xray：服务器直连 GitHub 不通，代理不可用才退回直连）
-2. 打印 `旧..新` 的提交列表；带头不带 `--check` 就继续
+2. 打印 `旧..新` 的提交列表；带 `--check` 就停在这里
 3. 工作区必须干净（有改动就停下；`--force` 会先 `git stash`）
 4. 快进合并；只改了 `docs/`、`tests/`、`*.md` 就不重建、不重启，直接结束
 5. `docker tag` 当前镜像当回滚点 → 重建 → `up -d --force-recreate`
@@ -322,9 +328,12 @@ sudo /opt/opencode-my/scripts/deploy_server.sh --build  # 只改了文档也强�
    代码 `git reset --hard` 回旧提交、镜像换回旧 tag、容器重建、再验一次
 7. 每一步写 `/var/log/xiaoma-deploy.log`
 
-仓库是公开的，所以拉取不需要密钥——只要能给 GitHub 出网（走 xray）就行。`flock`
-保证同一时间只有一个部署在跑。
+实测（Gen10 Plus，四个容器在跑）：**有代码更新的一次部署 17 秒**（镜像层已缓存），
+无更新时 2 秒（只 fetch 比对，不动容器）。`flock` 锁在 `/run/lock/xiaoma-deploy.lock`，
+同一时间只有一个部署在跑；**别把锁放回仓库里**——它会出现在 `git status` 里，把
+「工作区必须干净」这条自己判成脏（踩过）。
 
-它只部署小马这一套 compose。小智（`/opt/xiaozhi-server`）和 HA（`data/homeassistant`）
-是各自独立的项目，改它们不在这里做。
+仓库是公开的，所以拉取不需要密钥。它只部署小马这一套 compose；小智
+（`/opt/xiaozhi-server`）和 HA（`data/homeassistant`）是各自独立的项目，不在这里做。
+
 
